@@ -31,7 +31,7 @@ black = ">=25.1.0,<26"
 isort = ">=7.0.0,<8"
 
 [feature.dev.tasks]
-jupyterlab = "jupyter lab"
+jupyterlab = { cmd = "jupyter lab", cwd = "." }
 
 [environments]
 dev = ["dev"]
