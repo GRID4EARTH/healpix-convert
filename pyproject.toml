@@ -1,6 +1,6 @@
 [project]
-name = "legacy-converters2"
-requires-python = ">= 3.13"
+name = "legacy-converters"
+requires-python = ">= 3.11"
 license = { text = "Apache-2.0" }
 dependencies = []
 dynamic = ["version"]
@@ -25,7 +25,7 @@ exclude = [
   "__pycache__",
   "docs",
 ]
-target-version = "py313"
+target-version = "py311"
 
 extend-include = ["*.ipynb"]
 line-length = 100
@@ -43,7 +43,7 @@ ignore = [
   "E501", # E501: line too long - let black worry about that
   "E731", # E731: do not assign a lambda expression, use a def
 ]
-fixable = ["I"]
+fixable = ["I", "TID252"]
 extend-safe-fixes = [
   "TID252", # absolute imports
 ]
