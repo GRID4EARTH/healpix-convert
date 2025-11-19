@@ -3,7 +3,7 @@ name = "legacy-converters"
 requires-python = ">= 3.11"
 license = { text = "Apache-2.0" }
 dependencies = [
-  "xarray>=2025.10.1",
+  "xarray>=2025.11.0",
   "numpy>=2",
   "pyproj",
   "sparse>=0.17",

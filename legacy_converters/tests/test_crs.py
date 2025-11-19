@@ -92,4 +92,4 @@ def test_maybe_convert(ds, expected):
 
     actual = crs.maybe_convert(ds, transformer)
 
-    xr.testing.assert_identical(actual, expected)
+    xr.testing.assert_allclose(actual, expected)

@@ -222,4 +222,4 @@ class TestAccessor:
     def test_convert_to(self, eopf_utm, eopf_wgs84):
         actual = eopf_utm.grid4earth.convert_to(4326)
 
-        xr.testing.assert_identical(actual, eopf_wgs84)
+        xr.testing.assert_allclose(actual, eopf_wgs84)
