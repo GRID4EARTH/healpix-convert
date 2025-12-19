@@ -4,13 +4,16 @@ name = "legacy-converters"
 platforms = ["linux-64", "osx-arm64", "win-64"]
 version = "0.1.0"
 
+[system-requirements]
+cuda = "12.0"
+
 [tasks]
 
 [dependencies]
 xarray = ">=2025.11.0"
 numpy = ">=2.3.4,<3"
 zarr = ">=3.1.3,<4"
-xdggs = ">=0.4.0"
+xdggs = ">=0.5.0"
 healpix-geo = ">=0.0.7"
 dask = ">=2025.10.0,<2026"
 distributed = ">=2025.10.0,<2026"
@@ -22,6 +25,11 @@ pyproj = ">=3.7.2,<4"
 sparse = ">=0.17.0,<0.18"
 affine = ">=2.4.0,<3"
 opt-einsum = ">=3.4.0,<4"
+pytorch = ">=2.9.1,<3"
+
+[target.linux-64.dependencies]
+pytorch-gpu = ">=2.9.1,<3"
+
 
 [pypi-dependencies]
 legacy-converters = { path = ".", editable = true }

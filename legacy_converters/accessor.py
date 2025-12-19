@@ -8,7 +8,12 @@ import pyproj
 import xarray as xr
 from affine import Affine
 
-from legacy_converters.crs import CRSLike, create_transformer, maybe_convert
+from legacy_converters.crs import (
+    CRSLike,
+    create_transformer,
+    maybe_convert,
+    transform_coords,
+)
 
 if TYPE_CHECKING:
     from typing import Literal
@@ -184,10 +189,26 @@ class DatasetConverterAccessor:
         transformer = create_transformer(self.crs, 4326)
         vertices = np.stack(transformer.transform(mbr[:, 0], mbr[:, 1]), axis=-1)
 
-        cell_ids, _, _ = healpix_geo.nested.polygon_coverage(
+        cell_ids, _, fully_covered = healpix_geo.nested.polygon_coverage(
             vertices, grid_info.level, ellipsoid="WGS84", flat=True
         )
 
-        return xr.Dataset(coords={"cell_ids": ("cells", cell_ids)}).dggs.decode(
-            grid_info
-        )
+        result = cell_ids[fully_covered]
+        return xr.Dataset(coords={"cell_ids": ("cells", result)}).dggs.decode(grid_info)
+
+    def convert_to(self, target_crs: CRSLike) -> xr.Dataset:
+        """Attach spatial coordinates in the target CRS
+
+        Parameters
+        ----------
+        target_crs : int or str or pyproj.CRS
+            The target CRS, as interpreted by :py:func:`pyproj.CRS.from_user_input`.
+
+        Returns
+        -------
+        xarray.Dataset
+            The current object with new coordinates.
+        """
+        transformer = create_transformer(self.crs, target_crs)
+        new_coords = transform_coords(self._ds["x"], self._ds["y"], transformer)
+        return self._ds.assign_coords(new_coords)
