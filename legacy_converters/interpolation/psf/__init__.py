@@ -15,7 +15,30 @@ def gaussian_filter(
     *,
     psf_sigma: float = 5.0,
     radius_factor: float = 3.0,
+    weights_threshold: float = 1e-9,
 ) -> xr.DataArray:
+    """Construct a gaussian filter that moves from one grid to another.
+
+    Parameters
+    ----------
+    source_grid : xarray.Dataset
+        A dataset representing the source grid. Must have `lon` and `lat` coordinates.
+    target_grid : xarray.Dataset
+        A dataset representing the target grid. Must have a DGGSIndex.
+    psf_sigma : float, default: 5.0
+        The standard deviation used for the rotationally symmetric 2D gaussian kernel.
+    radius_factor : float, default: 3.0
+        A factor that together with `psf_sigma` controls the number of rings
+        around a healpix cell that is used to construct the kernel.
+    weights_threshold : float, default: 1e-9
+        A threshold used to exclude values that are too small. Use `0.0` to
+        include all values.
+
+    Returns
+    -------
+    weights : xarray.DataArray
+        The kernel weights for each position as a sparse matrix.
+    """
     lon = source_grid["lon"]
     lat = source_grid["lat"]
 
@@ -36,6 +59,7 @@ def gaussian_filter(
             "ellipsoid": ellipsoid,
             "psf_sigma": psf_sigma,
             "radius_factor": radius_factor,
+            "weights_threshold": weights_threshold,
         },
     )
 

@@ -41,23 +41,12 @@ def sparse_norm(arr, axis=None):
     return arr / norm
 
 
-def gaussian_filter(lon, lat, cell_ids, level, ellipsoid, psf_sigma, radius_factor):
-    # two options:
-    # - query disk, compute distances, compute weights
-    # - translate radius to n_pixels, then search the kth neighbourhood, compute
-    #   distances, mask out pixels that are further than the radius, compute weights
-
-    # steps:
-    # 1. figure out the number of pixels covered by `psf_radius`
-    # 2. compute neighbours
-    # 3. compute distances
-    # 4. remove pixels that are further than the radius
-    # 5. compute weights from distances
-
+def gaussian_filter(
+    lon, lat, cell_ids, level, ellipsoid, psf_sigma, radius_factor, weights_threshold
+):
     geod = ellipsoid_to_geod(ellipsoid)
 
     psf_radius = psf_sigma * radius_factor
-    # TODO: how do we perform a vectorized cone search on the ellipsoid?
     rings = np.ceil(psf_radius / max_pixel_size(level, geod)).astype(int) + 1
 
     lon_utm = lon.ravel()
@@ -93,7 +82,7 @@ def gaussian_filter(lon, lat, cell_ids, level, ellipsoid, psf_sigma, radius_fact
 
     # compute the (normalized) weights
     raw_weights = np.exp(-0.5 * (distances / psf_sigma) ** 2)
-    weights = np.where(distances > psf_radius, 0, raw_weights)
+    weights = np.where(raw_weights >= weights_threshold, raw_weights, 0)
 
     shape = (lon_utm.size, cell_ids.size)
 
