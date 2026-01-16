@@ -5,10 +5,20 @@ license = { text = "Apache-2.0" }
 dependencies = [
   "xarray>=2025.11.0",
   "numpy>=2",
-  "pyproj",
+  "xdggs>=0.5.0",
+  "healpix-geo>=0.0.7",
+  "dask>=2025.10.0",
+  "distributed>=2025.10.0",
+  "scipy>=1.16.3",
+  "pystac-client>=0.9.0",
+  "matplotlib>=3.10.7",
+  "cartopy>=0.25.0",
+  "pyproj>=3.7.2",
   "sparse>=0.17",
-  "affine",
-  "opt-einsum",
+  "affine>=2.4.0",
+  "opt-einsum>=3.4.0",
+  "torch>=2.9.1",
+  "rasterix>=0.1a4",
 ]
 dynamic = ["version"]
 
