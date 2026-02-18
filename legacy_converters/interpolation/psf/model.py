@@ -16,7 +16,7 @@ def sparse_to_torch(weights, device):
     coords = torch.from_numpy(reshaped.coords).long()
     values = torch.from_numpy(reshaped.data).double()
 
-    return torch.sparse_coo_tensor(coords, values, size=reshaped.shape).to(device)
+    return torch.sparse_coo_tensor(coords, values, size=reshaped.shape).coalesce().to_sparse_csr().to(device)
 
 
 class HealpixToUTM(nn.Module):
@@ -75,7 +75,7 @@ def interpolate_to_healpix(
     target_utm = torch.from_numpy(utm_values.ravel()).to(device)
     param = torch.nn.Parameter(torch.from_numpy(initial_values).double().to(device))
 
-    optimizer = torch.optim.Adam([param], lr=1e-3)
+    optimizer = torch.optim.Adam([param], lr=1e-2)
 
     for iteration in range(n_iter):
         optimizer.zero_grad()
