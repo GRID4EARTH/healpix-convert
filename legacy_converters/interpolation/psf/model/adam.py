@@ -1,22 +1,9 @@
 import math
 
-import sparse
 import torch
 import torch.nn as nn
 
-
-def sparse_to_torch(weights, device):
-    reshaped = sparse.reshape(weights, (-1, weights.shape[-1])).tocoo()
-
-    # csr
-    # values = torch.from_numpy(reshaped.data).double()
-    # indptr = torch.from_numpy(reshaped.indptr).long()
-    # indices = torch.from_numpy(reshaped.indices).long()
-    # coo
-    coords = torch.from_numpy(reshaped.coords).long()
-    values = torch.from_numpy(reshaped.data).double()
-
-    return torch.sparse_coo_tensor(coords, values, size=reshaped.shape).coalesce().to_sparse_csr().to(device)
+from legacy_converters.interpolation.psf.model.sparse import sparse_to_torch
 
 
 class HealpixToUTM(nn.Module):
@@ -25,7 +12,7 @@ class HealpixToUTM(nn.Module):
         data_utm = W @ hdata
     """
 
-    def __init__(self, weights, utm_shape, device):
+    def __init__(self, weights, utm_shape, device, format):
         """
         Parameters
         ----------
@@ -41,7 +28,7 @@ class HealpixToUTM(nn.Module):
         self.utm_shape = utm_shape
         self.n_cells = weights.shape[-1]
 
-        self.register_buffer("weights", sparse_to_torch(weights, device))
+        self.register_buffer("weights", sparse_to_torch(weights, device, format=format))
 
     @property
     def n_utm_pixels(self):
@@ -68,14 +55,18 @@ def interpolate_to_healpix(
     initial_values,
     *,
     n_iter=500,
+    learning_rate=1e-3,
     device="cpu",
+    format="coo",
 ):
-    model = HealpixToUTM(gaussian_weights, utm_shape=utm_values.shape, device=device)
+    model = HealpixToUTM(
+        gaussian_weights, utm_shape=utm_values.shape, device=device, format=format
+    )
 
     target_utm = torch.from_numpy(utm_values.ravel()).to(device)
     param = torch.nn.Parameter(torch.from_numpy(initial_values).double().to(device))
 
-    optimizer = torch.optim.Adam([param], lr=1e-2)
+    optimizer = torch.optim.Adam([param], lr=learning_rate)
 
     for iteration in range(n_iter):
         optimizer.zero_grad()

@@ -19,6 +19,7 @@ dependencies = [
   "opt-einsum>=3.4.0",
   "torch>=2.9.1",
   "rasterix>=0.1a4",
+  "xbatcher>=0.4.0",
 ]
 dynamic = ["version"]
 

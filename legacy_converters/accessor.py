@@ -52,7 +52,8 @@ class DataTreeConverterAccessor:
         self._dt = dt
 
     def _infer_crs_code(self) -> str:
-        return self._dt.attrs["other_metadata"]["horizontal_CRS_code"]
+        root = self._dt.root
+        return root.attrs["other_metadata"]["horizontal_CRS_code"]
 
     @cached_property
     def crs(self) -> pyproj.CRS:
@@ -91,6 +92,8 @@ def _search_attribute(ds: xr.Dataset, name: str) -> int | str | list:
         for var_name, var in ds.data_vars.items()
         if name in var.attrs
     }
+    if name in ds.attrs:
+        values[None] = ds.attrs[name]
     unique_values = {tuple(v) if isinstance(v, list) else v for v in values.values()}
     if len(unique_values) > 1:
         raise ValueError(f"disagreement in {name}")
@@ -170,7 +173,7 @@ class DatasetConverterAccessor:
 
         return np.stack([coords_x, coords_y], axis=-1)
 
-    def infer_healpix_grid(self, grid_info: xdggs.HealpixInfo) -> xr.Dataset:
+    def infer_healpix_grid(self, grid_info: xdggs.HealpixInfo, **options) -> xr.Dataset:
         import healpix_geo
         import xdggs  # noqa: F401
 
@@ -194,7 +197,9 @@ class DatasetConverterAccessor:
         )
 
         result = cell_ids[fully_covered]
-        return xr.Dataset(coords={"cell_ids": ("cells", result)}).dggs.decode(grid_info)
+        return xr.Dataset(coords={"cell_ids": ("cells", result)}).dggs.decode(
+            grid_info, **options
+        )
 
     def convert_to(self, target_crs: CRSLike) -> xr.Dataset:
         """Attach spatial coordinates in the target CRS

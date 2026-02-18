@@ -16,7 +16,7 @@ def matmul(obj: xr.Dataset | xr.DataArray, weights: xr.DataArray, *, dims: list[
     """
 
     def _matmul_variable(var, weights):
-        sparse_result = xr.dot(weights.variable, var, dim=dims)
+        sparse_result = xr.dot(weights.variable.astype(var.dtype), var, dim=dims)
         if hasattr(sparse_result.data, "todense"):
             dense_result = sparse_result.copy(data=sparse_result.data.todense())
         else:

@@ -13,8 +13,8 @@ cuda = "12.0"
 xarray = ">=2025.11.0"
 numpy = ">=2.3.4,<3"
 zarr = ">=3.1.3,<4"
-xdggs = ">=0.5.0"
-healpix-geo = ">=0.0.7"
+xdggs = ">=0.6.0"
+healpix-geo = ">=0.0.11"
 dask = ">=2025.10.0,<2026"
 distributed = ">=2025.10.0,<2026"
 scipy = ">=1.16.3,<2"
@@ -26,6 +26,8 @@ sparse = ">=0.17.0,<0.18"
 affine = ">=2.4.0,<3"
 opt-einsum = ">=3.4.0,<4"
 pytorch = ">=2.9.1,<3"
+xbatcher = ">=0.4.0"
+numpy_groupies = ">=0.11.3,<0.12"
 
 [target.linux-64.dependencies]
 pytorch-gpu = ">=2.9.1,<3"
@@ -33,7 +35,7 @@ pytorch-gpu = ">=2.9.1,<3"
 
 [pypi-dependencies]
 legacy-converters = { path = ".", editable = true }
-rasterix = ">=0.1a4"
+rasterix = ">=0.1"
 
 [feature.dev.dependencies]
 jupyterlab = "*"
@@ -45,6 +47,7 @@ jupyterlab_code_formatter = ">=3.0.2,<4"
 black = ">=25.1.0,<26"
 isort = ">=7.0.0,<8"
 python = "3.13.*"
+jupyterlab-nvdashboard = ">=0.13.0,<0.14"
 
 [feature.dev.tasks]
 jupyterlab = { cmd = "jupyter lab", cwd = "." }
@@ -62,8 +65,11 @@ python = "3.13.*"
 [feature.ci-py311.dependencies]
 python = "3.11.*"
 
+[feature.profilers.dependencies]
+pyinstrument = "*"
+
 [environments]
-dev = ["tests", "dev"]
+dev = ["tests", "profilers", "dev"]
 ci-py311 = ["tests", "ci-py311"]
 ci-py313 = ["tests", "ci-py313"]
 

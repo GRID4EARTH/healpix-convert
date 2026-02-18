@@ -4,7 +4,6 @@ from legacy_converters.interpolation.psf.kernel import (
     gaussian_filter as _gaussian_filter,
 )
 from legacy_converters.interpolation.psf.model import (  # noqa: F401
-    HealpixToUTM,
     interpolate_to_healpix,
 )
 
@@ -16,6 +15,8 @@ def gaussian_filter(
     psf_sigma: float = 5.0,
     radius_factor: float = 3.0,
     weights_threshold: float = 1e-9,
+    format: str = "gcxs",
+    distance_metric: str = "geodesic",
 ) -> xr.DataArray:
     """Construct a gaussian filter that moves from one grid to another.
 
@@ -39,42 +40,74 @@ def gaussian_filter(
     weights : xarray.DataArray
         The kernel weights for each position as a sparse matrix.
     """
-    lon = source_grid["lon"]
-    lat = source_grid["lat"]
-
     cell_ids = target_grid.dggs.coord
     grid_info = target_grid.dggs.grid_info
     level = grid_info.level
     ellipsoid = grid_info.ellipsoid
+
+    if format == "gcxs":
+        input_dims = ["x", "y"]
+        output_dims = ["x", "y", "cells"]
+        lon = source_grid["lon"]
+        lat = source_grid["lat"]
+    else:
+        input_dims = ["points"]
+        output_dims = ["points", "cells"]
+        stacked = source_grid.coords.to_dataset().stack(points=["x", "y"])
+        lon = stacked["lon"]
+        lat = stacked["lat"]
 
     return xr.apply_ufunc(
         _gaussian_filter,
         lon,
         lat,
         cell_ids,
-        input_core_dims=[["x", "y"], ["x", "y"], ["cells"]],
-        output_core_dims=[["x", "y", "cells"]],
+        input_core_dims=[input_dims, input_dims, ["cells"]],
+        output_core_dims=[output_dims],
         kwargs={
             "level": level,
             "ellipsoid": ellipsoid,
             "psf_sigma": psf_sigma,
             "radius_factor": radius_factor,
             "weights_threshold": weights_threshold,
+            "format": format,
+            "distance_metric": distance_metric,
         },
     )
 
 
-def optimize_psf(gaussian_weights, ds, initial_values, *, n_iter=500, device="cpu"):
+def optimize_psf(
+    gaussian_weights,
+    ds,
+    initial_values,
+    *,
+    optimizer="adam",
+    device="cpu",
+    format="coo",
+    **optimizer_kwargs,
+):
+    if gaussian_weights.ndim == 2:
+        utm_dims = ["points"]
+        ds = ds.stack(points=["x", "y"])
+    else:
+        utm_dims = ["x", "y"]
+
     def _interpolate(weights, arr, initial):
         print(f"PSF for variable:{arr.name}")
+
         return xr.apply_ufunc(
             interpolate_to_healpix,
             weights,
             arr,
             initial,
-            input_core_dims=[["x", "y", "cells"], ["x", "y"], ["cells"]],
+            input_core_dims=[[*utm_dims, "cells"], utm_dims, ["cells"]],
             output_core_dims=[["cells"]],
-            kwargs={"n_iter": n_iter, "device": device},
+            kwargs={
+                "device": device,
+                "format": format,
+                "optimizer": optimizer,
+                **optimizer_kwargs,
+            },
         )
 
     interpolated_vars = {
