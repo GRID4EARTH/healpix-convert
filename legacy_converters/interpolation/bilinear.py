@@ -8,8 +8,7 @@ import xarray as xr
 import xdggs
 
 from legacy_converters.crs import create_transformer
-# TODO: expand_chunks not in repository (some previous merge mistake?)
-# from legacy_converters.interpolation.chunks import expand_chunks
+from legacy_converters.interpolation.chunks import expand_chunks
 
 if TYPE_CHECKING:
     import pyproj
@@ -152,8 +151,7 @@ def bilinear_affine(
         import dask
         import dask.array
 
-        # TODO: expand_chunks not in repository (some previous merge mistake?)
-        expanded_chunks = chunks # = expand_chunks(chunks, target_grid.sizes)
+        expanded_chunks = expand_chunks(chunks, target_grid.sizes)
         source_chunks = source_grid.chunksizes
 
         cell_ids_ = dask.array.from_array(cell_ids, chunks=expanded_chunks["cells"])
