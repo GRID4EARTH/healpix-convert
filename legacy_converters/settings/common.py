@@ -34,7 +34,7 @@ class BaseResamplerSettings(BaseModel):
         return values
 
 
-class KNearestNeighborsResamplerSettings(BaseModel):
+class KNearestNeighborsResamplerSettings(BaseResamplerSettings):
     """Settings for resampling data onto HEALPix using k-nearest neighbor interpolation."""
 
     name: Literal["k-nearest"] = "k-nearest"
@@ -43,13 +43,13 @@ class KNearestNeighborsResamplerSettings(BaseModel):
     """Minimum total weight (sum) required to fill a HEALPix cell with a value."""
 
 
-class NearestResamplerSettings(BaseModel):
+class NearestResamplerSettings(BaseResamplerSettings):
     """Settings for resampling data onto HEALPix using nearest neighbor (k=1) interpolation."""
 
     name: Literal["nearest"] = "nearest"
 
 
-class BilinearResamplerSettings(BaseModel):
+class BilinearResamplerSettings(BaseResamplerSettings):
     """Settings for resampling data onto HEALPix using bilinear (k=4) interpolation."""
 
     name: Literal["bilinear"] = "bilinear"
@@ -58,7 +58,7 @@ class BilinearResamplerSettings(BaseModel):
     """Minimum total weight (sum) required to fill a HEALPix cell with a value."""
 
 
-class PSFResamplerSettings(BaseModel):
+class PSFResamplerSettings(BaseResamplerSettings):
     """Settings for resampling data onto HEALPix using PSF interpolation."""
 
     name: Literal["psf"] = "psf"
@@ -67,7 +67,7 @@ class PSFResamplerSettings(BaseModel):
     """Minimum total weight (sum) required to fill a HEALPix cell with a value."""
 
 
-class CellPointResamplerSettings(BaseModel):
+class CellPointResamplerSettings(BaseResamplerSettings):
     """Settings for resampling data as HEALPix "cell-points" (i.e., cells with maximum
     refinement level 29).
     """
