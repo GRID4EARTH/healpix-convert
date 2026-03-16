@@ -20,7 +20,7 @@ from pydantic import (
 
 from legacy_converters.core.healpix_conventions import Healpix
 from legacy_converters.settings. import _CONVERT_SETTINGS
-from legacy_converters.settings. import _CONVERT_SETTINGS
+
 log = structlog.get_logger()
 
 
@@ -242,8 +242,6 @@ def get_settings(name: str) -> ConvertSettings:
 
     """
     if name == "-":
-        return ConvertSettings.model_validate(_CONVERT_SETTINGS)
-    elif name == "":
         return ConvertSettings.model_validate(_CONVERT_SETTINGS)
     else:
         raise ValueError(f"settings not found for {name!r}")
