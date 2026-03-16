@@ -2,8 +2,8 @@ import pytest
 from pydantic import ValidationError
 
 from legacy_converters.settings.common import (
-    ConvertGroupSettings,
     ConvertSettings,
+    HealpixGroupSettings,
     NearestResamplerSettings,
 )
 
@@ -13,7 +13,7 @@ def test_convert_group_settings_resampler_discriminator() -> None:
         "healpix": {"refinement_level": 10},
         "resampler": {"name": "nearest"},
     }
-    group_settings = ConvertGroupSettings.model_validate(settings_dict)
+    group_settings = HealpixGroupSettings.model_validate(settings_dict)
 
     assert isinstance(group_settings.resampler, NearestResamplerSettings)
 
@@ -25,15 +25,15 @@ def test_convert_group_settings_cellpoint_resampler_level() -> None:
     }
 
     with pytest.raises(ValueError, match=".*level must be equal to 29"):
-        ConvertGroupSettings.model_validate(settings_dict)
+        HealpixGroupSettings.model_validate(settings_dict)
 
 
 def test_convert_settings_chunk_refinement_level():
     invalid_settings_dict = {
-        "chunk_refinement_level": 10,
+        "healpix_chunks": {"refinement_level": 16},
         "group_settings": {
             "/root/group": {
-                "healpix": {"refinement_level": 9},
+                "healpix": {"refinement_level": 11},
                 "resampler": {"name": "nearest"},
             }
         },
@@ -43,3 +43,16 @@ def test_convert_settings_chunk_refinement_level():
         ValidationError, match=".*lower than the chunk refinement level.*"
     ):
         ConvertSettings.model_validate(invalid_settings_dict)
+
+    # validation should still pass when chunk is disabled
+    settings_dict_no_chunk = {
+        "healpix_chunks": {"refinement_level": 16},
+        "group_settings": {
+            "/root/group": {
+                "healpix": {"refinement_level": 11},
+                "resampler": {"name": "nearest"},
+                "chunk": False,
+            }
+        },
+    }
+    ConvertSettings.model_validate(settings_dict_no_chunk)
