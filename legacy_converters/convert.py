@@ -513,6 +513,10 @@ def _convert_one_chunk(
 
         prepared_datasets.append(ds_with_latlon)
 
+    if not len(prepared_datasets):
+        # No input data found for the current chunk
+        return
+
     ds_input_points = xr.concat(prepared_datasets, dim="points")
 
 
