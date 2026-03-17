@@ -51,6 +51,8 @@ def extract_spatial_info_stac(ds: xr.Dataset) -> dict | None:
     Assume that spatial information is represented as STAC (projection)
     attributes in data variables (EOPF Zarr groups).
 
+    Assume x/y spatial dimensions.
+
     Returns None if no spatial information is detected.
 
     """
@@ -61,12 +63,17 @@ def extract_spatial_info_stac(ds: xr.Dataset) -> dict | None:
     if "proj:epsg" not in var0.attrs:
         return None
 
+    spatial_arrays = [
+        name for name, var in ds.data_vars.items() if "proj:epsg" in var0.attrs
+    ]
+
     return {
         "crs": [pyproj.CRS.from_epsg(var0.attrs["proj:epsg"])],
         "transform": [affine.Affine(*var0.attrs["proj:transform"])],
         "spatial_dimensions": {"x": ds.sizes["x"], "y": ds.sizes["y"]},
         "spatial_coordinates": ["x", "y"],
         "spatial_attrs": [],
+        "spatial_arrays": spatial_arrays,
         "spatial_var_attrs": [a.startswith("proj:") for a in var0.attrs],
     }
 
@@ -89,13 +96,20 @@ def extract_spatial_info_cf(ds: xr.Dataset) -> dict | None:
             latlon_dims.update(var.dims)
 
     if latlon_coords:
+        spatial_arrays = [
+            name
+            for name, var in ds.data_vars.items()
+            if set(var.dims).intersection(latlon_dims)
+        ]
+
         return {
             # TODO: EPSG generic spherical model? Or allow something other?
             "crs": [pyproj.CRS.from_epsg(6404)],
             "transform": None,
             "spatial_dimensions": {dim: ds.sizes[dim] for dim in latlon_dims},
             "spatial_coordinates": list(latlon_coords),
-            "spatial_attrs": [],
+            "spatial_arrays": [],
+            "spatial_attrs": spatial_arrays,
             "spatial_var_attrs": [],
         }
     else:
