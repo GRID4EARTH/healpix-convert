@@ -23,7 +23,11 @@ from legacy_converters.settings. import (
     __CONVERT_SETTINGS,
     __CONVERT_SETTINGS,
 )
-
+from legacy_converters.settings. import (
+    _CONVERT_SETTINGS,
+    __ERR_CONVERT_SETTINGS,
+    __RBT_CONVERT_SETTINGS,
+)
 log = structlog.get_logger()
 
 
@@ -240,6 +244,12 @@ def get_settings(name: str) -> ConvertSettings:
 
     elif name == "-":
         return ConvertSettings.model_validate(__CONVERT_SETTINGS)
+    elif name == "--l1-efr":
+        return ConvertSettings.model_validate(_CONVERT_SETTINGS)
+    elif name == "--l1-err":
+        return ConvertSettings.model_validate(__ERR_CONVERT_SETTINGS)
+    elif name == "--l1-rbt":
+        return ConvertSettings.model_validate(__RBT_CONVERT_SETTINGS)
 
     else:
         raise ValueError(f"settings not found for {name!r}")
