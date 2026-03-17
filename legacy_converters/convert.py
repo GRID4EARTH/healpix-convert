@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import affine
 import healpix_geo
+import healpix_resample
 import numpy as np
 import pydantic
 import pyproj
@@ -79,6 +80,9 @@ class InputGroupSpatialInfo:
     spatial_attrs: list[str]
     """Spatial (group) attribute names."""
 
+    spatial_arrays: list[str]
+    """Spatial arrays (data variables) in group."""
+
     spatial_var_attrs: dict[str, list[str]]
     """Spatial (data-)variable attribute names."""
 
@@ -87,6 +91,7 @@ class InputGroupSpatialInfo:
         invalid = (
             self.spatial_dimensions != other.spatial_dimensions
             or self.spatial_coordinates != other.spatial_coordinates
+            or self.spatial_arrays != other.spatial_arrays
             or self.is_projected is not other.is_projected
         )
 
@@ -106,6 +111,7 @@ class InputGroupSpatialInfo:
             spatial_dimensions=self.spatial_dimensions,
             spatial_coordinates=self.spatial_coordinates,
             spatial_attrs=self.spatial_attrs,
+            spatial_arrays=self.spatial_arrays,
             spatial_var_attrs=self.spatial_var_attrs,
         )
 
@@ -412,10 +418,12 @@ def _convert_group_to_healpix(
     healpix = group_settings.healpix
     chunk_info = data.output_chunks
 
-    # fixed data lookup buffer width
-    # TODO: compute spatial resolution? (if yes guess and add in group_spatial_info)
-    # TODO: add arc-length buffer for lat-lon data?
-    buffer_width_meters = 60
+    if not group_spatial_info.is_projected:
+        log.warning("conversion of lat-lon group not yet implemented (almost there!)")
+        return
+    if group_settings.chunk is False:
+        log.warning("non-chunked group conversion not yet implemented (almost there!)")
+        return
 
     # chunk (fixed) size
     # only "nested" is currently supported for fixed-size chunk processing
@@ -428,46 +436,70 @@ def _convert_group_to_healpix(
     chunk_size: int = 4 ** (level - chunk_level)
 
     log.info(f"using chunked conversion with fixed chunk size of {chunk_size}")
+    log.info(f"resampling data on HEALPix using {group_settings.resampler.name} method")
 
-    # maybe create dataset raster indexes
-    transforms = group_spatial_info.transform
-    spatial_dims = group_spatial_info.spatial_dimensions
+    # maybe create dataset raster indexes (input datasets with projected CRS)
+    if group_spatial_info.is_projected:
+        transforms = group_spatial_info.transform
+        assert transforms is not None
+        spatial_dims = group_spatial_info.spatial_dimensions
 
-    if transforms is not None:
         group_datasets = [
             utils.create_raster_index(ds, tr, *spatial_dims)
             for ds, tr in zip(group_datasets, transforms)
         ]
 
-    # TODO:
     _convert_one_chunk(
         0,
         chunk_info,
-        healpix,
         spatial_info,
         group_spatial_info,
+        group_settings,
         group_datasets,
-        buffer_width_meters,
     )
 
 
-def _convert_one_chunk(
-    chunk_index: int,
+_RESAMPLER_NAME_CLS: dict[str, type] = {
+    "k-nearest": healpix_resample.KNeighborsResampler,
+    "nearest": healpix_resample.NearestResampler,
+    "bilinear": healpix_resample.BilinearResampler,
+    "psf": healpix_resample.PSFResampler,
+    "cell-point": healpix_resample.CellPointResampler,
+}
+
+
+def _query_chunk_input_points_projected(
+    chunk_cell_id: int,
+    datasets: list[xr.Dataset],
     chunk_info: OutputChunkInfo,
-    healpix: Healpix,
     spatial_info: InputSpatialInfo,
     group_spatial_info: InputGroupSpatialInfo,
-    datasets: list[xr.Dataset],
-    buffer_width_meters: float,
-):
-    chunk_cell_id = chunk_info.cell_ids[chunk_index]
+) -> xr.Dataset | None:
+    """Query input `datasets`, keep points used to resample data on `cell_ids`.
 
-    # get output cell ids for chunk
-    cell_ids = healpix_geo.nested.zoom_to(
-        chunk_cell_id,
-        chunk_info.healpix.refinement_level,
-        healpix.refinement_level,
-    )[0]
+    Returns a single dataset with 1-dimensional point data which has:
+    - a "points" dimension
+    - lat(points) and lon(points) coordinates
+
+    Returns None if query result has no input point.
+
+    This function works with projected points (e.g.,  UTM) and
+    implements the following procedure:
+    - extract output HEALPix cell ids enveloppe as a polygon
+    - prepare each input dataset:
+      - re-project the enveloppe polygon in the dataset's projected CRS
+      - create a fixed-width (meters) buffer around the polygon
+      - get overlapping zone between the buffer polygon and the input Zarr dataset coverage
+        in projected CRS coordinates
+      - maybe exclude input dataset with overlapping zone is empty
+      - slice input dataset (in projected coordinates) using the bounding box of the
+        overlapping zone.
+    - flatten (stack) input datasets and convert x/y coordinates to lat-lon.
+
+    """
+    # fixed (re-projected) chunk polygon buffer width, in meter
+    # TODO: make it resolution dependent and/or configurable?
+    buffer_width_meters = 60
 
     # compute chunk cell polygon
     lon, lat = healpix_geo.nested.vertices(
@@ -515,9 +547,93 @@ def _convert_one_chunk(
 
     if not len(prepared_datasets):
         # No input data found for the current chunk
-        return
+        return None
 
     ds_input_points = xr.concat(prepared_datasets, dim="points")
+
+    # TODO: assert (optional) that all points are within the cell-buffered polygon
+    # FIXME: results are bad here
+    lon = ds_input_points.lon.values
+    lat = ds_input_points.lat.values
+    spoints = shapely.points(lat, lon)
+    points_in_chunk_cell = np.count_nonzero(shapely.within(spoints, chunk_poly_latlon))
+    log.info(f"{spoints.size} input points / {points_in_chunk_cell.size} in chunk cell")
+
+    return ds_input_points
+
+
+def _convert_one_chunk(
+    chunk_index: int,
+    chunk_info: OutputChunkInfo,
+    spatial_info: InputSpatialInfo,
+    group_spatial_info: InputGroupSpatialInfo,
+    group_settings: HealpixGroupSettings,
+    datasets: list[xr.Dataset],
+):
+    chunk_cell_id = chunk_info.cell_ids[chunk_index]
+
+    cell_ids = healpix_geo.nested.zoom_to(
+        chunk_cell_id,
+        chunk_info.healpix.refinement_level,
+        group_settings.healpix.refinement_level,
+    )[0]
+
+    if group_spatial_info.is_projected:
+        ds_input_points = _query_chunk_input_points_projected(
+            chunk_cell_id,
+            datasets,
+            chunk_info,
+            spatial_info,
+            group_spatial_info,
+        )
+    else:
+        # TODO: implement alternative input point query strategy(ies) working
+        # with other kind of data (e.g., lat/lon)
+        ds_input_points = None
+
+    # no input data point for current chunk
+    if ds_input_points is None:
+        return
+
+    resampler_params = group_settings.resampler.model_dump()
+    resampler_name = resampler_params.pop("name")
+    resampler_cls = _RESAMPLER_NAME_CLS[resampler_name]
+
+    resampler = resampler_cls(
+        lon_deg=ds_input_points.lon.values,
+        lat_deg=ds_input_points.lat.values,
+        level=group_settings.healpix.refinement_level,
+        # out_cell_ids=cell_ids,
+        nest=group_settings.healpix.indexing_scheme == "nested",
+        ellipsoid=group_settings.healpix.ellipsoid.name.upper(),
+        **resampler_params,
+    )
+
+    # resample arrays (data variables)
+    for name, var in ds_input_points.data_vars.items():
+        if name not in group_spatial_info.spatial_arrays:
+            continue
+
+        # initialize cell data to nodata (TODO: get the right fill_value and dtype)
+        # index/fill the array below with data values returned by the resampler
+        cell_data = np.full(cell_ids.size, np.nan)
+
+        data = var.values.astype("f")
+
+        scale_factor = var.attrs.get("scale_factor")
+        add_offset = var.attrs.get("add_offset")
+        if scale_factor is not None:
+            data *= scale_factor
+        if add_offset is not None:
+            data += add_offset
+
+        res = resampler.resample(data)
+
+        # assume nested indexing scheme -> chunk cell ids is a range
+        in_chunk = (res.cell_ids >= cell_ids[0]) & (res.cell_ids <= cell_ids[-1])
+        res_indices = (res.cell_ids - cell_ids[0]).astype("int")
+
+        cell_data[res_indices[in_chunk]] = res.cell_data[in_chunk]
 
 
 def create_healpix_dataset(

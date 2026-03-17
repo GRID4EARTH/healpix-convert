@@ -48,9 +48,6 @@ class KNearestNeighborsResamplerSettings(BaseResamplerSettings):
 
     name: Literal["k-nearest"] = "k-nearest"
 
-    min_cell_total_weight: Annotated[float, Field(gt=0.0)] = 0.1
-    """Minimum total weight (sum) required to fill a HEALPix cell with a value."""
-
 
 class NearestResamplerSettings(BaseResamplerSettings):
     """Settings for resampling data onto HEALPix using nearest neighbor (k=1) interpolation."""
@@ -63,17 +60,11 @@ class BilinearResamplerSettings(BaseResamplerSettings):
 
     name: Literal["bilinear"] = "bilinear"
 
-    min_cell_total_weight: Annotated[float, Field(gt=0.0)] = 0.1
-    """Minimum total weight (sum) required to fill a HEALPix cell with a value."""
-
 
 class PSFResamplerSettings(BaseResamplerSettings):
     """Settings for resampling data onto HEALPix using PSF interpolation."""
 
     name: Literal["psf"] = "psf"
-
-    min_cell_total_weight: Annotated[float, Field(gt=0.0)] = 0.1
-    """Minimum total weight (sum) required to fill a HEALPix cell with a value."""
 
 
 class CellPointResamplerSettings(BaseResamplerSettings):
