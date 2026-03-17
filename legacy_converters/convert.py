@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePath
-from typing import Any, cast
+from typing import cast
 
 import affine
 import healpix_geo
@@ -14,10 +14,14 @@ import pyproj
 import shapely
 import structlog
 import xarray as xr
+import zarr.api.synchronous as zarr
 
 import legacy_converters.core.utils as utils
-from legacy_converters.core.healpix_conventions import Healpix
-from legacy_converters.core.multiscales_conventions import HealpixMultiscales
+from legacy_converters.core.healpix_conventions import DGGSZarrConvention, Healpix
+from legacy_converters.core.multiscales_conventions import (
+    HealpixMultiscales,
+    MultiscalesZarrConvention,
+)
 from legacy_converters.settings.common import (
     ConvertSettings,
     HealpixGroupSettings,
@@ -151,6 +155,9 @@ class OutputChunkInfo:
 @dataclass
 class OutputGroupInfo:
     """Information about groups in the output Zarr dataset."""
+
+    root_path: PurePath = field(default_factory=PurePath)
+    """Path to the output Zarr dataset (root group)."""
 
     multiscale_groups: dict[PurePath, HealpixMultiscales] = field(default_factory=dict)
     """Multiscales groups (including metadata)."""
@@ -318,6 +325,7 @@ def _set_output_groups(
     datatrees: list[xr.DataTree],
     input_spatial_groups: dict[PurePath, InputGroupSpatialInfo],
     settings: ConvertSettings,
+    output_path: str,
 ) -> OutputGroupInfo:
     multiscale_groups: dict[PurePath, HealpixMultiscales] = {}
     excluded_groups: list[PurePath] = []
@@ -347,11 +355,11 @@ def _set_output_groups(
             child_settings = settings.group_settings.get(child_path)
 
             if isinstance(child_settings, HealpixGroupSettings):
-                output_path = child_path.parent / str(
+                group_output_path = child_path.parent / str(
                     child_settings.healpix.refinement_level
                 )
-                io_path_map[child_path] = output_path
-                layout = {"asset": output_path}
+                io_path_map[child_path] = group_output_path
+                layout = {"asset": group_output_path}
                 if multiscales_settings.add_healpix_positioning:
                     layout["dggs"] = child_settings.healpix
                 layouts.append(layout)
@@ -366,6 +374,7 @@ def _set_output_groups(
             )
 
     return OutputGroupInfo(
+        root_path=PurePath(output_path),
         multiscale_groups=multiscale_groups,
         excluded_groups=excluded_groups,
         io_path_map=io_path_map,
@@ -449,6 +458,64 @@ def _convert_group_to_healpix(
             for ds, tr in zip(group_datasets, transforms)
         ]
 
+    # create Zarr group with metadata
+    group_path = data.output_groups.io_path_map[path]
+    zgroup = zarr.create_group(
+        str(data.output_groups.root_path),
+        path=str(group_path),
+        attributes={
+            "zarr_conventions": [DGGSZarrConvention().model_dump()],
+            "dggs": healpix.model_dump(),
+        },
+    )
+
+    # create Zarr arrays in the group (values filled chunk by chunk right after)
+    cell_dim = healpix.spatial_dimension
+    cell_dim_size = chunk_info.cell_ids.size * chunk_size
+    zarrays: dict[str, zarr.Array] = {}
+
+    zarrays[healpix.coordinate] = zgroup.create_array(
+        name=healpix.coordinate,
+        shape=(cell_dim_size,),
+        dtype=chunk_info.cell_ids.dtype,
+        chunks=(chunk_size,),
+        dimension_names=(cell_dim,),
+    )
+
+    for name, var in group_datasets[0].coords.items():
+        if name not in group_spatial_info.spatial_coordinates:
+            # TODO: use dask.array.to_zarr() if var is chunked?
+            zarrays[name] = zgroup.create_array(
+                name=name,
+                data=var.values(),
+                chunks=var.chunks,
+                dimension_names=var.dims,
+            )
+    for name, var in group_datasets[0].data_vars.items():
+        if name in group_spatial_info.spatial_arrays:
+            ...
+            # TODO: how to handle non-spatial dimensions?
+            if group_settings.resampler.name in ["bilinear", "psf"]:
+                dtype = np.float64
+            else:
+                dtype = var.dtype
+            zarrays[name] = zgroup.create_array(
+                name=name,
+                shape=(cell_dim_size,),
+                dtype=dtype,
+                chunks=(chunk_size,),
+                dimension_names=(cell_dim,),
+            )
+        else:
+            # write array unchanged in output group
+            # TODO: use dask.array.to_zarr() if var is chunked?
+            zarrays[name] = zgroup.create_array(
+                name=name,
+                data=var.values(),
+                chunks=var.chunks,
+                dimension_names=var.dims,
+            )
+
     _convert_one_chunk(
         0,
         chunk_info,
@@ -456,6 +523,7 @@ def _convert_group_to_healpix(
         group_spatial_info,
         group_settings,
         group_datasets,
+        zarrays,
     )
 
 
@@ -569,6 +637,7 @@ def _convert_one_chunk(
     group_spatial_info: InputGroupSpatialInfo,
     group_settings: HealpixGroupSettings,
     datasets: list[xr.Dataset],
+    zarrays: dict[str, zarr.Array],
 ):
     chunk_cell_id = chunk_info.cell_ids[chunk_index]
 
@@ -577,6 +646,9 @@ def _convert_one_chunk(
         chunk_info.healpix.refinement_level,
         group_settings.healpix.refinement_level,
     )[0]
+
+    chunk_slice = slice(chunk_index, chunk_index + cell_ids.size - 1)
+    zarrays[group_settings.healpix.coordinate][chunk_slice] = cell_ids
 
     if group_spatial_info.is_projected:
         ds_input_points = _query_chunk_input_points_projected(
@@ -599,6 +671,8 @@ def _convert_one_chunk(
     resampler_name = resampler_params.pop("name")
     resampler_cls = _RESAMPLER_NAME_CLS[resampler_name]
 
+    # TODO: pass array dtype to resampler
+    # in case all arrays to resample have the same dtype
     resampler = resampler_cls(
         lon_deg=ds_input_points.lon.values,
         lat_deg=ds_input_points.lat.values,
@@ -629,26 +703,33 @@ def _convert_one_chunk(
 
         res = resampler.resample(data)
 
+        zarray = zarrays[str(name)]
+
         # assume nested indexing scheme -> chunk cell ids is a range
         in_chunk = (res.cell_ids >= cell_ids[0]) & (res.cell_ids <= cell_ids[-1])
         res_indices = (res.cell_ids - cell_ids[0]).astype("int")
 
         cell_data[res_indices[in_chunk]] = res.cell_data[in_chunk]
+        cell_data[np.isnan(cell_data)] = zarray.fill_value
+        zarrays[str(name)][chunk_slice] = cell_data.astype(cell_data.dtype)
 
 
 def create_healpix_dataset(
     input_paths: Sequence[str],
     settings: dict | ConvertSettings,
+    output_path: str,
     *,
     groups: str | Sequence[str] | None = None,
     output_extent: dict | shapely.Polygon | None = None,
-):
+) -> xr.DataTree:
     """Create a new Zarr dataset with data resampled on the HEALPix grid.
 
     Parameters
     ----------
     input_paths : list of paths
         Path(s) to the input Zarr dataset(s) to convert to HEALPix.
+    output_path : str
+        Path to the HEALPix output Zarr dataset.
     settings : dict or object
         Healpix conversion settings.
     groups : str or list, optional
@@ -661,6 +742,12 @@ def create_healpix_dataset(
         (GEOJSON-like or object) polygon with lat-lon coordinates.
         If not given (default), the spatial extent will be the union
         of the spatial extents of the input datasets (single polygon).
+
+    Returns
+    -------
+    :py:class:`xarray.DataTree`
+        The output Zarr dataset with HEALPix data, returned as an Xarray
+        DataTree object.
 
     """
     data = ConvertTempData()
@@ -726,7 +813,10 @@ def create_healpix_dataset(
     log.info("••• configuring groups in the output HEALPix dataset...")
 
     data.output_groups = _set_output_groups(
-        data.input_datatrees, data.input_spatial_groups, settings
+        data.input_datatrees,
+        data.input_spatial_groups,
+        settings,
+        output_path,
     )
 
     log.info(
@@ -742,6 +832,13 @@ def create_healpix_dataset(
         + "\n".join(f"  - {path}" for path in data.output_groups.io_path_map.values())
     )
 
+    # --- create output Zarr dataset
+    # TODO: check for any existing output Zarr dataset
+    # TODO: write root metadata (STAC / STAC discovery attributes, etc.)
+    root_path = PurePath(output_path)
+    log.info(f"••• creating {root_path} Zarr dataset...")
+    zarr.open_group(str(root_path), mode="w")
+
     # --- process groups
     log.info("••• processing groups...")
 
@@ -750,9 +847,43 @@ def create_healpix_dataset(
 
         if path in data.output_groups.excluded_groups:
             continue
-        if path in data.input_spatial_groups:
-            _convert_group_to_healpix(path, data, settings)
-        # TODO: multiscales group (write metadata)
-        # TODO: group has data (write a copy in output)
+        if str(path) == ".":
+            # root path (skip it here if attributes are written above)
+            continue
 
-    return data
+        group_path_rel = str(data.output_groups.io_path_map[path])
+
+        if path in data.output_groups.multiscale_groups:
+            log.info(f"writing group '{group_path_rel}' to Zarr")
+            multiscales_obj = data.output_groups.multiscale_groups[path]
+            zarr.create_group(
+                str(root_path),
+                path=group_path_rel,
+                attributes={
+                    "zarr_conventions": [
+                        MultiscalesZarrConvention().model_dump(),
+                        DGGSZarrConvention().model_dump(),
+                    ],
+                    "multiscales": multiscales_obj.model_dump(),
+                },
+            )
+        elif path in data.input_spatial_groups:
+            log.info(f"writing group '{group_path_rel}' to Zarr")
+            _convert_group_to_healpix(path, data, settings)
+        elif not data.input_datatrees[0][str(path)].has_data:
+            zarr.create_group(str(root_path), path=group_path_rel)
+        else:
+            # non-spatial group (skip for now)
+            log.warning(
+                f"skip writing non-spatial group '{group_path_rel}' to Zarr "
+                "(not yet supported)"
+            )
+
+    # --- consolidate Zarr metadata
+    log.info("••• consolidating output Zarr metadata...")
+    zarr.consolidate_metadata(str(root_path))
+    # TODO: consolidate metadata for each group/node
+
+    log.info("••• done!")
+
+    return xr.open_datatree(str(root_path))
