@@ -51,7 +51,7 @@ def test_convert_settings_chunk_refinement_level():
             "/root/group": {
                 "healpix": {"refinement_level": 11},
                 "resampler": {"name": "nearest"},
-                "chunk": False,
+                "chunk": {"method": "no_chunk"},
             }
         },
     }

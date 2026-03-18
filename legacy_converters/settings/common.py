@@ -14,6 +14,7 @@ from pydantic import (
     Discriminator,
     Field,
     Tag,
+    computed_field,
     field_serializer,
     model_validator,
 )
@@ -28,6 +29,7 @@ from legacy_converters.settings. import (
     __ERR_CONVERT_SETTINGS,
     __RBT_CONVERT_SETTINGS,
 )
+
 log = structlog.get_logger()
 
 
@@ -91,6 +93,54 @@ ResamplerSettings: TypeAlias = (
 )
 
 
+class HealpixChunkSettings(BaseModel):
+    """Settings for chunking output data along the HEALPix cell dimension.
+
+    These settings are defined for each input Zarr group to convert to HEALPix.
+
+    """
+
+    model_config = ConfigDict(frozen=True, use_attribute_docstrings=True)
+
+    method: Literal["healpix_cell", "user_defined", "no_chunk"] = "healpix_cell"
+    """Chunking method.
+
+    - "healpix_cell" (default): chunks are defined as HEALPix cells on a low
+      (coarse) refinement level. The healpix grid settings for chunks are
+      defined in the global conversion settings under the "healpix_chunks" field
+      (see :py:class:`ConvertSettings`). The same chunk cells are thus used for
+      all Zarr groups to convert to HEALPix.
+
+    - "user_defined": chunks have a fixed size defined by the "chunk_size"
+      field in these (group) settings.
+
+    - "no_chunk": data on HEALPix doesn't need to be chunked (e.g., groups
+      with small data size).
+
+    """
+
+    # TODO: MISSING may be better than None as default value
+    # but dask (tokenize) doesn't like it
+    chunk_size: int | None = None
+    """User-defined chunk (fixed) size for 'user_defined' method."""
+
+    @computed_field
+    @property
+    def is_fixed_size(self) -> bool:
+        """Returns True if chunks have a uniform, fixed size."""
+        # TODO: eventually use regular field instead
+        # (when we support a method with variable chunk sizes)
+        return True
+
+    @model_validator(mode="after")
+    def validate(self) -> HealpixChunkSettings:
+        # TODO: add test
+        if self.method == "user_defined" and self.chunk_size is None:
+            raise ValueError(f"'chunk_size' must be defined for method {self.method!r}")
+
+        return self
+
+
 class HealpixGroupSettings(BaseModel):
     """Settings for converting a single Zarr group onto HEALPix."""
 
@@ -99,8 +149,10 @@ class HealpixGroupSettings(BaseModel):
     healpix: Healpix
     """Output HEALPix grid settings."""
 
-    chunk: bool = True
-    """Whether or not data resampled on HEALPix is chunked."""
+    chunk: Annotated[
+        HealpixChunkSettings, Field(default_factory=lambda: HealpixChunkSettings())
+    ]
+    """Settings for chunking data along the HEALPix cell dimension."""
 
     resampler: Annotated[ResamplerSettings, Field(discriminator="name")]
     """Resampling method name and settings."""
@@ -111,6 +163,19 @@ class HealpixGroupSettings(BaseModel):
             raise ValueError(
                 "HEALPix refinement level must be equal to 29 when the 'cell-point' resampler "
                 "is used."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_chunk_vs_indexing_scheme(self) -> HealpixGroupSettings:
+        # TODO: add test
+        if (
+            self.chunk.method == "healpix_cell"
+            and self.healpix.indexing_scheme != "nested"
+        ):
+            raise ValueError(
+                "chunk method 'healpix_cell' only supports the 'nested' indexing scheme."
             )
 
         return self
@@ -160,8 +225,13 @@ class ConvertSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True, use_attribute_docstrings=True)
 
+    # TODO: may be optional
+    # not needed if no group in `group_settings` uses the "healpix_cell" method
+    # (note: if using MISSING, beware dask/distributed doesn't like it for tokenize)
     healpix_chunks: Healpix
-    """Common grid settings for output HEALPix data chunks."""
+    """Common grid settings for output HEALPix data chunked using the
+    "healpix_cell" method (see :py:class:`HealpixChunkSettings`).
+    """
 
     exclude_groups: list[PurePath] = Field(default_factory=list)
     """Groups to exclude from the conversion (won't be included in output)."""
@@ -207,8 +277,9 @@ class ConvertSettings(BaseModel):
                 continue
 
             level = settings.healpix.refinement_level
+            has_chunks = settings.chunk.method != "no_chunk"
 
-            if settings.chunk and level is not None and level < chunk_level:
+            if has_chunks and level is not None and level < chunk_level:
                 raise ValueError(
                     f"found output HEALPix refinement level {level} set in group {name}, "
                     f"which is lower than the chunk refinement level {chunk_level}."
