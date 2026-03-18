@@ -433,12 +433,16 @@ def _convert_group_to_healpix(
     if not group_spatial_info.is_projected:
         log.warning("conversion of lat-lon group not yet implemented (almost there!)")
         return
-    if group_settings.chunk is False:
-        log.warning("non-chunked group conversion not yet implemented (almost there!)")
+
+    chunk_settings = group_settings.chunk
+    if chunk_settings.method != "healpix_cell":
+        log.warning(
+            f"conversion with chunking method {chunk_settings.method!r} not yet implemented"
+        )
         return
 
-    # chunk (fixed) size
-    # only "nested" is currently supported for fixed-size chunk processing
+    # only "nested" is currently supported for "healpix_cell" chunk method
+    # (should be already validated in ConvertSettings)
     assert healpix.indexing_scheme == "nested"
     assert chunk_info.healpix.indexing_scheme == "nested"
 
@@ -447,8 +451,11 @@ def _convert_group_to_healpix(
     assert level is not None and chunk_level is not None
     chunk_size: int = 4 ** (level - chunk_level)
 
-    log.info(f"using chunked conversion with fixed chunk size of {chunk_size}")
     log.info(f"resampling data on HEALPix using {group_settings.resampler.name} method")
+    log.info(f"chunking output data using {chunk_settings.method!r} method")
+    if chunk_settings.is_fixed_size:
+        cell_dim = group_settings.healpix.spatial_dimension
+        log.info(f"fixed chunk size along the {cell_dim!r} dimension: {chunk_size}")
 
     # maybe create dataset raster indexes (input datasets with projected CRS)
     if group_spatial_info.is_projected:
@@ -527,7 +534,7 @@ def _convert_group_to_healpix(
     chunk_index_range = range(data.output_chunks.cell_ids.size)
 
     if client is not None:
-        log.info("converting chunks in parallel using Dask/Distributed")
+        log.info("••• converting chunks in parallel using dask (distributed)...")
         # use a wrapper func as passing _convert_one_chunk kwargs to client.map doesn't work
         # (dask/distributed does not like pickling `group_datasets`)
         func = lambda idx: _convert_one_chunk(
@@ -542,7 +549,7 @@ def _convert_group_to_healpix(
         futures = client.map(func, list(chunk_index_range))
         client.gather(futures)
     else:
-        log.warning("converting chunks serially (it may take a while)")
+        log.info("••• converting chunks serially (it may take a while)...")
         for chunk_index in chunk_index_range:
             _convert_one_chunk(
                 chunk_index,
@@ -882,7 +889,7 @@ def create_healpix_dataset(
         group_path_rel = str(data.output_groups.io_path_map[path])
 
         if path in data.output_groups.multiscale_groups:
-            log.info(f"writing group '{group_path_rel}' to Zarr")
+            log.info(f"••• writing group '{group_path_rel}' to zarr")
             multiscales_obj = data.output_groups.multiscale_groups[path]
             zarr.create_group(
                 str(root_path),
@@ -896,14 +903,14 @@ def create_healpix_dataset(
                 },
             )
         elif path in data.input_spatial_groups:
-            log.info(f"writing group '{group_path_rel}' to Zarr")
+            log.info(f"••• writing group '{group_path_rel}' to zarr")
             _convert_group_to_healpix(path, data, settings)
         elif not data.input_datatrees[0][str(path)].has_data:
             zarr.create_group(str(root_path), path=group_path_rel)
         else:
             # non-spatial group (skip for now)
             log.warning(
-                f"skip writing non-spatial group '{group_path_rel}' to Zarr "
+                f"••• skip writing non-spatial group '{group_path_rel}' to zarr "
                 "(not yet supported)"
             )
 

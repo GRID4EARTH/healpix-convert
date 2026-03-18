@@ -71,7 +71,7 @@ class Healpix(BaseModel):
 
     name: Literal["healpix"] = "healpix"
 
-    refinement_level: Annotated[int | None, Field(gt=0)]
+    refinement_level: Annotated[int | None, Field(ge=0)]
     """HEALPix refinement level."""
 
     indexing_scheme: Literal["nested", "ring", "zuniq"] = "nested"

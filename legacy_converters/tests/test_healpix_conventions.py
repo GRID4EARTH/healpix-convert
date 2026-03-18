@@ -2,7 +2,11 @@ import pytest
 from pydantic import ValidationError
 from pydantic.experimental.missing_sentinel import MISSING
 
-from legacy_converters.core.healpix_conventions import DGGSZarrConvention, WGS84Ellipsoid, Healpix
+from legacy_converters.core.healpix_conventions import (
+    DGGSZarrConvention,
+    Healpix,
+    WGS84Ellipsoid,
+)
 
 
 def test_dggs_zarr_convention_values() -> None:
@@ -10,7 +14,10 @@ def test_dggs_zarr_convention_values() -> None:
 
     assert c.uuid == "7b255807-140c-42ca-97f6-7a1cfecdbc38"
     assert c.name == "dggs"
-    assert c.schema_url == "https://raw.githubusercontent.com/zarr-conventions/dggs/refs/tags/v1/schema.json"
+    assert (
+        c.schema_url
+        == "https://raw.githubusercontent.com/zarr-conventions/dggs/refs/tags/v1/schema.json"
+    )
     assert c.spec_url == "https://github.com/zarr-conventions/dggs/blob/v1/README.md"
     assert c.description == "Discrete Global Grid Systems convention for zarr"
 
@@ -43,14 +50,22 @@ def test_healpix_ellipsoid_dscriminator() -> None:
 
 
 def test_healpix_invalid_refinement_level() -> None:
-    with pytest.raises(ValidationError, match=".*should be greater than 0.*"):
-        Healpix(refinement_level=0)
+    with pytest.raises(
+        ValidationError, match=".*should be greater than or equal to 0.*"
+    ):
+        Healpix(refinement_level=-1)
 
-    with pytest.raises(ValidationError, match=".*must be defined for.*indexing scheme.*"):
+    with pytest.raises(
+        ValidationError, match=".*must be defined for.*indexing scheme.*"
+    ):
         Healpix(refinement_level=None)
 
-    with pytest.raises(ValidationError, match=".*undefined but compression is not 'none'"):
+    with pytest.raises(
+        ValidationError, match=".*undefined but compression is not 'none'"
+    ):
         Healpix(refinement_level=None, indexing_scheme="zuniq", compression="compacted")
 
-    with pytest.raises(ValidationError, match=".*coordinate.*omitted.*refinement level.*undefined"):
+    with pytest.raises(
+        ValidationError, match=".*coordinate.*omitted.*refinement level.*undefined"
+    ):
         Healpix(refinement_level=None, indexing_scheme="zuniq", coordinate=MISSING)
