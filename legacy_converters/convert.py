@@ -6,6 +6,7 @@ from pathlib import PurePath
 from typing import cast
 
 import affine
+import distributed
 import healpix_geo
 import healpix_resample
 import numpy as np
@@ -414,7 +415,9 @@ def _set_output_chunks(
 
 
 def _convert_group_to_healpix(
-    path: PurePath, data: ConvertTempData, settings: ConvertSettings
+    path: PurePath,
+    data: ConvertTempData,
+    settings: ConvertSettings,
 ):
     log.info(f"••• converting group {path} to HEALPix...")
 
@@ -467,6 +470,7 @@ def _convert_group_to_healpix(
             "zarr_conventions": [DGGSZarrConvention().model_dump()],
             "dggs": healpix.model_dump(),
         },
+        overwrite=True,
     )
 
     # create Zarr arrays in the group (values filled chunk by chunk right after)
@@ -515,16 +519,40 @@ def _convert_group_to_healpix(
                 chunks=var.chunks,
                 dimension_names=var.dims,
             )
+    try:
+        client = distributed.Client.current()
+    except ValueError:
+        client = None
 
-    _convert_one_chunk(
-        0,
-        chunk_info,
-        spatial_info,
-        group_spatial_info,
-        group_settings,
-        group_datasets,
-        zarrays,
-    )
+    chunk_index_range = range(data.output_chunks.cell_ids.size)
+
+    if client is not None:
+        log.info("converting chunks in parallel using Dask/Distributed")
+        # use a wrapper func as passing _convert_one_chunk kwargs to client.map doesn't work
+        # (dask/distributed does not like pickling `group_datasets`)
+        func = lambda idx: _convert_one_chunk(
+            idx,
+            chunk_info=chunk_info,
+            spatial_info=spatial_info,
+            group_spatial_info=group_spatial_info,
+            group_settings=group_settings,
+            datasets=group_datasets,
+            zarrays=zarrays,
+        )
+        futures = client.map(func, list(chunk_index_range))
+        client.gather(futures)
+    else:
+        log.warning("converting chunks serially (it may take a while)")
+        for chunk_index in chunk_index_range:
+            _convert_one_chunk(
+                chunk_index,
+                chunk_info=chunk_info,
+                spatial_info=spatial_info,
+                group_spatial_info=group_spatial_info,
+                group_settings=group_settings,
+                datasets=group_datasets,
+                zarrays=zarrays,
+            )
 
 
 _RESAMPLER_NAME_CLS: dict[str, type] = {
@@ -632,6 +660,7 @@ def _query_chunk_input_points_projected(
 
 def _convert_one_chunk(
     chunk_index: int,
+    *,
     chunk_info: OutputChunkInfo,
     spatial_info: InputSpatialInfo,
     group_spatial_info: InputGroupSpatialInfo,
@@ -670,7 +699,6 @@ def _convert_one_chunk(
     resampler_params = group_settings.resampler.model_dump()
     resampler_name = resampler_params.pop("name")
     resampler_cls = _RESAMPLER_NAME_CLS[resampler_name]
-
     # TODO: pass array dtype to resampler
     # in case all arrays to resample have the same dtype
     resampler = resampler_cls(
@@ -847,6 +875,10 @@ def create_healpix_dataset(
 
         if path in data.output_groups.excluded_groups:
             continue
+        if path in data.input_spatial_groups:
+            _convert_group_to_healpix(path, data, settings)
+        # TODO: multiscales group (write metadata)
+        # TODO: group has data (write a copy in output)
         if str(path) == ".":
             # root path (skip it here if attributes are written above)
             continue
