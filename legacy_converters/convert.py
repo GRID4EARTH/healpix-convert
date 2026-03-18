@@ -875,10 +875,6 @@ def create_healpix_dataset(
 
         if path in data.output_groups.excluded_groups:
             continue
-        if path in data.input_spatial_groups:
-            _convert_group_to_healpix(path, data, settings)
-        # TODO: multiscales group (write metadata)
-        # TODO: group has data (write a copy in output)
         if str(path) == ".":
             # root path (skip it here if attributes are written above)
             continue
