@@ -674,7 +674,9 @@ def _convert_one_chunk(
         group_settings.healpix.refinement_level,
     )[0]
 
-    chunk_slice = slice(chunk_index, chunk_index + cell_ids.size - 1)
+    start = chunk_index * cell_ids.size
+    stop = start + cell_ids.size
+    chunk_slice = slice(start, stop)
     zarrays[group_settings.healpix.coordinate][chunk_slice] = cell_ids
 
     if group_spatial_info.is_projected:
