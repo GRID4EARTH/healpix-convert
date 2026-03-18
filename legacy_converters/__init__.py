@@ -6,8 +6,8 @@ from legacy_converters.accessor import (  # noqa: F401
     DataTreeConverterAccessor,
 )
 from legacy_converters.convert import create_healpix_dataset
-from legacy_converters.settings.common import get_settings
+from legacy_converters.settings.common import ConvertSettings, get_settings
 
-__all__ = ["create_healpix_dataset", "get_settings"]
+__all__ = ["ConvertSettings", "create_healpix_dataset", "get_settings"]
 
 __version__ = importlib.metadata.version("legacy-converters")

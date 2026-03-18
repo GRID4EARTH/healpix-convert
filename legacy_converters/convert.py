@@ -653,15 +653,6 @@ def _query_chunk_input_points_projected(
         return None
 
     ds_input_points = xr.concat(prepared_datasets, dim="points")
-
-    # TODO: assert (optional) that all points are within the cell-buffered polygon
-    # FIXME: results are bad here
-    lon = ds_input_points.lon.values
-    lat = ds_input_points.lat.values
-    spoints = shapely.points(lat, lon)
-    points_in_chunk_cell = np.count_nonzero(shapely.within(spoints, chunk_poly_latlon))
-    log.info(f"{spoints.size} input points / {points_in_chunk_cell.size} in chunk cell")
-
     return ds_input_points
 
 
