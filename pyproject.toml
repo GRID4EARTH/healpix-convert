@@ -25,6 +25,7 @@ dependencies = [
   "pydantic>=2.12.5",
   "structlog>=25.5.0",
   "rasterix>=0.1",
+  "s3fs>=2026.1.0",
 ]
 dynamic = ["version"]
 

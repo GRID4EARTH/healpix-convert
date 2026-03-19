@@ -30,6 +30,7 @@ xbatcher = ">=0.4.0"
 numpy_groupies = ">=0.11.3,<0.12"
 pydantic = ">=2.12.5,<3"
 structlog = ">=25.5.0,<26"
+s3fs = ">=2026.1.0,<2027"
 
 [target.linux-64.dependencies]
 pytorch-gpu = ">=2.9.1,<3"
