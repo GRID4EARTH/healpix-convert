@@ -707,7 +707,9 @@ def _convert_one_chunk(
     # For the "nearest" resample method: give output cell ids the resampler (forcing)
     # For the other methods: best to let the resampler algorithm do the lookup
     if resampler_settings.name == "nearest":
-        out_cell_ids = cell_ids
+        # FIXME: force out cell ids when bug in healpix-resample (high-memory usage) is fixed
+        # out_cell_ids = cell_ids
+        out_cell_ids = None
     else:
         out_cell_ids = None
 
@@ -718,6 +720,7 @@ def _convert_one_chunk(
         lon_deg=ds_input_points.lon.values,
         lat_deg=ds_input_points.lat.values,
         level=group_settings.healpix.refinement_level,
+        verbose=False,
         out_cell_ids=out_cell_ids,
         nest=group_settings.healpix.indexing_scheme == "nested",
         ellipsoid=group_settings.healpix.ellipsoid.name.upper(),
