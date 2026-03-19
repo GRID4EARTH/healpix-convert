@@ -34,22 +34,50 @@ log = structlog.get_logger()
 
 
 class BaseResamplerSettings(BaseModel):
+    """Base class settings for healpix-resample."""
 
-    model_config = ConfigDict(frozen=True, use_attribute_docstrings=True, extra="allow")
+    model_config = ConfigDict(frozen=True, use_attribute_docstrings=True)
 
-    @model_validator(mode="before")
-    @classmethod
-    def raise_warning_extra_fields(cls, values: dict[str, Any]) -> dict[str, Any]:
-        extra_fields = set(values) - set(cls.model_fields)
-        if extra_fields:
-            log.warning(
-                f"The following user settings {extra_fields!r} are given to {cls.__name__}. "
-                "this is temporarily allowed (early development stage) but will be ignored "
-                "or forbidden in the future as a list of valid setting fields are added here "
-                "for each resampler."
-            )
+    init_params: dict[str, Any] = Field(default_factory=dict)
+    """Parameters passed to the resampler constructor."""
 
-        return values
+    resample_params: dict[str, dict[str, Any] | Any] = Field(default_factory=dict)
+    """Parameters passed to the resampler's `resample()` method.
+
+    Parameter values may be given either like:
+    - a common value used for all arrays (data variables) in the group
+    - a value for each array in the group (dictionary where keys are
+      variable names)
+
+    """
+
+
+def broadcast_params(
+    params: dict[str, dict[str, Any] | Any],
+    var_names: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Broadcast `params` values for all variables given by `var_names`.
+
+    Returns a dictionary where keys are variable names and values are
+    dictionaries of parameter values.
+    """
+
+    broadcasted: dict[str, dict[str, Any]] = {vname: {} for vname in var_names}
+
+    for pname, pval in params.items():
+        if isinstance(pval, dict):
+            missing_vars = set(var_names) - set(pval)
+            if missing_vars:
+                raise ValueError(
+                    f"missing parameter values for variables {missing_vars}"
+                )
+            for vname, vval in pval.items():
+                broadcasted[vname][pname] = vval
+        else:
+            for vname in var_names:
+                broadcasted[vname][pname] = pval
+
+    return dict(broadcasted)
 
 
 class KNearestNeighborsResamplerSettings(BaseResamplerSettings):
