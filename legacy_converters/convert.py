@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePath
-from typing import cast
+from typing import Any, cast
 
 import affine
 import distributed
@@ -160,6 +160,9 @@ class OutputGroupInfo:
 
     root_path: PurePath = field(default_factory=PurePath)
     """Path to the output Zarr dataset (root group)."""
+
+    storage_options: dict[str, Any] | None = None
+    """Storage options passed to Zarr."""
 
     multiscale_groups: dict[PurePath, HealpixMultiscales] = field(default_factory=dict)
     """Multiscales groups (including metadata)."""
@@ -328,6 +331,7 @@ def _set_output_groups(
     input_spatial_groups: dict[PurePath, InputGroupSpatialInfo],
     settings: ConvertSettings,
     output_path: str,
+    storage_options: dict[str, Any] | None,
 ) -> OutputGroupInfo:
     multiscale_groups: dict[PurePath, HealpixMultiscales] = {}
     excluded_groups: list[PurePath] = []
@@ -380,6 +384,7 @@ def _set_output_groups(
         multiscale_groups=multiscale_groups,
         excluded_groups=excluded_groups,
         io_path_map=io_path_map,
+        storage_options=storage_options,
     )
 
 
@@ -479,6 +484,7 @@ def _convert_group_to_healpix(
             "dggs": healpix.model_dump(),
         },
         overwrite=True,
+        storage_options=data.output_groups.storage_options,
     )
 
     # create Zarr arrays in the group (values filled chunk by chunk right after)
@@ -492,6 +498,7 @@ def _convert_group_to_healpix(
         dtype=chunk_info.cell_ids.dtype,
         chunks=(chunk_size,),
         dimension_names=(cell_dim,),
+        storage_options=data.output_groups.storage_options,
     )
 
     for name, var in group_datasets[0].coords.items():
@@ -502,6 +509,7 @@ def _convert_group_to_healpix(
                 data=var.values(),
                 chunks=var.chunks,
                 dimension_names=var.dims,
+                storage_options=data.output_groups.storage_options,
             )
     for name, var in group_datasets[0].data_vars.items():
         if name in group_spatial_info.spatial_arrays:
@@ -517,6 +525,7 @@ def _convert_group_to_healpix(
                 dtype=dtype,
                 chunks=(chunk_size,),
                 dimension_names=(cell_dim,),
+                storage_options=data.output_groups.storage_options,
             )
         else:
             # write array unchanged in output group
@@ -526,6 +535,7 @@ def _convert_group_to_healpix(
                 data=var.values(),
                 chunks=var.chunks,
                 dimension_names=var.dims,
+                storage_options=data.output_groups.storage_options,
             )
     try:
         client = distributed.Client.current()
@@ -771,6 +781,7 @@ def create_healpix_dataset(
     *,
     groups: str | Sequence[str] | None = None,
     output_extent: dict | shapely.Polygon | None = None,
+    output_storage_options: dict[str, Any] | None = None,
 ) -> xr.DataTree:
     """Create a new Zarr dataset with data resampled on the HEALPix grid.
 
@@ -792,6 +803,9 @@ def create_healpix_dataset(
         (GEOJSON-like or object) polygon with lat-lon coordinates.
         If not given (default), the spatial extent will be the union
         of the spatial extents of the input datasets (single polygon).
+    output_storage_options : dict, optional
+        Storage options passed to Zarr for the dataset creation
+        (useful for, e.g., writing on S3 object store).
 
     Returns
     -------
@@ -867,6 +881,7 @@ def create_healpix_dataset(
         data.input_spatial_groups,
         settings,
         output_path,
+        output_storage_options,
     )
 
     log.info(
@@ -916,12 +931,17 @@ def create_healpix_dataset(
                     ],
                     "multiscales": multiscales_obj.model_dump(),
                 },
+                storage_options=data.output_groups.storage_options,
             )
         elif path in data.input_spatial_groups:
             log.info(f"••• writing group '{group_path_rel}' to zarr")
             _convert_group_to_healpix(path, data, settings)
         elif not data.input_datatrees[0][str(path)].has_data:
-            zarr.create_group(str(root_path), path=group_path_rel)
+            zarr.create_group(
+                str(root_path),
+                path=group_path_rel,
+                storage_options=data.output_groups.storage_options,
+            )
         else:
             # non-spatial group (skip for now)
             log.warning(
