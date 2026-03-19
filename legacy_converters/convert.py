@@ -27,6 +27,7 @@ from legacy_converters.settings.common import (
     ConvertSettings,
     HealpixGroupSettings,
     MultiscalesGroupSettings,
+    broadcast_params,
 )
 
 log = structlog.get_logger()
@@ -666,7 +667,12 @@ def _convert_one_chunk(
     datasets: list[xr.Dataset],
     zarrays: dict[str, zarr.Array],
 ):
+    n_chunks = chunk_info.cell_ids.size
     chunk_cell_id = chunk_info.cell_ids[chunk_index]
+
+    log.debug(
+        f"processing chunk {chunk_index + 1}/{n_chunks} (cell id {chunk_cell_id})"
+    )
 
     cell_ids = healpix_geo.nested.zoom_to(
         chunk_cell_id,
@@ -696,25 +702,38 @@ def _convert_one_chunk(
     if ds_input_points is None:
         return
 
-    resampler_params = group_settings.resampler.model_dump()
-    resampler_name = resampler_params.pop("name")
-    resampler_cls = _RESAMPLER_NAME_CLS[resampler_name]
+    resampler_settings = group_settings.resampler
+
+    # For the "nearest" resample method: give output cell ids the resampler (forcing)
+    # For the other methods: best to let the resampler algorithm do the lookup
+    if resampler_settings.name == "nearest":
+        out_cell_ids = cell_ids
+    else:
+        out_cell_ids = None
+
+    resampler_cls = _RESAMPLER_NAME_CLS[resampler_settings.name]
     # TODO: pass array dtype to resampler
     # in case all arrays to resample have the same dtype
     resampler = resampler_cls(
         lon_deg=ds_input_points.lon.values,
         lat_deg=ds_input_points.lat.values,
         level=group_settings.healpix.refinement_level,
-        # out_cell_ids=cell_ids,
+        out_cell_ids=out_cell_ids,
         nest=group_settings.healpix.indexing_scheme == "nested",
         ellipsoid=group_settings.healpix.ellipsoid.name.upper(),
-        **resampler_params,
+        **dict(resampler_settings.init_params),
     )
 
     # resample arrays (data variables)
-    for name, var in ds_input_points.data_vars.items():
-        if name not in group_spatial_info.spatial_arrays:
-            continue
+    var_names = [
+        str(name)
+        for name in ds_input_points.data_vars
+        if name in group_spatial_info.spatial_arrays
+    ]
+    resample_params = broadcast_params(resampler_settings.resample_params, var_names)
+
+    for name in var_names:
+        var = ds_input_points[name]
 
         # initialize cell data to nodata (TODO: get the right fill_value and dtype)
         # index/fill the array below with data values returned by the resampler
@@ -729,7 +748,7 @@ def _convert_one_chunk(
         if add_offset is not None:
             data += add_offset
 
-        res = resampler.resample(data)
+        res = resampler.resample(data, **resample_params[name])
 
         zarray = zarrays[str(name)]
 
