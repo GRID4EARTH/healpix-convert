@@ -158,7 +158,7 @@ class OutputChunkInfo:
 class OutputGroupInfo:
     """Information about groups in the output Zarr dataset."""
 
-    root_path: PurePath = field(default_factory=PurePath)
+    root_path: str | PurePath = field(default_factory=str)
     """Path to the output Zarr dataset (root group)."""
 
     storage_options: dict[str, Any] | None = None
@@ -380,7 +380,8 @@ def _set_output_groups(
             )
 
     return OutputGroupInfo(
-        root_path=PurePath(output_path),
+#        root_path=PurePath(output_path),
+        root_path=output_path,
         multiscale_groups=multiscale_groups,
         excluded_groups=excluded_groups,
         io_path_map=io_path_map,
@@ -498,7 +499,6 @@ def _convert_group_to_healpix(
         dtype=chunk_info.cell_ids.dtype,
         chunks=(chunk_size,),
         dimension_names=(cell_dim,),
-        storage_options=data.output_groups.storage_options,
     )
 
     for name, var in group_datasets[0].coords.items():
@@ -509,7 +509,6 @@ def _convert_group_to_healpix(
                 data=var.values(),
                 chunks=var.chunks,
                 dimension_names=var.dims,
-                storage_options=data.output_groups.storage_options,
             )
     for name, var in group_datasets[0].data_vars.items():
         if name in group_spatial_info.spatial_arrays:
@@ -525,7 +524,6 @@ def _convert_group_to_healpix(
                 dtype=dtype,
                 chunks=(chunk_size,),
                 dimension_names=(cell_dim,),
-                storage_options=data.output_groups.storage_options,
             )
         else:
             # write array unchanged in output group
@@ -535,7 +533,6 @@ def _convert_group_to_healpix(
                 data=var.values(),
                 chunks=var.chunks,
                 dimension_names=var.dims,
-                storage_options=data.output_groups.storage_options,
             )
     try:
         client = distributed.Client.current()
@@ -678,12 +675,14 @@ def _convert_one_chunk(
     zarrays: dict[str, zarr.Array],
 ):
     n_chunks = chunk_info.cell_ids.size
+
     chunk_cell_id = chunk_info.cell_ids[chunk_index]
 
     log.debug(
         f"processing chunk {chunk_index + 1}/{n_chunks} (cell id {chunk_cell_id})"
     )
-
+    #if chunk_index != 0:
+    #    return 
     cell_ids = healpix_geo.nested.zoom_to(
         chunk_cell_id,
         chunk_info.healpix.refinement_level,
@@ -718,25 +717,33 @@ def _convert_one_chunk(
     # For the other methods: best to let the resampler algorithm do the lookup
     if resampler_settings.name == "nearest":
         # FIXME: force out cell ids when bug in healpix-resample (high-memory usage) is fixed
-        # out_cell_ids = cell_ids
-        out_cell_ids = None
+        out_cell_ids = cell_ids
+        #print(cell_ids.shape)
+        #out_cell_ids = None
     else:
         out_cell_ids = None
 
     resampler_cls = _RESAMPLER_NAME_CLS[resampler_settings.name]
     # TODO: pass array dtype to resampler
     # in case all arrays to resample have the same dtype
+    print(ds_input_points)
+    print(ds_input_points.lon.values.shape)
+    #ds_input_points.to_zarr('ds_input_points3.zarr',mode='w')
+
+    #np.save('toto.npy', out_cell_ids)
+    #np.save('lon.npy', ds_input_points.lon.values)
+    #np.save('lat.npy', ds_input_points.lat.values)
+    #exit
     resampler = resampler_cls(
         lon_deg=ds_input_points.lon.values,
         lat_deg=ds_input_points.lat.values,
         level=group_settings.healpix.refinement_level,
-        verbose=False,
+        verbose=True,
         out_cell_ids=out_cell_ids,
         nest=group_settings.healpix.indexing_scheme == "nested",
         ellipsoid=group_settings.healpix.ellipsoid.name.upper(),
         **dict(resampler_settings.init_params),
     )
-
     # resample arrays (data variables)
     var_names = [
         str(name)
@@ -900,9 +907,10 @@ def create_healpix_dataset(
     # --- create output Zarr dataset
     # TODO: check for any existing output Zarr dataset
     # TODO: write root metadata (STAC / STAC discovery attributes, etc.)
-    root_path = PurePath(output_path)
+    #root_path = PurePath(output_path)
+    root_path = output_path
     log.info(f"••• creating {root_path} Zarr dataset...")
-    zarr.open_group(str(root_path), mode="w")
+    root_group = zarr.open_group(str(root_path), mode="w", storage_options=output_storage_options)
 
     # --- process groups
     log.info("••• processing groups...")
@@ -951,9 +959,9 @@ def create_healpix_dataset(
 
     # --- consolidate Zarr metadata
     log.info("••• consolidating output Zarr metadata...")
-    zarr.consolidate_metadata(str(root_path))
+    zarr.consolidate_metadata(root_group.store)
     # TODO: consolidate metadata for each group/node
 
     log.info("••• done!")
 
-    return xr.open_datatree(str(root_path))
+    return xr.open_datatree(str(root_path), storage_options=output_storage_options)
