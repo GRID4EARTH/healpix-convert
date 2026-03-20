@@ -638,13 +638,24 @@ def _query_chunk_input_points_projected(
 
         xmin, ymin, xmax, ymax = shapely.bounds(poly)
 
-        # TODO: slice bounds vs. north/south hemisphere?
-        ds_cropped = ds.sel(x=slice(xmin, xmax), y=slice(ymax, ymin))
-        ds_with_latlon = ds_cropped.grid4earth.convert_to(4326).stack(
-            points=list(group_spatial_info.spatial_dimensions), create_index=False
+        ds_clipped = (
+            ds
+            # TODO: check slice bounds for north vs. south hemisphere?
+            .sel(x=slice(xmin, xmax), y=slice(ymax, ymin))
+            .grid4earth.convert_to(4326)
+            .stack(
+                points=list(group_spatial_info.spatial_dimensions), create_index=False
+            )
         )
 
-        prepared_datasets.append(ds_with_latlon)
+        x = ds_clipped.x.values
+        y = ds_clipped.y.values
+        points = shapely.points(x, y)
+        in_poly = shapely.within(points, poly)
+
+        ds_clipped = ds_clipped.isel(points=in_poly)
+
+        prepared_datasets.append(ds_clipped)
 
     if not len(prepared_datasets):
         # No input data found for the current chunk
