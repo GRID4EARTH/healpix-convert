@@ -21,7 +21,7 @@ def open_datatrees(paths: list[str]) -> list[xr.DataTree]:
             path,
             engine="zarr",
             chunks={},
-            decode_cf=False,
+            decode_cf=True,
             decode_times=False,
             decode_timedelta=False,
             create_default_indexes=False,

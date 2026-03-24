@@ -751,13 +751,6 @@ def _convert_one_chunk(
 
         data = var.values.astype("f")
 
-        scale_factor = var.attrs.get("scale_factor")
-        add_offset = var.attrs.get("add_offset")
-        if scale_factor is not None:
-            data *= scale_factor
-        if add_offset is not None:
-            data += add_offset
-
         res = resampler.resample(data, **resample_params[name])
 
         zarray = zarrays[str(name)]
