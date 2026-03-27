@@ -14,6 +14,7 @@ from pydantic import (
     Discriminator,
     Field,
     Tag,
+    ValidationError,
     computed_field,
     field_serializer,
     model_validator,
@@ -324,6 +325,24 @@ class ConvertSettings(BaseModel):
 
         return self
 
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> ConvertSettings:
+        """Create a new settings object from a dictionary."""
+        return cls.model_validate(value)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return settings as a Python dictionary."""
+        return self.model_dump()
+
+    @classmethod
+    def from_json(cls, value: str) -> ConvertSettings:
+        """Create a new settings object from a JSON-formatted string."""
+        return cls.model_validate_json(value)
+
+    def to_json(self) -> str:
+        """Return settings as a JSON-formatted string."""
+        return self.model_dump_json()
+
 
 def get_settings(name: str) -> ConvertSettings:
     """Get default conversion settings.
@@ -352,3 +371,17 @@ def get_settings(name: str) -> ConvertSettings:
 
     else:
         raise ValueError(f"settings not found for {name!r}")
+
+
+def validate_convert_settings(settings: dict | ConvertSettings) -> ConvertSettings:
+    if not isinstance(settings, ConvertSettings):
+        try:
+            settings = ConvertSettings.model_validate(settings)
+        except ValidationError as err:
+            log.error(
+                "error while validating conversion settings:\n"
+                + "\n".join(e["msg"] for e in err.errors())
+            )
+            raise
+
+    return settings

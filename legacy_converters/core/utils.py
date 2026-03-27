@@ -74,7 +74,7 @@ def extract_spatial_info_stac(ds: xr.Dataset) -> dict | None:
         "spatial_coordinates": ["x", "y"],
         "spatial_attrs": [],
         "spatial_arrays": spatial_arrays,
-        "spatial_var_attrs": [a.startswith("proj:") for a in var0.attrs],
+        "spatial_var_attrs": [name for name in var0.attrs if name.startswith("proj:")],
     }
 
 
@@ -104,7 +104,7 @@ def extract_spatial_info_cf(ds: xr.Dataset) -> dict | None:
 
         return {
             # TODO: EPSG generic spherical model? Or allow something other?
-            "crs": [pyproj.CRS.from_epsg(6404)],
+            "crs": [pyproj.CRS.from_epsg(4326)],
             "transform": None,
             "spatial_dimensions": {dim: ds.sizes[dim] for dim in latlon_dims},
             "spatial_coordinates": list(latlon_coords),
