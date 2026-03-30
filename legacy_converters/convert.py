@@ -31,11 +31,11 @@ log = structlog.get_logger()
 def _convert_group_to_healpix(
     converter: HealpixGroupConverter, *, chunk_indices: Sequence[int] | None = None
 ):
-    log.info(f"••• converting group {converter.output_path} to HEALPix...")
-
     # TODO: remove
     if not converter.spatial_info.is_projected:
         return
+
+    log.info(f"••• converting group {converter.output_path} to HEALPix...")
 
     log.info(
         f"resampling data on HEALPix using {converter.settings.resampler.name} method"
