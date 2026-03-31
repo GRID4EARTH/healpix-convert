@@ -8,7 +8,6 @@ from pathlib import PurePath
 from typing import Annotated, Any
 
 import affine
-import numpy as np
 import pyproj
 import shapely
 import xarray as xr
@@ -22,7 +21,6 @@ from pydantic import (
     field_validator,
 )
 
-from legacy_converters.core.healpix_conventions import Healpix
 from legacy_converters.core.multiscales_conventions import HealpixMultiscales
 from legacy_converters.core.utils import open_datatrees
 
@@ -199,31 +197,6 @@ class OutputSpatialInfo(BaseModel):
         return shapely.bounds(self.geometry_latlon)
 
 
-class OutputChunkInfo(BaseModel):
-    """Chunk (meta)data of the output HEALPix Zarr dataset."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    healpix: Healpix = Field(default_factory=lambda: Healpix(refinement_level=10))
-
-    cell_ids: Annotated[
-        np.ndarray,
-        BeforeValidator(lambda v: np.array(v, dtype=np.int64)),
-        PlainSerializer(lambda v: v.tolist()),
-    ] = Field(default_factory=lambda: np.array([], dtype=np.int64))
-    """HEALPix cell ids (nested) of chunks in the output Zarr dataset."""
-
-    is_full: Annotated[
-        np.ndarray,
-        BeforeValidator(lambda v: np.array(v, dtype=np.bool)),
-        PlainSerializer(lambda v: v.tolist()),
-    ] = Field(default_factory=lambda: np.array([], dtype=np.bool))
-    """Boolean mask for output chunks.
-
-    (if True, a chunk has all its elements filled by data values).
-    """
-
-
 class OutputGroupInfo(BaseModel):
     """Information about groups in the output Zarr dataset."""
 
@@ -255,9 +228,6 @@ class ConvertStagingCache(BaseModel):
 
     output_spatial: OutputSpatialInfo = Field(default_factory=OutputSpatialInfo)
     """Spatial information of the output HEALPix Zarr datasets."""
-
-    output_chunks: OutputChunkInfo = Field(default_factory=OutputChunkInfo)
-    """Chunk (meta)data of the output HEALPix Zarr dataset."""
 
     output_groups: OutputGroupInfo = Field(default_factory=OutputGroupInfo)
     """Information about groups in the output Zarr dataset."""

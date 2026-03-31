@@ -19,11 +19,12 @@ from legacy_converters.core.conversion_models import (
     ConvertStagingCache,
     InputGroupSpatialInfo,
     InputSpatialInfo,
-    OutputChunkInfo,
+    OutputSpatialInfo,
 )
 from legacy_converters.core.healpix_conventions import DGGSZarrConvention, Healpix
 from legacy_converters.settings.common import (
     ConvertSettings,
+    HealpixDenseChunkSettings,
     HealpixGroupSettings,
     broadcast_params,
 )
@@ -44,12 +45,12 @@ class HealpixGroupConverter(ABC):
 
     root_spatial_info: InputSpatialInfo
     spatial_info: InputGroupSpatialInfo
-    chunk_info: OutputChunkInfo
     settings: HealpixGroupSettings
     healpix: Healpix
     datasets: list[xr.Dataset]
     output_store: zarr.StoreLike
     output_path: PurePath
+    output_spatial: OutputSpatialInfo
     output_group: zarr.Group
     output_arrays: dict[str, zarr.Array]
 
@@ -64,7 +65,6 @@ class HealpixGroupConverter(ABC):
     ):
         self.root_spatial_info = cache.input_spatial
         self.spatial_info = cache.input_spatial_groups[path]
-        self.chunk_info = cache.output_chunks
 
         group_settings = settings.group_settings[path]
         assert isinstance(group_settings, HealpixGroupSettings)
@@ -99,6 +99,7 @@ class HealpixGroupConverter(ABC):
 
         self.output_store = output_store
         self.output_path = cache.output_groups.io_path_map[path]
+        self.output_spatial = cache.output_spatial
         self.output_group = zarr.open_group(
             self.output_store,
             path=str(self.output_path),
@@ -252,22 +253,47 @@ class DenseChunkConverter(HealpixGroupConverter):
 
     """
 
+    chunk_healpix: Healpix
+    chunk_cell_ids: np.ndarray
+    chunk_buffer_width: float
+
     def __post_init__(self):
-        assert self.settings.chunk.method == "healpix_cell"
+        assert isinstance(self.settings.chunk, HealpixDenseChunkSettings)
+        self.chunk_healpix = self.settings.chunk.healpix
+
         assert self.healpix.indexing_scheme == "nested"
-        assert self.chunk_info.healpix.indexing_scheme == "nested"
+        assert self.chunk_healpix.indexing_scheme == "nested"
 
         level = self.healpix.refinement_level
-        chunk_level = self.chunk_info.healpix.refinement_level
+        chunk_level = self.chunk_healpix.refinement_level
         assert level is not None and chunk_level is not None
         self._chunk_size: int = 4 ** (level - chunk_level)
 
-        # TODO: make it configurable
-        self.poly_buffer: float = 60
+        self.chunk_cell_ids = self._compute_chunk_cell_ids()
+
+        cell_dim = self.healpix.spatial_dimension
+        log.info(
+            f"fixed chunk size along the {cell_dim!r} dimension: {self.cell_dim_chunk_size}:\n"
+            f"  - each chunk represents a HEALPix cell at level {chunk_level}\n"
+            f"  - total: {self.chunk_cell_ids.size} chunk/cells"
+        )
+
+        self.chunk_buffer_width = self.settings.chunk.chunk_buffer_width
+
+    def _compute_chunk_cell_ids(self) -> np.ndarray:
+        assert self.chunk_healpix.refinement_level is not None
+
+        cell_ids, _ = utils.compute_output_chunk_info(
+            self.output_spatial.geometry_latlon,
+            self.chunk_healpix.refinement_level,
+            self.chunk_healpix.ellipsoid.name,
+        )
+
+        return cell_ids
 
     @property
     def cell_dim_size(self) -> int:
-        return self.chunk_info.cell_ids.size * self._chunk_size
+        return self.chunk_cell_ids.size * self._chunk_size
 
     @property
     def cell_dim_chunk_size(self) -> int:
@@ -294,8 +320,8 @@ class DenseChunkConverter(HealpixGroupConverter):
         # compute chunk cell polygon
         lon, lat = healpix_geo.nested.vertices(
             chunk_cell_id,
-            self.chunk_info.healpix.refinement_level,
-            ellipsoid=self.chunk_info.healpix.ellipsoid.name.upper(),
+            self.chunk_healpix.refinement_level,
+            ellipsoid=self.chunk_healpix.ellipsoid.name.upper(),
         )
         chunk_poly_latlon = shapely.Polygon(list(zip(lon[0], lat[0])))
 
@@ -303,10 +329,11 @@ class DenseChunkConverter(HealpixGroupConverter):
             chunk_poly_latlon, pyproj.CRS.from_epsg(4326), self.spatial_info.crs
         )
 
-        # Add buffer around polygon
-        # TODO: Buffer may not be needed depending on resampler?
-        #  - for nearest or groupby, healpix-resample looks within cell only.
-        chunk_polys = [shapely.buffer(poly, self.poly_buffer) for poly in chunk_polys]
+        # Maybe add buffer around polygon
+        if self.chunk_buffer_width > 0.0:
+            chunk_polys = [
+                shapely.buffer(poly, self.chunk_buffer_width) for poly in chunk_polys
+            ]
 
         # compute intersections with input dataset spatial extents
         input_extents = self.root_spatial_info.get_extents()[0]
@@ -370,9 +397,9 @@ class DenseChunkConverter(HealpixGroupConverter):
         # this class supports chunked conversion only
         assert chunk_index is not None
 
-        n_chunks = self.chunk_info.cell_ids.size
+        n_chunks = self.chunk_cell_ids.size
 
-        chunk_cell_id = self.chunk_info.cell_ids[chunk_index]
+        chunk_cell_id = self.chunk_cell_ids[chunk_index]
 
         log.debug(
             f"processing chunk {chunk_index + 1}/{n_chunks} (cell id {chunk_cell_id})"
@@ -380,7 +407,7 @@ class DenseChunkConverter(HealpixGroupConverter):
 
         cell_ids = healpix_geo.nested.zoom_to(
             chunk_cell_id,
-            self.chunk_info.healpix.refinement_level,
+            self.chunk_healpix.refinement_level,
             self.healpix.refinement_level,
         )[0]
 
@@ -450,3 +477,30 @@ class DenseChunkConverter(HealpixGroupConverter):
             self.output_arrays[str(name)][chunk_slice] = cell_data.astype(
                 cell_data.dtype
             )
+
+
+_CONVERTER_NAME_CLS: dict[str, type[HealpixGroupConverter]] = {
+    "no_chunk": DenseChunkConverter,  # TODO: change type when implemented
+    "healpix_cell_dense": DenseChunkConverter,
+    "healpix_cell_sparse": DenseChunkConverter,  # TODO: change type when implemented
+}
+
+
+def init_converter(
+    path: PurePath,
+    *,
+    cache: ConvertStagingCache,
+    settings: ConvertSettings,
+    output_store: str | zarr.StoreLike,
+    output_storage_options: dict[str, Any] | None = None,
+) -> HealpixGroupConverter:
+    group_settings = settings.group_settings[path]
+    cls = _CONVERTER_NAME_CLS[group_settings.chunk.method]
+
+    return cls(
+        path,
+        cache=cache,
+        settings=settings,
+        output_store=output_store,
+        output_storage_options=output_storage_options,
+    )

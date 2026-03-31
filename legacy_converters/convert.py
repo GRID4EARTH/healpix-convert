@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from pathlib import PurePath
 from typing import Any
@@ -17,8 +18,8 @@ from legacy_converters.core.conversion_models import ConvertStagingCache
 from legacy_converters.core.healpix_conventions import DGGSZarrConvention
 from legacy_converters.core.multiscales_conventions import MultiscalesZarrConvention
 from legacy_converters.healpix_converters import (
-    DenseChunkConverter,
     HealpixGroupConverter,
+    init_converter,
 )
 from legacy_converters.settings.common import (
     ConvertSettings,
@@ -41,22 +42,13 @@ def _convert_group_to_healpix(
         f"resampling data on HEALPix using {converter.settings.resampler.name} method"
     )
     log.info(f"chunking output data using {converter.settings.chunk.method!r} method")
-    if converter.settings.chunk.is_fixed_size:
-        cell_dim = converter.healpix.spatial_dimension
-        log.info(
-            f"fixed chunk size along the {cell_dim!r} dimension: {converter.cell_dim_chunk_size}"
-        )
-        log.info(
-            "each chunk represents an HEALPix cell at level "
-            + str(converter.chunk_info.healpix.refinement_level)
-        )
 
     try:
         client = distributed.Client.current()
     except ValueError:
         client = None
 
-    n_chunks = converter.chunk_info.cell_ids.size
+    n_chunks = int(math.ceil(converter.cell_dim_size / converter.cell_dim_chunk_size))
 
     if chunk_indices is None:
         chunk_indices = list(range(n_chunks))
@@ -141,7 +133,7 @@ def _create_and_process_output(
             )
         elif path in cache.input_spatial_groups:
             log.info(f"••• writing group '{group_path_rel}' to zarr")
-            converter = DenseChunkConverter(
+            converter = init_converter(
                 path, cache=cache, settings=settings, output_store=output_store
             )
             if convert_data:
@@ -288,7 +280,7 @@ def convert_group_to_healpix(
     )
     output_store = root_group.store
 
-    converter = DenseChunkConverter(
+    converter = init_converter(
         group_path, cache=cache, settings=settings, output_store=output_store
     )
     _convert_group_to_healpix(converter, chunk_indices=chunk_indices)
