@@ -4,6 +4,8 @@ Pydantic model classes for conversion settings.
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import PurePath
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -11,11 +13,8 @@ import structlog
 from pydantic import (
     BaseModel,
     ConfigDict,
-    Discriminator,
     Field,
-    Tag,
     ValidationError,
-    computed_field,
     field_serializer,
     model_validator,
 )
@@ -122,52 +121,130 @@ ResamplerSettings: TypeAlias = (
 )
 
 
-class HealpixChunkSettings(BaseModel):
-    """Settings for chunking output data along the HEALPix cell dimension.
+class BaseChunkSettings(ABC, BaseModel):
+    """Base abstract class for chunking strategy and settings."""
 
-    These settings are defined for each input Zarr group to convert to HEALPix.
-
-    """
-
-    model_config = ConfigDict(frozen=True, use_attribute_docstrings=True)
-
-    method: Literal["healpix_cell", "user_defined", "no_chunk"] = "healpix_cell"
-    """Chunking method.
-
-    - "healpix_cell" (default): chunks are defined as HEALPix cells on a low
-      (coarse) refinement level. The healpix grid settings for chunks are
-      defined in the global conversion settings under the "healpix_chunks" field
-      (see :py:class:`ConvertSettings`). The same chunk cells are thus used for
-      all Zarr groups to convert to HEALPix.
-
-    - "user_defined": chunks have a fixed size defined by the "chunk_size"
-      field in these (group) settings.
-
-    - "no_chunk": data on HEALPix doesn't need to be chunked (e.g., groups
-      with small data size).
-
-    """
-
-    # TODO: MISSING may be better than None as default value
-    # but dask (tokenize) doesn't like it
-    chunk_size: int | None = None
-    """User-defined chunk (fixed) size for 'user_defined' method."""
-
-    @computed_field
     @property
+    @abstractmethod
     def is_fixed_size(self) -> bool:
         """Returns True if chunks have a uniform, fixed size."""
-        # TODO: eventually use regular field instead
-        # (when we support a method with variable chunk sizes)
+        ...
+
+    @property
+    @abstractmethod
+    def is_healpix_aligned(self) -> bool:
+        """Returns True if chunk bounds and/or content are aligned with HEALPix cells."""
+        ...
+
+
+class NoChunkSettings(BaseChunkSettings):
+    """Do not chunk output data along the HEALPix cell dimension."""
+
+    method: Literal["no_chunk"] = "no_chunk"
+
+    @property
+    def is_fixed_size(self) -> bool:
+        return True
+
+    @property
+    def is_healpix_aligned(self) -> bool:
+        return False
+
+
+class HealpixUniformChunkSettings(BaseChunkSettings):
+    """Common class for fixed-size chunks aligned with HEALPix at a given refinement level."""
+
+    healpix: Healpix
+    """HEALPix grid settings used to define "chunk" cells."""
+
+    @property
+    def is_fixed_size(self) -> bool:
+        return True
+
+    @property
+    def is_healpix_aligned(self) -> bool:
         return True
 
     @model_validator(mode="after")
-    def validate(self) -> HealpixChunkSettings:
-        # TODO: add test
-        if self.method == "user_defined" and self.chunk_size is None:
-            raise ValueError(f"'chunk_size' must be defined for method {self.method!r}")
+    def validate_healpix_settings(self) -> HealpixUniformChunkSettings:
+        # TODO: add tests
+        if self.healpix.refinement_level is None:
+            raise ValueError("refinement level must be defined for HEALPix chunks.")
+
+        if self.healpix.indexing_scheme != "nested":
+            raise ValueError(
+                "chunk method 'healpix_cell_dense' only supports the 'nested' indexing scheme."
+            )
 
         return self
+
+
+class HealpixDenseChunkSettings(HealpixUniformChunkSettings):
+    """Chunk output data along the HEALPix cell dimension according to
+    HEALPix cells given at a parent, "coarse" refinement level (dense version).
+
+    Each of those "chunk" cells are densely populated with adjacent children
+    HEALPix cells all at the same "fine" refinement level.
+
+    Chunk size is thus fixed and is given by the following formula:
+
+    .. math:: 4^{(\Delta - \delta)}
+
+    where :math:`\Delta` is the parent level (output chunks) and :math:`\delta` is
+    the child level (output data values).
+
+    This chunking strategy works only with the "nested" HEALPIX cell indexing scheme.
+
+    """
+
+    method: Literal["healpix_cell_dense"] = "healpix_cell_dense"
+
+    chunk_buffer_width: float = 60.0
+    """Fixed, uniform width to apply around the edges of a HEALPix coarse
+    "chunk" cell.
+
+    This parameter is used for spatial filtering of input data given in a
+    projected coordinate reference system (CRS), prior to resampling it onto the
+    HEALPix cells within the chunk. The buffer width value should thus be given
+    in the same CRS units (usually in meters) and greater or equal to zero.
+
+    Set the value to zero if no buffer is needed (e.g., some resampling methods
+    do not require it).
+
+    """
+
+
+class HealpixSparseChunkSettings(HealpixUniformChunkSettings):
+    """Chunk output data along the HEALPix cell dimension according to
+    HEALPix cells given at a parent, "coarse" refinement level (sparse version).
+
+    Each of those "chunk" cells are populated with sparsely distributed children
+    HEALPix cells given at a "fine" refinement level.
+
+    Chunk size is user defined. There's no strict constraint on the minimum
+    size, which should be large enough such that a parent "chunk" cell can
+    contain all output data values (children cells). If all children cells are
+    at the same refinement level, the maximum size is given by the following
+    formula:
+
+    .. math:: 4^{(\Delta - \delta)}
+
+    where :math:`\Delta` is the parent level (output chunks) and :math:`\delta` is
+    the child level (output data values).
+
+    This chunking strategy works only with the "nested" HEALPIX cell indexing scheme.
+
+    """
+
+    method: Literal["healpix_cell_sparse"] = "healpix_cell_sparse"
+
+    chunk_size: int
+    """User-defined, uniform chunk size."""
+
+
+ChunkSettings: TypeAlias = (
+    NoChunkSettings | HealpixDenseChunkSettings | HealpixSparseChunkSettings
+)
 
 
 class HealpixGroupSettings(BaseModel):
@@ -178,9 +255,7 @@ class HealpixGroupSettings(BaseModel):
     healpix: Healpix
     """Output HEALPix grid settings."""
 
-    chunk: Annotated[
-        HealpixChunkSettings, Field(default_factory=lambda: HealpixChunkSettings())
-    ]
+    chunk: Annotated[ChunkSettings, Field(discriminator="method")]
     """Settings for chunking data along the HEALPix cell dimension."""
 
     resampler: Annotated[ResamplerSettings, Field(discriminator="name")]
@@ -197,31 +272,42 @@ class HealpixGroupSettings(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def validate_chunk_vs_indexing_scheme(self) -> HealpixGroupSettings:
+    def validate_healpix_chunk_vs_data(self) -> HealpixGroupSettings:
+        # validate healpix settings given for output chunks vs. output resampled data
         # TODO: add test
-        if (
-            self.chunk.method == "healpix_cell"
-            and self.healpix.indexing_scheme != "nested"
-        ):
+        if not self.chunk.is_healpix_aligned:
+            return self
+
+        if self.healpix.indexing_scheme != "nested":
             raise ValueError(
-                "chunk method 'healpix_cell' only supports the 'nested' indexing scheme."
+                f"chunk method {self.chunk.method!r} only supports the 'nested' indexing scheme."
+            )
+
+        chunk_level = self.chunk.healpix.refinement_level
+        level = self.healpix.refinement_level
+
+        if level is not None and level < chunk_level:
+            raise ValueError(
+                f"found output HEALPix refinement level {level} "
+                f"that is lower than the chunk refinement level {chunk_level}."
             )
 
         return self
 
 
-class MultiscalesGroupSettings(BaseModel):
-    """Settings for a multiscale Zarr group."""
+class MultiscaleSettings(BaseModel):
+    """Settings for a multiscale Zarr groups."""
 
     model_config = ConfigDict(frozen=True, use_attribute_docstrings=True)
 
-    multiscales: bool = True
-    """If True, add multiscales metadata to this group.
+    groups: list[PurePath] = Field(default_factory=list)
+    """List of all multiscale groups in input dataset(s).
 
-    The Zarr group must contain children groups with defined
+    Each Zarr group must contain children groups with defined
     HEALPix conversion settings.
 
-    The metadata is compliant with the "multiscales" Zarr convention.
+    The metadata that will be added to the corresponding ouput group
+    is compliant with the "multiscales" Zarr convention.
     """
 
     add_healpix_positioning: bool = True
@@ -229,24 +315,10 @@ class MultiscalesGroupSettings(BaseModel):
     information in each multiscale layout entry.
     """
 
-
-def get_group_settings_tag(v: Any) -> str | None:
-    if isinstance(v, dict):
-        if "multiscales" in v:
-            return "multiscales_group"
-        elif "healpix" in v and "resampler" in v:
-            return "healpix_group"
-        else:
-            return None
-    if isinstance(v, BaseModel):
-        if hasattr(v, "multiscales"):
-            return "multiscales_group"
-        elif hasattr(v, "healpix") and hasattr(v, "resampler"):
-            return "healpix_group"
-        else:
-            return None
-    else:
-        return None
+    @field_serializer("groups")
+    def serialize_groups(self, value):
+        # always convert paths to strings (unix-style)
+        return [v.as_posix() for v in value]
 
 
 class ConvertSettings(BaseModel):
@@ -254,28 +326,42 @@ class ConvertSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True, use_attribute_docstrings=True)
 
-    # TODO: may be optional
-    # not needed if no group in `group_settings` uses the "healpix_cell" method
-    # (note: if using MISSING, beware dask/distributed doesn't like it for tokenize)
-    healpix_chunks: Healpix
-    """Common grid settings for output HEALPix data chunked using the
-    "healpix_cell" method (see :py:class:`HealpixChunkSettings`).
-    """
-
     exclude_groups: list[PurePath] = Field(default_factory=list)
     """Groups to exclude from the conversion (won't be included in output)."""
 
-    group_settings: dict[
-        PurePath,
-        Annotated[
-            (
-                Annotated[MultiscalesGroupSettings, Tag("multiscales_group")]
-                | Annotated[HealpixGroupSettings, Tag("healpix_group")]
-            ),
-            Discriminator(get_group_settings_tag),
-        ],
-    ]
+    multiscale_settings: MultiscaleSettings = Field(default_factory=MultiscaleSettings)
+    """Settings for multiscale Zarr groups."""
+
+    group_settings: dict[PurePath, HealpixGroupSettings]
     """Conversion settings per group in the input Zarr dataset(s)."""
+
+    def filter_and_replace(self, func: Callable[[str, dict], dict]) -> ConvertSettings:
+        """Filter and replace conversion settings by applying a specified
+        function over the settings of each group.
+
+        Parameters
+        ----------
+        func: callable
+            A function which accepts a string (group path) and a dictionary
+            (group settings) as arguments and that returns a dictionary (new
+            group settings).
+
+        Returns
+        -------
+        :py:class:`ConvertSettings`
+            New conversion settings (validated).
+
+        """
+        settings = self.model_dump()
+
+        new_group_settings = {}
+
+        for group_name, group_settings in settings["group_settings"].items():
+            new_group_settings[group_name] = func(group_name, group_settings)
+
+        settings["group_settings"] = new_group_settings
+
+        return ConvertSettings.model_validate(settings)
 
     @field_serializer("exclude_groups")
     def serialize_exclude_groups(self, value):
@@ -286,35 +372,6 @@ class ConvertSettings(BaseModel):
     def serialize_group_settings(self, value):
         # always convert paths to strings (unix-style)
         return {k.as_posix(): v for k, v in value.items()}
-
-    @model_validator(mode="after")
-    def validate_healpix_chunks(self) -> ConvertSettings:
-        if self.healpix_chunks.refinement_level is None:
-            raise ValueError("refinement level must be defined for HEALPix chunks.")
-
-        if self.healpix_chunks.indexing_scheme != "nested":
-            raise ValueError(
-                "only the 'nested' indexing scheme is currently supported for HEALPix chunks"
-            )
-
-        # Ensure that refinement level for one Zarr group is not lower (coarser)
-        # than the refinement level set for Zarr chunks.
-        chunk_level = self.healpix_chunks.refinement_level
-
-        for name, settings in self.group_settings.items():
-            if not isinstance(settings, HealpixGroupSettings):
-                continue
-
-            level = settings.healpix.refinement_level
-            has_chunks = settings.chunk.method != "no_chunk"
-
-            if has_chunks and level is not None and level < chunk_level:
-                raise ValueError(
-                    f"found output HEALPix refinement level {level} set in group {name}, "
-                    f"which is lower than the chunk refinement level {chunk_level}."
-                )
-
-        return self
 
     @model_validator(mode="after")
     def validate_multiscales(self) -> ConvertSettings:

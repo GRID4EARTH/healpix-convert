@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import PurePath
-from typing import cast
 
 import shapely
 import structlog
@@ -15,16 +14,13 @@ from legacy_converters.core.conversion_models import (
     ConvertStagingCache,
     InputGroupSpatialInfo,
     InputSpatialInfo,
-    OutputChunkInfo,
     OutputGroupInfo,
     OutputSpatialInfo,
 )
-from legacy_converters.core.healpix_conventions import Healpix
 from legacy_converters.core.multiscales_conventions import HealpixMultiscales
 from legacy_converters.settings.common import (
     ConvertSettings,
     HealpixGroupSettings,
-    MultiscalesGroupSettings,
     validate_convert_settings,
 )
 
@@ -153,6 +149,8 @@ def _set_output_groups(
     excluded_groups: list[PurePath] = []
     io_path_map: dict[PurePath, PurePath] = {}
 
+    multiscales_settings = settings.multiscale_settings
+
     for path, dts in xr.group_subtrees(*datatrees):
         path = PurePath(path)
 
@@ -163,37 +161,35 @@ def _set_output_groups(
         if path not in io_path_map:
             io_path_map[path] = path
 
-        multiscales_settings = settings.group_settings.get(path)
-
-        if not isinstance(multiscales_settings, MultiscalesGroupSettings):
-            continue
-
         # datatrees isomorphism has been checked before
         dt0 = dts[0]
-        layouts: list[dict] = []
 
-        for child_dt in dt0.children.values():
-            child_path = PurePath(child_dt.path.lstrip("/"))
-            child_settings = settings.group_settings.get(child_path)
+        # configure multiscales
+        if path in multiscales_settings.groups:
+            layouts: list[dict] = []
 
-            if isinstance(child_settings, HealpixGroupSettings):
-                group_output_path = child_path.parent / str(
-                    child_settings.healpix.refinement_level
+            for child_dt in dt0.children.values():
+                child_path = PurePath(child_dt.path.lstrip("/"))
+                child_settings = settings.group_settings.get(child_path)
+
+                if isinstance(child_settings, HealpixGroupSettings):
+                    group_output_path = child_path.parent / str(
+                        child_settings.healpix.refinement_level
+                    )
+                    io_path_map[child_path] = group_output_path
+                    layout = {"asset": group_output_path}
+                    if multiscales_settings.add_healpix_positioning:
+                        layout["dggs"] = child_settings.healpix
+                    layouts.append(layout)
+
+            if layouts:
+                multiscale_groups[path] = HealpixMultiscales.model_validate(
+                    {"layout": layouts}
                 )
-                io_path_map[child_path] = group_output_path
-                layout = {"asset": group_output_path}
-                if multiscales_settings.add_healpix_positioning:
-                    layout["dggs"] = child_settings.healpix
-                layouts.append(layout)
-
-        if layouts:
-            multiscale_groups[path] = HealpixMultiscales.model_validate(
-                {"layout": layouts}
-            )
-        else:
-            raise ValueError(
-                f"multiscale group {path} has no child group to convert to HEALPix"
-            )
+            else:
+                raise ValueError(
+                    f"multiscale group {path} has no child group to convert to HEALPix"
+                )
 
     return OutputGroupInfo(
         multiscale_groups=multiscale_groups,
@@ -217,21 +213,6 @@ def _set_output_spatial_info(
             raise ValueError("output extent must represent a single polygon.")
 
     return OutputSpatialInfo(geometry_latlon=geometry)
-
-
-def _set_output_chunks(
-    output_spatial: OutputSpatialInfo,
-    healpix_chunks: Healpix,
-) -> OutputChunkInfo:
-    chunk_cell_ids, chunk_is_full = utils.compute_output_chunk_info(
-        output_spatial.geometry_latlon,
-        cast(int, healpix_chunks.refinement_level),
-        healpix_chunks.ellipsoid.name,
-    )
-
-    return OutputChunkInfo(
-        healpix=healpix_chunks, cell_ids=chunk_cell_ids, is_full=chunk_is_full
-    )
 
 
 def create_staging_cache(
@@ -299,17 +280,6 @@ def create_staging_cache(
         "spatial extent of the output HEALPix dataset (WGS84):\n"
         f"  - geometry: {cache.output_spatial.geometry_latlon}\n"
         f"  - bbox: {cache.output_spatial.bbox}"
-    )
-
-    # --- compute output chunk (coarse) HEALPix cell ids
-    cache.output_chunks = _set_output_chunks(
-        cache.output_spatial, settings.healpix_chunks
-    )
-
-    log.info(
-        f"using fixed-size chunks along the HEALPix cell dimension in the output Zarr dataset\n"
-        f"  - one chunk = one level-{settings.healpix_chunks.refinement_level} HEALPix cell\n"
-        f"  - total: {cache.output_chunks.cell_ids.size} chunk/cells"
     )
 
     # --- detect input spatial groups (to convert to HEALPix)
