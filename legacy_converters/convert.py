@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from pathlib import PurePath
 from typing import Any
 
+import dask
 import distributed
 import shapely
 import structlog
@@ -30,7 +31,11 @@ log = structlog.get_logger()
 
 
 def _convert_group_to_healpix(
-    converter: HealpixGroupConverter, *, chunk_indices: Sequence[int] | None = None
+    converter: HealpixGroupConverter,
+    *,
+    chunk_indices: Sequence[int] | None = None,
+    resources: dict | None = None,
+    load_input_data: bool = False,
 ):
     # TODO: remove
     if not converter.spatial_info.is_projected:
@@ -60,15 +65,30 @@ def _convert_group_to_healpix(
         log.info(
             f"••• converting {len(chunk_indices)} chunks in parallel using dask (distributed)..."
         )
+
+        if resources is None:
+            resources = {}
+
+        if load_input_data:
+            log.info("persist input dataset(s) on distributed memory with dask")
+            converter.load_datasets(client=client)
+
         # use a wrapper func as passing _convert_one_chunk kwargs to client.map doesn't work
         # (dask/distributed does not like pickling `group_datasets`)
         func = lambda idx: converter.convert(idx)
-        futures = client.map(func, chunk_indices)
+        with dask.config.set({"optimization.fuse.active": False}):
+            futures = client.map(func, chunk_indices, resources=resources)
         client.gather(futures)
+
     else:
         log.info(
             f"••• converting {len(chunk_indices)} chunks serially (it may take a while)..."
         )
+
+        if load_input_data:
+            log.info("pre-load input datasets in memory!")
+            converter.load_datasets()
+
         for chunk_index in chunk_indices:
             converter.convert(chunk_index)
 
@@ -241,6 +261,8 @@ def convert_group_to_healpix(
     output_path: str,
     chunk_indices: Sequence[int] | None = None,
     output_storage_options: dict[str, Any] | None = None,
+    resources: dict | None = None,
+    load_input_data: bool = False,
 ):
     """Convert data in one group to HEALPix and write the output resampled data to
     the output zarr dataset.
@@ -263,6 +285,11 @@ def convert_group_to_healpix(
     output_storage_options : dict, optional
         Storage options passed to Zarr for the dataset creation
         (useful for, e.g., writing on S3 object store).
+    load_input_data : bool, optional
+        If True, pre-load all input datasets into memory or presist them
+        in distributed memory when using dask (default: False).
+        This could speed-up the conversion process but this could also
+        consume a lot of memory! Use it carefully.
 
     See Also
     --------
@@ -283,7 +310,12 @@ def convert_group_to_healpix(
     converter = init_converter(
         group_path, cache=cache, settings=settings, output_store=output_store
     )
-    _convert_group_to_healpix(converter, chunk_indices=chunk_indices)
+    _convert_group_to_healpix(
+        converter,
+        chunk_indices=chunk_indices,
+        resources=resources,
+        load_input_data=load_input_data,
+    )
 
 
 def create_healpix_dataset(
