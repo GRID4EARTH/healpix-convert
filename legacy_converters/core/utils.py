@@ -11,7 +11,7 @@ import shapely
 import xarray as xr
 
 
-def open_datatrees(paths: list[str]) -> list[xr.DataTree]:
+def open_datatrees(paths: list[str], chunks: dict | None = None) -> list[xr.DataTree]:
     """Open input Zarr datasets as "raw" xarray.DataTree objects.
 
     Fast-version (disable most decoding and index creation).
@@ -20,7 +20,28 @@ def open_datatrees(paths: list[str]) -> list[xr.DataTree]:
         xr.open_datatree(
             path,
             engine="zarr",
-            chunks={},
+            chunks=chunks,
+            decode_cf=True,
+            decode_times=False,
+            decode_timedelta=False,
+            create_default_indexes=False,
+        )
+        for path in paths
+    ]
+
+
+def open_datasets(
+    paths: list[str], group: str, chunks: dict | None = None
+) -> list[xr.Dataset]:
+    """Open a given group in input Zarr datasets as "raw" xarray.Dataset objects.
+
+    Fast-version (disable most decoding and index creation).
+    """
+    return [
+        xr.open_zarr(
+            path,
+            group=group,
+            chunks=chunks,
             decode_cf=True,
             decode_times=False,
             decode_timedelta=False,

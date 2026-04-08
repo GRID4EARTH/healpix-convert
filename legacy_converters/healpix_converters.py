@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from pathlib import PurePath
 from typing import Any, TypedDict, Unpack
 
+import dask.distributed
 import healpix_geo
 import healpix_resample
 import numpy as np
@@ -47,6 +48,8 @@ class HealpixGroupConverter(ABC):
     spatial_info: InputGroupSpatialInfo
     settings: HealpixGroupSettings
     healpix: Healpix
+    group_path: str
+    input_paths: list[str]
     datasets: list[xr.Dataset]
     output_store: zarr.StoreLike
     output_path: PurePath
@@ -71,7 +74,11 @@ class HealpixGroupConverter(ABC):
         self.settings = group_settings
         self.healpix = self.settings.healpix
 
-        self.datasets = [dt[str(path)].dataset for dt in cache.input_datatrees.values()]
+        self.group_path = str(path)
+        self.input_paths = [str(p) for p in cache.input_datatrees]
+        self.datasets = [
+            dt[self.group_path].dataset for dt in cache.input_datatrees.values()
+        ]
 
         # TODO: remove
         if not self.spatial_info.is_projected:
@@ -198,6 +205,20 @@ class HealpixGroupConverter(ABC):
                 )
 
         return zarrays
+
+    def load_datasets(self, client: dask.distributed.Client | None = None) -> None:
+        """Preload all input datasets or persist them in distributed memory when using dask."""
+        if client is not None:
+            # re-open input datasets with chunks={} -> set chunks aligned with zarr
+            reopened_datasets = utils.open_datasets(
+                self.input_paths, self.group_path, chunks={}
+            )
+            self.datasets = [ds.persist(scheduler=client) for ds in reopened_datasets]
+            # block until all data is loaded.
+            for ds in self.datasets:
+                dask.distributed.wait(ds)
+        else:
+            self.datasets = [ds.load() for ds in self.datasets]
 
     def query_input_points(self, chunk_cell_id: int | None) -> xr.Dataset | None:
         """Query input data points to resample as HEALPix cell data.
@@ -358,6 +379,7 @@ class DenseChunkConverter(HealpixGroupConverter):
                 ds
                 # TODO: check slice bounds for north vs. south hemisphere?
                 .sel(x=slice(xmin, xmax), y=slice(ymax, ymin))
+                .compute()
                 .grid4earth.convert_to(4326)
                 .stack(
                     points=list(self.spatial_info.spatial_dimensions),
