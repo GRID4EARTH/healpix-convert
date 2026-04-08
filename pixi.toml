@@ -64,6 +64,9 @@ jupyterlab = { cmd = "jupyter lab", cwd = "." }
 pytest = "*"
 pytest-cov = "*"
 
+[feature.tests.pypi-dependencies]
+pytest-structlog = "*"
+
 [feature.tests.tasks]
 tests = { cmd = "pytest --cov=legacy_converters", cwd = "." }
 

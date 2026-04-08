@@ -26,6 +26,7 @@ from legacy_converters.settings.common import (
     ConvertSettings,
     validate_convert_settings,
 )
+from legacy_converters.stac_operations import _extract_stac_metadata, _merge_stac_items
 
 log = structlog.get_logger()
 
@@ -120,6 +121,13 @@ def _create_and_process_output(
         )
 
     output_store = root_group.store
+
+    log.info("••• propagating stac metadata...")
+    stac_metadata = _extract_stac_metadata(cache.input_datatrees)
+    merged_stac_metadata = _merge_stac_items(stac_metadata, cache.output_spatial)
+
+    root_group.attrs["stac_discovery"] = merged_stac_metadata.model_dump()
+    log.info("••• finished propagating stac metadata.")
 
     # --- process groups
     log.info("••• processing groups...")
