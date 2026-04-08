@@ -180,7 +180,7 @@ class HealpixUniformChunkSettings(BaseChunkSettings):
 
 
 class HealpixDenseChunkSettings(HealpixUniformChunkSettings):
-    """Chunk output data along the HEALPix cell dimension according to
+    r"""Chunk output data along the HEALPix cell dimension according to
     HEALPix cells given at a parent, "coarse" refinement level (dense version).
 
     Each of those "chunk" cells are densely populated with adjacent children
@@ -215,7 +215,7 @@ class HealpixDenseChunkSettings(HealpixUniformChunkSettings):
 
 
 class HealpixSparseChunkSettings(HealpixUniformChunkSettings):
-    """Chunk output data along the HEALPix cell dimension according to
+    r"""Chunk output data along the HEALPix cell dimension according to
     HEALPix cells given at a parent, "coarse" refinement level (sparse version).
 
     Each of those "chunk" cells are populated with sparsely distributed children
