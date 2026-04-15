@@ -14,6 +14,7 @@ import shapely
 import structlog
 import xarray as xr
 import zarr.api.synchronous as zarr
+from zarr.api.asynchronous import JSON
 
 import legacy_converters.core.utils as utils
 from legacy_converters.core.conversion_models import (
@@ -39,6 +40,7 @@ class ZarrCreateArrayKwargs(TypedDict):
     data: np.ndarray
     chunks: tuple[int, ...]
     dimension_names: Iterable[str]
+    codecs: Iterable[dict[str, JSON]] | None
 
 
 class HealpixGroupConverter(ABC):
@@ -157,7 +159,13 @@ class HealpixGroupConverter(ABC):
         def _get_maybe_create_array(name: str, **kwargs: Unpack[ZarrCreateArrayKwargs]):
             arr = self.output_group.get(name)
             if arr is None:
-                arr = self.output_group.create_array(name=name, **kwargs)
+                path = (
+                    f"{self.output_group.path}/{name}"
+                    if self.output_group.path
+                    else name
+                )
+                arr = zarr.create(path=path, store=self.output_group.store, **kwargs)
+
             assert isinstance(arr, zarr.Array)
             zarrays[name] = arr
 
@@ -167,6 +175,7 @@ class HealpixGroupConverter(ABC):
             dtype=np.int64,
             chunks=(self.cell_dim_chunk_size,),
             dimension_names=(self.cell_dim,),
+            codecs=None,
         )
 
         ds0 = self.datasets[0]
@@ -179,6 +188,7 @@ class HealpixGroupConverter(ABC):
                     data=var.values,
                     chunks=var.chunks,
                     dimension_names=var.dims,
+                    codecs=None,
                 )
         for name, var in ds0.data_vars.items():
             if name in self.spatial_info.spatial_arrays:
@@ -193,6 +203,7 @@ class HealpixGroupConverter(ABC):
                     dtype=dtype,
                     chunks=(self.cell_dim_chunk_size,),
                     dimension_names=(self.cell_dim,),
+                    codecs=self.settings.codecs,
                 )
             else:
                 # write array unchanged in output group
@@ -202,6 +213,7 @@ class HealpixGroupConverter(ABC):
                     data=var.values,
                     chunks=var.chunks,
                     dimension_names=var.dims,
+                    codecs=None,
                 )
 
         return zarrays
