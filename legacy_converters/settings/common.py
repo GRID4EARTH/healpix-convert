@@ -7,7 +7,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import PurePath
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias, TypedDict
 
 import structlog
 from pydantic import (
@@ -247,6 +247,17 @@ ChunkSettings: TypeAlias = (
 )
 
 
+class CodecSettings(TypedDict):
+    """Settings for a single Zarr codec.
+
+    This class follows Zarr's codec (extension) metadata model.
+
+    """
+
+    name: str
+    configuration: dict[str, Any]
+
+
 class HealpixGroupSettings(BaseModel):
     """Settings for converting a single Zarr group onto HEALPix."""
 
@@ -260,6 +271,8 @@ class HealpixGroupSettings(BaseModel):
 
     resampler: Annotated[ResamplerSettings, Field(discriminator="name")]
     """Resampling method name and settings."""
+
+    codecs: list[CodecSettings] | None = Field(default=None)
 
     @model_validator(mode="after")
     def validate_cell_point_resampler_level(self) -> HealpixGroupSettings:
