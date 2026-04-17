@@ -78,13 +78,19 @@ def get_wgs84_polygon_from_stac(xr_obj: xr.DataTree | xr.Dataset) -> shapely.Pol
 
 
 def get_proj_polygon_from_stac(xr_obj: xr.DataTree | xr.Dataset) -> shapely.Polygon:
-    bbox = xr_obj.attrs["stac_discovery"]["properties"]["proj:bbox"]
-    return shapely.geometry.box(*bbox)
+    bbox = xr_obj.attrs["stac_discovery"]["properties"].get("proj:bbox")
+    if bbox is not None:
+        return shapely.geometry.box(*bbox)
+    else:
+        return shapely.Polygon()
 
 
 def get_crs_from_stac(xr_obj: xr.DataTree | xr.Dataset) -> pyproj.CRS:
     crs = _get_stac_proj_crs(xr_obj.attrs["stac_discovery"]["properties"])
-    assert crs is not None
+    if crs is None:
+        # Return WGS84 as default if no CRS is found
+        # TODO: what should be the default CRS? Undefined (sphere)?
+        crs = pyproj.CRS.from_epsg(4326)
     return crs
 
 
@@ -114,9 +120,12 @@ def extract_spatial_info_stac(ds: xr.Dataset) -> dict | None:
         if spatial_dims.intersection(var.dims)
     ]
 
+    transform = affine.Affine(*var0.attrs["proj:transform"])
+
     return {
         "crs": [crs],
-        "transform": [affine.Affine(*var0.attrs["proj:transform"])],
+        "transform": [transform],
+        "is_rectilinear": transform.is_rectilinear,
         "spatial_dimensions": {"x": ds.sizes["x"], "y": ds.sizes["y"]},
         "spatial_coordinates": ["x", "y"],
         "spatial_attrs": [],
@@ -128,35 +137,42 @@ def extract_spatial_info_stac(ds: xr.Dataset) -> dict | None:
 def extract_spatial_info_cf(ds: xr.Dataset) -> dict | None:
     """Extract spatial information from a Zarr group using CF conventions.
 
-    Only latitude-longitude is supported for now (implicit sphere model as
-    assumed by CF).
+    Only longitude-latitude is supported for now (WGS84 is assumed). The order
+    (longitude, latitude) is used here.
 
     Returns None if no spatial information is detected.
 
     """
-    latlon_coords = set()
-    latlon_dims = set()
+    std_lonlat = ("longitude", "latitude")
+    lonlat_coords = {}
+    lonlat_dims = set()
+    is_rectilinear = True
 
     for name, var in ds.coords.items():
-        if var.attrs.get("standard_name", "") in ("latitude", "longitude"):
-            latlon_coords.add(name)
-            latlon_dims.update(var.dims)
+        std_name = var.attrs.get("standard_name")
+        if std_name in std_lonlat:
+            lonlat_coords[std_name] = name
+            lonlat_dims.update(var.dims)
+            if len(var.dims) > 1:
+                is_rectilinear = False
 
-    if latlon_coords:
+    if lonlat_coords:
         spatial_arrays = [
             name
             for name, var in ds.data_vars.items()
-            if set(var.dims).intersection(latlon_dims)
+            if set(var.dims).intersection(lonlat_dims)
         ]
+        lonlat_coords_ = [lonlat_coords.get(name) for name in std_lonlat]
 
         return {
             # TODO: EPSG generic spherical model? Or allow something other?
             "crs": [pyproj.CRS.from_epsg(4326)],
             "transform": None,
-            "spatial_dimensions": {dim: ds.sizes[dim] for dim in latlon_dims},
-            "spatial_coordinates": list(latlon_coords),
-            "spatial_arrays": [],
-            "spatial_attrs": spatial_arrays,
+            "is_rectilinear": is_rectilinear,
+            "spatial_dimensions": {dim: ds.sizes[dim] for dim in lonlat_dims},
+            "spatial_coordinates": [c for c in lonlat_coords_ if c is not None],
+            "spatial_attrs": [],
+            "spatial_arrays": spatial_arrays,
             "spatial_var_attrs": [],
         }
     else:

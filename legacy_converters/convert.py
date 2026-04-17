@@ -38,15 +38,17 @@ def _convert_group_to_healpix(
     resources: dict | None = None,
     load_input_data: bool = False,
 ):
-    # TODO: remove
-    if not converter.spatial_info.is_projected:
-        return
-
     log.info(f"••• converting group {converter.output_path} to HEALPix...")
 
     log.info(
         f"resampling data on HEALPix using {converter.settings.resampler.name} method"
     )
+
+    if converter.settings.chunk.method == "no_chunk":
+        log.warning("non-chunked conversion not yet implemented...")
+        # converter.convert()
+        return
+
     log.info(f"chunking output data using {converter.settings.chunk.method!r} method")
 
     try:

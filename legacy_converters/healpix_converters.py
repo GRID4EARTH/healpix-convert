@@ -28,6 +28,8 @@ from legacy_converters.settings.common import (
     ConvertSettings,
     HealpixDenseChunkSettings,
     HealpixGroupSettings,
+    HealpixSparseChunkSettings,
+    HealpixUniformChunkSettings,
     broadcast_params,
 )
 
@@ -81,13 +83,6 @@ class HealpixGroupConverter(ABC):
         self.datasets = [
             dt[self.group_path].dataset for dt in cache.input_datatrees.values()
         ]
-
-        # TODO: remove
-        if not self.spatial_info.is_projected:
-            log.warning(
-                "conversion of lat-lon group not yet implemented (almost there!)"
-            )
-            return
 
         # maybe create dataset raster indexes (input datasets with projected CRS)
         if self.spatial_info.is_projected:
@@ -172,9 +167,10 @@ class HealpixGroupConverter(ABC):
         _get_maybe_create_array(
             self.healpix.coordinate,
             shape=(self.cell_dim_size,),
-            dtype=np.int64,
+            dtype=np.uint64,
             chunks=(self.cell_dim_chunk_size,),
             dimension_names=(self.cell_dim,),
+            fill_value=np.iinfo(np.uint64).max,
             codecs=None,
         )
 
@@ -182,17 +178,37 @@ class HealpixGroupConverter(ABC):
 
         for name, var in ds0.coords.items():
             if name not in self.spatial_info.spatial_coordinates:
-                # TODO: use dask.array.to_zarr() if var is chunked?
-                _get_maybe_create_array(
-                    str(name),
-                    data=var.values,
-                    chunks=var.chunks,
-                    dimension_names=var.dims,
-                    codecs=None,
-                )
+                # TODO: skip it for now
+                # There are multiple cases to handle
+                # 1. coordinate sharing one of input spatial dimensions but not all
+                #    - e.g.,  time_stamp(rows)
+                #       -> nonsense to convert to HEALPix? skip or propagate as-is?
+                # 2. coordinate having the exact same spatial dimensions
+                #    - e.g.,  altitude(rows, colums)
+                #    - should probably be converted to HEALPix like data variables
+                # 3. coordinate sharing none of the spatial dimensions
+                #    - propagate as-is
+                # 4. coordinate with incompatible dtype (e.g., np.datetime64) -> propagate?
+                #
+                # How best to propagate?
+                #  - use dask.array.to_zarr() if var is chunked?
+                #  - xarray chunks are dask chunks != zarr chunks -> we need zarr chunks (how to access it?)
+                #  - how to align dask chunks with zarr chunks?
+                #
+                pass
+                # _get_maybe_create_array(
+                #     str(name),
+                #     data=var.values,
+                #     chunks=var.chunks,
+                #     dimension_names=var.dims,
+                #     codecs=None,
+                # )
+
         for name, var in ds0.data_vars.items():
             if name in self.spatial_info.spatial_arrays:
-                # TODO: how to handle non-spatial dimensions?
+                # TODO: need to handle non-spatial dimensions
+                #  - get zarr chunks along those dimensions
+                #  -
                 if self.settings.resampler.name in ["bilinear", "psf"]:
                     dtype = np.float64
                 else:
@@ -277,10 +293,9 @@ _RESAMPLER_NAME_CLS: dict[str, type] = {
 }
 
 
-class DenseChunkConverter(HealpixGroupConverter):
-    """Chunked conversion of input data to HEALPix, where output chunks correspond
-    to "coarse" HEALPix cells densely populated by finer HEALPIX cells at a same level
-    (continuous cell id range).
+class UniformChunkConverter(HealpixGroupConverter, ABC):
+    """Common class for chunked conversion where chunks have a fixed-size and are aligned with
+    HEALPix cells at a given refinement level.
 
     This class works only with the "nested" HEALPIX cell indexing scheme.
 
@@ -288,49 +303,96 @@ class DenseChunkConverter(HealpixGroupConverter):
 
     chunk_healpix: Healpix
     chunk_cell_ids: np.ndarray
-    chunk_buffer_width: float
+    _input_chunk_cell_ids: list[np.ndarray]
 
     def __post_init__(self):
-        assert isinstance(self.settings.chunk, HealpixDenseChunkSettings)
+        assert isinstance(self.settings.chunk, HealpixUniformChunkSettings)
         self.chunk_healpix = self.settings.chunk.healpix
 
         assert self.healpix.indexing_scheme == "nested"
         assert self.chunk_healpix.indexing_scheme == "nested"
 
-        level = self.healpix.refinement_level
-        chunk_level = self.chunk_healpix.refinement_level
-        assert level is not None and chunk_level is not None
-        self._chunk_size: int = 4 ** (level - chunk_level)
-
-        self.chunk_cell_ids = self._compute_chunk_cell_ids()
+        self._compute_chunk_cell_ids()
 
         cell_dim = self.healpix.spatial_dimension
         log.info(
             f"fixed chunk size along the {cell_dim!r} dimension: {self.cell_dim_chunk_size}:\n"
-            f"  - each chunk represents a HEALPix cell at level {chunk_level}\n"
+            f"  - each chunk represents a HEALPix cell at level {self.chunk_healpix.refinement_level}\n"
             f"  - total: {self.chunk_cell_ids.size} chunk/cells"
         )
 
-        self.chunk_buffer_width = self.settings.chunk.chunk_buffer_width
+        # cache for querying input lat-lon points inside an healpix chunk cell
+        self._input_chunk_cell_ids = []
 
-    def _compute_chunk_cell_ids(self) -> np.ndarray:
+    def _compute_chunk_cell_ids(self):
         assert self.chunk_healpix.refinement_level is not None
 
-        cell_ids, _ = utils.compute_output_chunk_info(
+        self.chunk_cell_ids, _ = utils.compute_output_chunk_info(
             self.output_spatial.geometry_latlon,
             self.chunk_healpix.refinement_level,
             self.chunk_healpix.ellipsoid.name,
         )
 
-        return cell_ids
+    @property
+    def input_chunk_cell_ids(self):
+        if not len(self._input_chunk_cell_ids):
+            self._input_chunk_cell_ids = []
+
+            for ds in self.datasets:
+                lon_name, lat_name = self.spatial_info.spatial_coordinates
+                self._input_chunk_cell_ids.append(
+                    healpix_geo.nested.lonlat_to_healpix(
+                        ds[lon_name].values,
+                        ds[lat_name].values,
+                        self.chunk_healpix.refinement_level,
+                        self.chunk_healpix.ellipsoid.name.upper(),
+                    )
+                )
+
+        return self._input_chunk_cell_ids
 
     @property
-    def cell_dim_size(self) -> int:
-        return self.chunk_cell_ids.size * self._chunk_size
+    @abstractmethod
+    def chunk_buffer(self) -> int | float: ...
 
-    @property
-    def cell_dim_chunk_size(self) -> int:
-        return self._chunk_size
+    def _query_chunk_input_points_latlon_curvilinear(
+        self, chunk_cell_id: int
+    ) -> xr.Dataset | None:
+        """Query input lat-lon points on a curvilinear grid (e.g., ).
+
+        Assumes 2-dimensional longitude and latitude coordinates present in the datasets.
+
+        Only input points located within the HEALPix chunk cell are selected. No
+        buffer or ring is applied around the chunk cell.
+
+        """
+        lon_name, lat_name = self.spatial_info.spatial_coordinates
+        ds0 = self.datasets[0]
+        rdim, cdim = ds0[lon_name].dims
+
+        input_chunk_cell_ids = self.input_chunk_cell_ids
+
+        prepared_datasets = []
+        for ds, cids in zip(self.datasets, input_chunk_cell_ids):
+            ridx, cidx = np.nonzero(cids == chunk_cell_id)
+            if len(ridx) and len(cidx):
+                ds_clipped = ds.isel(
+                    {
+                        rdim: xr.Variable("points", ridx),
+                        cdim: xr.Variable("points", cidx),
+                    }
+                )
+                prepared_datasets.append(ds_clipped)
+
+        if not len(prepared_datasets):
+            # No input data found for the current chunk
+            return None
+
+        ds_input_points = xr.concat(prepared_datasets, dim="points")
+        ds_input_points["lon"] = ds_input_points[lon_name]
+        ds_input_points["lat"] = ds_input_points[lat_name]
+
+        return ds_input_points
 
     def _query_chunk_input_points_projected(
         self, chunk_cell_id: int
@@ -363,9 +425,9 @@ class DenseChunkConverter(HealpixGroupConverter):
         )
 
         # Maybe add buffer around polygon
-        if self.chunk_buffer_width > 0.0:
+        if self.chunk_buffer > 0.0:
             chunk_polys = [
-                shapely.buffer(poly, self.chunk_buffer_width) for poly in chunk_polys
+                shapely.buffer(poly, self.chunk_buffer) for poly in chunk_polys
             ]
 
         # compute intersections with input dataset spatial extents
@@ -421,11 +483,39 @@ class DenseChunkConverter(HealpixGroupConverter):
 
         if self.spatial_info.is_projected:
             return self._query_chunk_input_points_projected(chunk_cell_id)
+        elif not self.spatial_info.is_rectilinear and self.chunk_buffer == 0:
+            return self._query_chunk_input_points_latlon_curvilinear(chunk_cell_id)
         else:
             log.warning(
-                "conversion of lat-lon group not yet implemented (almost there!)"
+                "selection of chunk input data not supported or not yet implemented"
             )
             return
+
+
+class DenseChunkConverter(UniformChunkConverter):
+    """Chunked conversion of input data to HEALPix, where output chunks correspond
+    to "coarse" HEALPix cells densely populated by finer HEALPIX cells at a same level
+    (continuous cell id range).
+
+    This class works only with the "nested" HEALPIX cell indexing scheme.
+
+    """
+
+    @property
+    def cell_dim_size(self) -> int:
+        return self.chunk_cell_ids.size * self.cell_dim_chunk_size
+
+    @property
+    def cell_dim_chunk_size(self) -> int:
+        level = self.healpix.refinement_level
+        chunk_level = self.chunk_healpix.refinement_level
+        assert level is not None and chunk_level is not None
+        return 4 ** (level - chunk_level)
+
+    @property
+    def chunk_buffer(self):
+        assert isinstance(self.settings.chunk, HealpixDenseChunkSettings)
+        return self.settings.chunk.chunk_buffer_width
 
     def convert(self, chunk_index: int | None = None):
         # this class supports chunked conversion only
@@ -513,10 +603,112 @@ class DenseChunkConverter(HealpixGroupConverter):
             )
 
 
+class SparseChunkConverter(UniformChunkConverter):
+    """Chunked conversion of input data to HEALPix, where output chunks correspond
+    to "coarse" HEALPix cells sparsely populated by finer HEALPIX cells at a same level.
+
+    This class works only with the "nested" HEALPIX cell indexing scheme.
+
+    """
+
+    @property
+    def cell_dim_size(self) -> int:
+        return self.chunk_cell_ids.size * self.cell_dim_chunk_size
+
+    @property
+    def cell_dim_chunk_size(self) -> int:
+        assert isinstance(self.settings.chunk, HealpixSparseChunkSettings)
+        return self.settings.chunk.chunk_size
+
+    @property
+    def chunk_buffer(self):
+        return 0
+
+    def convert(self, chunk_index: int | None = None):
+        # this class supports chunked conversion only
+        assert chunk_index is not None
+
+        n_chunks = self.chunk_cell_ids.size
+
+        chunk_cell_id = self.chunk_cell_ids[chunk_index]
+
+        log.debug(
+            f"processing chunk {chunk_index + 1}/{n_chunks} (cell id {chunk_cell_id})"
+        )
+
+        log.debug("query input points")
+        ds_input_points = self.query_input_points(chunk_cell_id)
+
+        # no input data point for current chunk
+        if ds_input_points is None:
+            return
+
+        log.debug("initialize resampler")
+        resampler_settings = self.settings.resampler
+
+        resampler_cls = _RESAMPLER_NAME_CLS[resampler_settings.name]
+        # TODO: pass array dtype to resampler
+        # in case all arrays to resample have the same dtype
+
+        resampler = resampler_cls(
+            lon_deg=ds_input_points.lon.values,
+            lat_deg=ds_input_points.lat.values,
+            # level=self.healpix.refinement_level,  # assumes cell-point (level=29)
+            verbose=False,
+            nest=self.healpix.indexing_scheme == "nested",
+            ellipsoid=self.healpix.ellipsoid.name.upper(),
+            **dict(resampler_settings.init_params),
+        )
+
+        cell_ids = resampler.get_cell_ids()
+        start = chunk_index * self.cell_dim_chunk_size
+        stop = start + cell_ids.size
+        chunk_slice = slice(start, stop)
+
+        self.output_arrays[self.healpix.coordinate][chunk_slice] = cell_ids
+
+        # resample arrays (data variables)
+        var_names = [
+            str(name)
+            for name in ds_input_points.data_vars
+            if name in self.spatial_info.spatial_arrays
+        ]
+        resample_params = broadcast_params(
+            resampler_settings.resample_params, var_names
+        )
+
+        log.debug(f"resample {len(var_names)} arrays")
+        for name in var_names:
+            var = ds_input_points.variables[name]
+            data = var.values.astype("f")
+
+            # log.debug(f"resample variable {name}")
+            res = resampler.resample(data, **resample_params[name])
+
+            # log.debug(f"write chunk {chunk_slice!r} for variable {name!r}")
+            self.output_arrays[str(name)][chunk_slice] = res.cell_data.astype(var.dtype)
+
+        del resampler
+        # self._input_chunk_cell_ids.clear()
+
+
+class DummyConverter(HealpixGroupConverter):
+    @property
+    def cell_dim_size(self) -> int:
+        return 100
+
+    @property
+    def cell_dim_chunk_size(self) -> int:
+        return 100
+
+    def convert(self, chunk_index: int | None = None):
+        pass
+
+
 _CONVERTER_NAME_CLS: dict[str, type[HealpixGroupConverter]] = {
-    "no_chunk": DenseChunkConverter,  # TODO: change type when implemented
+    "no_chunk": DummyConverter,  # TODO: change type when implemented
     "healpix_cell_dense": DenseChunkConverter,
-    "healpix_cell_sparse": DenseChunkConverter,  # TODO: change type when implemented
+    "healpix_cell_sparse": SparseChunkConverter,
 }
 
 
