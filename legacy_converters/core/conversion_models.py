@@ -107,11 +107,14 @@ class InputGroupSpatialInfo(BaseModel):
     transform: list[affine.Affine] | None
     """Affine transforms (if found, if projected CRS), one per input Zarr dataset"""
 
+    is_rectilinear: bool
+    """True if x/y or lat/lon gridded input data is rectilinear."""
+
     spatial_dimensions: dict[str, int]
     """Spatial dimension names and their size."""
 
     spatial_coordinates: list[str]
-    """Spatial coordinate names."""
+    """Spatial coordinate names (should be ordered like X, Y axes or longitude, latitude)."""
 
     spatial_attrs: list[str]
     """Spatial (group) attribute names."""
@@ -151,6 +154,7 @@ class InputGroupSpatialInfo(BaseModel):
             or self.spatial_coordinates != other.spatial_coordinates
             or self.spatial_arrays != other.spatial_arrays
             or self.is_projected is not other.is_projected
+            or self.is_rectilinear is not other.is_rectilinear
         )
 
         if self.transform is None and other.transform is None:
@@ -166,6 +170,7 @@ class InputGroupSpatialInfo(BaseModel):
         return InputGroupSpatialInfo(
             crs=self.crs + other.crs,
             transform=transform,
+            is_rectilinear=self.is_rectilinear,
             spatial_dimensions=self.spatial_dimensions,
             spatial_coordinates=self.spatial_coordinates,
             spatial_attrs=self.spatial_attrs,

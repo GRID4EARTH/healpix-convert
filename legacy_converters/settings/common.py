@@ -27,7 +27,20 @@ from legacy_converters.settings. import (
 from legacy_converters.settings. import (
     _CONVERT_SETTINGS,
     __ERR_CONVERT_SETTINGS,
+    __LFR_CONVERT_SETTINGS,
+    __LRR_CONVERT_SETTINGS,
+    __FRP_CONVERT_SETTINGS,
+    __LST_CONVERT_SETTINGS,
     __RBT_CONVERT_SETTINGS,
+)
+from legacy_converters.settings._psf import (
+    _PSF_CONVERT_SETTINGS,
+    __ERR_PSF_CONVERT_SETTINGS,
+    __LFR_PSF_CONVERT_SETTINGS,
+    __LRR_PSF_CONVERT_SETTINGS,
+    __FRP_PSF_CONVERT_SETTINGS,
+    __LST_PSF_CONVERT_SETTINGS,
+    __RBT_PSF_CONVERT_SETTINGS,
 )
 
 log = structlog.get_logger()
@@ -124,6 +137,8 @@ ResamplerSettings: TypeAlias = (
 class BaseChunkSettings(ABC, BaseModel):
     """Base abstract class for chunking strategy and settings."""
 
+    method: str
+
     @property
     @abstractmethod
     def is_fixed_size(self) -> bool:
@@ -173,7 +188,7 @@ class HealpixUniformChunkSettings(BaseChunkSettings):
 
         if self.healpix.indexing_scheme != "nested":
             raise ValueError(
-                "chunk method 'healpix_cell_dense' only supports the 'nested' indexing scheme."
+                f"chunk method {self.method!r} only supports the 'nested' indexing scheme."
             )
 
         return self
@@ -288,7 +303,8 @@ class HealpixGroupSettings(BaseModel):
     def validate_healpix_chunk_vs_data(self) -> HealpixGroupSettings:
         # validate healpix settings given for output chunks vs. output resampled data
         # TODO: add test
-        if not self.chunk.is_healpix_aligned:
+        chunk_healpix: Healpix | None = getattr(self.chunk, "healpix", None)
+        if chunk_healpix is None:
             return self
 
         if self.healpix.indexing_scheme != "nested":
@@ -296,10 +312,10 @@ class HealpixGroupSettings(BaseModel):
                 f"chunk method {self.chunk.method!r} only supports the 'nested' indexing scheme."
             )
 
-        chunk_level = self.chunk.healpix.refinement_level
+        chunk_level = chunk_healpix.refinement_level
         level = self.healpix.refinement_level
 
-        if level is not None and level < chunk_level:
+        if level is not None and chunk_level is not None and level < chunk_level:
             raise ValueError(
                 f"found output HEALPix refinement level {level} "
                 f"that is lower than the chunk refinement level {chunk_level}."
@@ -436,8 +452,30 @@ def get_settings(name: str) -> ConvertSettings:
         return ConvertSettings.model_validate(_CONVERT_SETTINGS)
     elif name == "--l1-err":
         return ConvertSettings.model_validate(__ERR_CONVERT_SETTINGS)
+    elif name == "--l2-lfr":
+        return ConvertSettings.model_validate(__LFR_CONVERT_SETTINGS)
+    elif name == "--l2-lrr":
+        return ConvertSettings.model_validate(__LRR_CONVERT_SETTINGS)
     elif name == "--l1-rbt":
         return ConvertSettings.model_validate(__RBT_CONVERT_SETTINGS)
+    elif name == "--l2-lst":
+        return ConvertSettings.model_validate(__LST_CONVERT_SETTINGS)
+    elif name == "--l2-frp":
+        return ConvertSettings.model_validate(__FRP_CONVERT_SETTINGS)
+    elif name == "--l1-efr-psf":
+        return ConvertSettings.model_validate(_PSF_CONVERT_SETTINGS)
+    elif name == "--l1-err-psf":
+        return ConvertSettings.model_validate(__ERR_PSF_CONVERT_SETTINGS)
+    elif name == "--l2-lfr-psf":
+        return ConvertSettings.model_validate(__LFR_PSF_CONVERT_SETTINGS)
+    elif name == "--l2-lrr-psf":
+        return ConvertSettings.model_validate(__LRR_PSF_CONVERT_SETTINGS)
+    elif name == "--l1-rbt-psf":
+        return ConvertSettings.model_validate(__RBT_PSF_CONVERT_SETTINGS)
+    elif name == "--l2-lst-psf":
+        return ConvertSettings.model_validate(__LST_PSF_CONVERT_SETTINGS)
+    elif name == "--l2-frp-psf":
+        return ConvertSettings.model_validate(__FRP_PSF_CONVERT_SETTINGS)
 
     else:
         raise ValueError(f"settings not found for {name!r}")
