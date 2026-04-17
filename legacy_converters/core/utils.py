@@ -1,6 +1,7 @@
 """Utility methods used internally for converting datasets onto HEALPix."""
 
 from collections import Counter
+from typing import Any
 
 import affine
 import healpix_geo
@@ -51,6 +52,26 @@ def open_datasets(
     ]
 
 
+def _get_stac_proj_crs(attrs: dict[str, Any]) -> pyproj.CRS | None:
+    crss = []
+    if "proj:epsg" in attrs:
+        # STAC projection extension version < 2.0
+        crss.append(pyproj.CRS.from_epsg(attrs["proj:epsg"]))
+    if "proj:code" in attrs:
+        crss.append(pyproj.CRS.from_user_input(attrs["proj:code"]))
+    if "proj:wkt2" in attrs:
+        crss.append(pyproj.CRS.from_user_input(attrs["proj:wkt2"]))
+    if "proj:projjson" in attrs:
+        crss.append(pyproj.CRS.from_user_input(attrs["proj:projjson"]))
+
+    if len(crss):
+        if len(crss) > 1 and not all(crs == crss[0] for crs in crss[1:]):
+            raise ValueError("found conficting CRS in metadata")
+        return crss[0]
+    else:
+        return None
+
+
 def get_wgs84_polygon_from_stac(xr_obj: xr.DataTree | xr.Dataset) -> shapely.Polygon:
     geom_dict = xr_obj.attrs["stac_discovery"]["geometry"]
     return shapely.geometry.shape(geom_dict)
@@ -62,8 +83,9 @@ def get_proj_polygon_from_stac(xr_obj: xr.DataTree | xr.Dataset) -> shapely.Poly
 
 
 def get_crs_from_stac(xr_obj: xr.DataTree | xr.Dataset) -> pyproj.CRS:
-    crs_epsg = xr_obj.attrs["stac_discovery"]["properties"]["proj:epsg"]
-    return pyproj.CRS.from_user_input(crs_epsg)
+    crs = _get_stac_proj_crs(xr_obj.attrs["stac_discovery"]["properties"])
+    assert crs is not None
+    return crs
 
 
 def extract_spatial_info_stac(ds: xr.Dataset) -> dict | None:
@@ -81,15 +103,19 @@ def extract_spatial_info_stac(ds: xr.Dataset) -> dict | None:
     # (assume they are consistent for now)
     var0 = next(iter(ds.data_vars.values()))
 
-    if "proj:epsg" not in var0.attrs:
+    crs = _get_stac_proj_crs(var0.attrs)
+    if crs is None:
         return None
 
+    spatial_dims = {"x", "y"}
     spatial_arrays = [
-        name for name, var in ds.data_vars.items() if "proj:epsg" in var0.attrs
+        name
+        for name, var in ds.data_vars.items()
+        if spatial_dims.intersection(var.dims)
     ]
 
     return {
-        "crs": [pyproj.CRS.from_epsg(var0.attrs["proj:epsg"])],
+        "crs": [crs],
         "transform": [affine.Affine(*var0.attrs["proj:transform"])],
         "spatial_dimensions": {"x": ds.sizes["x"], "y": ds.sizes["y"]},
         "spatial_coordinates": ["x", "y"],
