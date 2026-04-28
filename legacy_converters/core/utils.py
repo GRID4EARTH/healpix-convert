@@ -116,8 +116,8 @@ def extract_spatial_info_stac(ds: xr.Dataset) -> dict | None:
     spatial_dims = {"x", "y"}
     spatial_arrays = [
         name
-        for name, var in ds.data_vars.items()
-        if spatial_dims.intersection(var.dims)
+        for name, var in ds.variables.items()
+        if spatial_dims.intersection(var.dims) and name not in spatial_dims
     ]
 
     transform = affine.Affine(*var0.attrs["proj:transform"])
@@ -157,12 +157,12 @@ def extract_spatial_info_cf(ds: xr.Dataset) -> dict | None:
                 is_rectilinear = False
 
     if lonlat_coords:
+        lonlat_coords_ = [lonlat_coords.get(name) for name in std_lonlat]
         spatial_arrays = [
             name
-            for name, var in ds.data_vars.items()
-            if set(var.dims).intersection(lonlat_dims)
+            for name, var in ds.variables.items()
+            if set(var.dims).intersection(lonlat_dims) and name not in lonlat_coords_
         ]
-        lonlat_coords_ = [lonlat_coords.get(name) for name in std_lonlat]
 
         return {
             # TODO: EPSG generic spherical model? Or allow something other?

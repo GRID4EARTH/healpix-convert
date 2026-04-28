@@ -40,7 +40,7 @@ class ZarrCreateArrayKwargs(TypedDict):
     shape: tuple[int, ...]
     dtype: np.dtype
     data: np.ndarray
-    chunks: tuple[int, ...]
+    chunks: tuple[int, ...] | None
     dimension_names: Iterable[str]
     codecs: Iterable[dict[str, JSON]] | None
 
@@ -175,59 +175,54 @@ class HealpixGroupConverter(ABC):
         )
 
         ds0 = self.datasets[0]
+        spatial_dims = set(self.spatial_info.spatial_dimensions)
 
-        for name, var in ds0.coords.items():
-            if name not in self.spatial_info.spatial_coordinates:
-                # TODO: skip it for now
-                # There are multiple cases to handle
-                # 1. coordinate sharing one of input spatial dimensions but not all
-                #    - e.g.,  time_stamp(rows)
-                #       -> nonsense to convert to HEALPix? skip or propagate as-is?
-                # 2. coordinate having the exact same spatial dimensions
-                #    - e.g.,  altitude(rows, colums)
-                #    - should probably be converted to HEALPix like data variables
-                # 3. coordinate sharing none of the spatial dimensions
-                #    - propagate as-is
-                # 4. coordinate with incompatible dtype (e.g., np.datetime64) -> propagate?
-                #
-                # How best to propagate?
-                #  - use dask.array.to_zarr() if var is chunked?
-                #  - xarray chunks are dask chunks != zarr chunks -> we need zarr chunks (how to access it?)
-                #  - how to align dask chunks with zarr chunks?
-                #
-                pass
-                # _get_maybe_create_array(
-                #     str(name),
-                #     data=var.values,
-                #     chunks=var.chunks,
-                #     dimension_names=var.dims,
-                #     codecs=None,
-                # )
+        for name, var in ds0.variables.items():
+            if name in self.spatial_info.spatial_coordinates:
+                # legacy spatial coordinates are replaced by one HEALPix cell ids coordinate
+                continue
+            elif name in self.spatial_info.spatial_arrays:
+                extra_dims = [d for d in var.dims if d not in spatial_dims]
 
-        for name, var in ds0.data_vars.items():
-            if name in self.spatial_info.spatial_arrays:
-                # TODO: need to handle non-spatial dimensions
-                #  - get zarr chunks along those dimensions
-                #  -
+                if extra_dims:
+                    extra_shape = [ds0.sizes[d] for d in extra_dims]
+                    var_chunk_sizes = var.encoding.get(
+                        "preferred_chunks", {d: ds0.sizes[d] for d in var.dims}
+                    )
+                    extra_chunk_sizes = [var_chunk_sizes[d] for d in extra_dims]
+                    # similarly to how "core" dimensions are handled in numpy
+                    # generalized universal functions, the HEALPix cell
+                    # dimension is moved to the last axis in the output array.
+                    dims = tuple(extra_dims + [self.cell_dim])
+                    shape = tuple(extra_shape + [self.cell_dim_size])
+                    chunks = tuple(extra_chunk_sizes + [self.cell_dim_chunk_size])
+                else:
+                    dims = (self.cell_dim,)
+                    shape = (self.cell_dim_size,)
+                    chunks = (self.cell_dim_chunk_size,)
+
                 if self.settings.resampler.name in ["bilinear", "psf"]:
                     dtype = np.float64
                 else:
                     dtype = var.dtype
+
                 _get_maybe_create_array(
                     str(name),
-                    shape=(self.cell_dim_size,),
+                    shape=shape,
                     dtype=dtype,
-                    chunks=(self.cell_dim_chunk_size,),
-                    dimension_names=(self.cell_dim,),
+                    chunks=chunks,
+                    dimension_names=dims,
                     codecs=self.settings.codecs,
                 )
             else:
                 # write array unchanged in output group
-                # TODO: use dask.array.to_zarr() if var is chunked?
+                # TODO: use dask.array.to_zarr() if var is chunked? (avoid memory blow-up)
                 _get_maybe_create_array(
                     str(name),
+                    shape=var.shape,
+                    dtype=var.dtype,
                     data=var.values,
-                    chunks=var.chunks,
+                    chunks=var.encoding.get("chunks"),
                     dimension_names=var.dims,
                     codecs=None,
                 )
@@ -376,6 +371,9 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         for ds, cids in zip(self.datasets, input_chunk_cell_ids):
             ridx, cidx = np.nonzero(cids == chunk_cell_id)
             if len(ridx) and len(cidx):
+                # note: the Xarray advanced indexing operation below already broadcasts
+                # the Dataset variables that only have a subset of the spatial dimensions
+                # (i.e., either rows or columns)
                 ds_clipped = ds.isel(
                     {
                         rdim: xr.Variable("points", ridx),
@@ -455,6 +453,9 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
                 .sel(x=slice(xmin, xmax), y=slice(ymax, ymin))
                 .compute()
                 .grid4earth.convert_to(4326)
+                # note: the Xarray stack operation below already broadcasts
+                # the Dataset variables that only have a subset of the spatial dimensions
+                # (i.e., either x or y)
                 .stack(
                     points=list(self.spatial_info.spatial_dimensions),
                     create_index=False,
@@ -540,6 +541,7 @@ class DenseChunkConverter(UniformChunkConverter):
         chunk_slice = slice(start, stop)
         self.output_arrays[self.healpix.coordinate][chunk_slice] = cell_ids
 
+        log.debug("query input points")
         ds_input_points = self.query_input_points(chunk_cell_id)
 
         # no input data point for current chunk
@@ -559,6 +561,7 @@ class DenseChunkConverter(UniformChunkConverter):
         # TODO: pass array dtype to resampler
         # in case all arrays to resample have the same dtype
 
+        log.debug("initialize resampler")
         resampler = resampler_cls(
             lon_deg=ds_input_points.lon.values,
             lat_deg=ds_input_points.lat.values,
@@ -572,19 +575,36 @@ class DenseChunkConverter(UniformChunkConverter):
         # resample arrays (data variables)
         var_names = [
             str(name)
-            for name in ds_input_points.data_vars
+            for name in ds_input_points.variables
             if name in self.spatial_info.spatial_arrays
         ]
         resample_params = broadcast_params(
             resampler_settings.resample_params, var_names
         )
 
+        log.debug(f"resample {len(var_names)} arrays")
         for name in var_names:
-            var = ds_input_points[name]
+            var = ds_input_points.variables[name]
+
+            assert "points" in var.dims
+            extra_dims = [d for d in var.dims if d != "points"]
+            extra_dim_sizes = [var.sizes[d] for d in extra_dims]
+
+            # make sure the "points" core dimension is moved to the last axis
+            # maybe stack non-spatial dimensions, to pass to `.resample()` as a single "batch" dimension
+            if extra_dims:
+                if len(extra_dims) == 1:
+                    var = var.transpose(extra_dims[0], "points")
+                else:
+                    var = var.stack(batch=extra_dims).transpose("batch", "points")
+
+                cell_data_shape = (var.shape[0], cell_ids.size)
+            else:
+                cell_data_shape = (cell_ids.size,)
 
             # initialize cell data to nodata (TODO: get the right fill_value and dtype)
             # index/fill the array below with data values returned by the resampler
-            cell_data = np.full(cell_ids.size, np.nan)
+            cell_data = np.full(cell_data_shape, np.nan)
 
             data = var.values.astype("f")
 
@@ -596,11 +616,14 @@ class DenseChunkConverter(UniformChunkConverter):
             in_chunk = (res.cell_ids >= cell_ids[0]) & (res.cell_ids <= cell_ids[-1])
             res_indices = (res.cell_ids - cell_ids[0]).astype("int")
 
-            cell_data[res_indices[in_chunk]] = res.cell_data[in_chunk]
-            cell_data[np.isnan(cell_data)] = zarray.fill_value
-            self.output_arrays[str(name)][chunk_slice] = cell_data.astype(
-                cell_data.dtype
-            )
+            cell_data[..., res_indices[in_chunk]] = res.cell_data[..., in_chunk]
+            cell_data[..., np.isnan(cell_data)] = zarray.fill_value
+
+            # maybe unstack non-spatial dimensions from the resampled batch dimension
+            if len(extra_dims) > 1:
+                cell_data = cell_data.reshape(tuple(extra_dim_sizes + [cell_ids.size]))
+
+            zarray[..., chunk_slice] = cell_data.astype(cell_data.dtype)
 
 
 class SparseChunkConverter(UniformChunkConverter):
@@ -670,7 +693,7 @@ class SparseChunkConverter(UniformChunkConverter):
         # resample arrays (data variables)
         var_names = [
             str(name)
-            for name in ds_input_points.data_vars
+            for name in ds_input_points.variables
             if name in self.spatial_info.spatial_arrays
         ]
         resample_params = broadcast_params(
@@ -680,16 +703,35 @@ class SparseChunkConverter(UniformChunkConverter):
         log.debug(f"resample {len(var_names)} arrays")
         for name in var_names:
             var = ds_input_points.variables[name]
+
+            assert "points" in var.dims
+            extra_dims = [d for d in var.dims if d != "points"]
+            extra_dim_sizes = [var.sizes[d] for d in extra_dims]
+
+            # make sure the "points" core dimension is moved to the last axis
+            # maybe stack non-spatial dimensions, to pass to `.resample()` as a single "batch" dimension
+            if extra_dims:
+                if len(extra_dims) == 1:
+                    var = var.transpose(extra_dims[0], "points")
+                else:
+                    var = var.stack(batch=extra_dims).transpose("batch", "points")
+
             data = var.values.astype("f")
 
-            # log.debug(f"resample variable {name}")
             res = resampler.resample(data, **resample_params[name])
 
-            # log.debug(f"write chunk {chunk_slice!r} for variable {name!r}")
-            self.output_arrays[str(name)][chunk_slice] = res.cell_data.astype(var.dtype)
+            # maybe unstack non-spatial dimensions from the resampled batch dimension
+            if len(extra_dims) > 1:
+                cell_data = res.cell_data.reshape(
+                    tuple(extra_dim_sizes + [cell_ids.size])
+                )
+            else:
+                cell_data = res.cell_data
+
+            zarray = self.output_arrays[str(name)]
+            zarray[..., chunk_slice] = cell_data.astype(var.dtype)
 
         del resampler
-        # self._input_chunk_cell_ids.clear()
 
 
 class DummyConverter(HealpixGroupConverter):
