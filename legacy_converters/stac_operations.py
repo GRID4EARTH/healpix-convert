@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import itertools
 import json
+import re
+from collections.abc import Iterable
+from pathlib import PurePath
 from typing import Any
 
 import shapely
@@ -52,7 +55,7 @@ def _merge_assets(values: list[dict[str, Any]]) -> dict[str, Any]:
     return values[0]
 
 
-def _collect_keys(mappings: list[StacItem]):
+def _collect_keys(mappings: Iterable[StacItem]):
     return list(
         dict.fromkeys(
             itertools.chain.from_iterable(
@@ -62,11 +65,15 @@ def _collect_keys(mappings: list[StacItem]):
     )
 
 
-def _merge_stac_items(
-    items: dict[str, StacItem], spatial_info: OutputSpatialInfo
+def merge_stac_items(
+    items: dict[str, StacItem],
+    spatial_info: OutputSpatialInfo,
+    output_path: str,
 ) -> StacItem:
     if len(items) == 0:
         raise ValueError("no STAC metadata found")
+
+    item_id = re.sub("[^a-zA-Z0-9-]", "_", PurePath(output_path).stem)
 
     # special-case properties, links, assets
     merge_strategies = {
@@ -77,6 +84,7 @@ def _merge_stac_items(
             shapely.to_geojson(spatial_info.geometry_latlon)
         ),
         "bbox": lambda _: spatial_info.bbox,
+        "id": lambda _: item_id,
     }
 
     merged_item = {}
