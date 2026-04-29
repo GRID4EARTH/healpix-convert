@@ -1,7 +1,7 @@
 """Utility methods used internally for converting datasets onto HEALPix."""
 
 from collections import Counter
-from typing import Any
+from typing import Any, Literal
 
 import affine
 import healpix_geo
@@ -282,3 +282,22 @@ def create_raster_index(
     coords = xr.Coordinates.from_xindex(raster_index)
 
     return ds.assign_coords(coords)
+
+
+EARTH_RADIUS_M = 6_371_000
+
+
+def resolution_to_level(
+    resolution: int | float, round_type: Literal["round", "floor", "ceil"] = "round"
+) -> int:
+    """Determine (approx.) the HEALPix refinement level from a resolution given in meters."""
+    if round_type == "floor":
+        round_func = np.floor
+    elif round_type == "ceil":
+        round_func = np.ceil
+    else:
+        round_func = np.round
+
+    base = EARTH_RADIUS_M * np.sqrt(np.pi / 3.0)
+    level = int(round_func(np.log2(base / resolution)))
+    return level
