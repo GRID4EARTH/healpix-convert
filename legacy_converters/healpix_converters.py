@@ -328,21 +328,29 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
             self.chunk_healpix.ellipsoid.name,
         )
 
+    def _compute_input_chunk_cell_ids(self, level=None):
+        if level is None:
+            level = self.chunk_healpix.refinement_level
+
+        lon_name, lat_name = self.spatial_info.spatial_coordinates
+        cell_ids = []
+
+        for ds in self.datasets:
+            cell_ids.append(
+                healpix_geo.nested.lonlat_to_healpix(
+                    ds[lon_name].values,
+                    ds[lat_name].values,
+                    level,
+                    self.chunk_healpix.ellipsoid.name.upper(),
+                )
+            )
+
+        return cell_ids
+
     @property
     def input_chunk_cell_ids(self):
         if not len(self._input_chunk_cell_ids):
-            self._input_chunk_cell_ids = []
-
-            for ds in self.datasets:
-                lon_name, lat_name = self.spatial_info.spatial_coordinates
-                self._input_chunk_cell_ids.append(
-                    healpix_geo.nested.lonlat_to_healpix(
-                        ds[lon_name].values,
-                        ds[lat_name].values,
-                        self.chunk_healpix.refinement_level,
-                        self.chunk_healpix.ellipsoid.name.upper(),
-                    )
-                )
+            self._input_chunk_cell_ids = self._compute_input_chunk_cell_ids()
 
         return self._input_chunk_cell_ids
 
@@ -357,19 +365,57 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
 
         Assumes 2-dimensional longitude and latitude coordinates present in the datasets.
 
-        Only input points located within the HEALPix chunk cell are selected. No
-        buffer or ring is applied around the chunk cell.
+        Only input points located within the HEALPix chunk cell are selected. If
+        the chunk buffer is non zero, the selection of input points also include
+        an outer ring of HEALPix cells around the the chunk at a level determined
+        from the buffer width.
 
         """
         lon_name, lat_name = self.spatial_info.spatial_coordinates
         ds0 = self.datasets[0]
         rdim, cdim = ds0[lon_name].dims
 
-        input_chunk_cell_ids = self.input_chunk_cell_ids
+        if self.chunk_buffer > 0:
+            ring_level = utils.resolution_to_level(self.chunk_buffer, round_type="ceil")
+            input_ring_cell_ids = self._compute_input_chunk_cell_ids(level=ring_level)
+        else:
+            ring_level = 0
+            input_ring_cell_ids = [np.array([], dtype=np.uint64)] * len(self.datasets)
 
         prepared_datasets = []
-        for ds, cids in zip(self.datasets, input_chunk_cell_ids):
-            ridx, cidx = np.nonzero(cids == chunk_cell_id)
+        for ds, cids, rids in zip(
+            self.datasets, self.input_chunk_cell_ids, input_ring_cell_ids
+        ):
+            if self.chunk_buffer > 0:
+                # TODO: far from optimal (a function in healpix_geo for getting the ring would be better)
+                chunk_zoomed = healpix_geo.nested.zoom_to(
+                    chunk_cell_id,
+                    depth=self.chunk_healpix.refinement_level,
+                    new_depth=ring_level,
+                ).ravel()
+
+                chunk_with_ring = healpix_geo.nested.kth_neighbourhood(
+                    chunk_zoomed, ring_level, ring=1
+                )
+                chunk_with_ring = np.unique(chunk_with_ring)
+
+                start_id = np.searchsorted(
+                    chunk_with_ring, chunk_zoomed[0], side="left"
+                )
+                stop_id = np.searchsorted(
+                    chunk_with_ring, chunk_zoomed[-1], side="right"
+                )
+                ring_cell_ids = np.delete(chunk_with_ring, slice(start_id, stop_id))
+
+                is_selected = np.logical_or(
+                    cids == chunk_cell_id, np.isin(rids, ring_cell_ids)
+                )
+            else:
+                # fastpath
+                is_selected = cids == chunk_cell_id
+
+            ridx, cidx = np.nonzero(is_selected)
+
             if len(ridx) and len(cidx):
                 # note: the Xarray advanced indexing operation below already broadcasts
                 # the Dataset variables that only have a subset of the spatial dimensions
@@ -484,7 +530,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
 
         if self.spatial_info.is_projected:
             return self._query_chunk_input_points_projected(chunk_cell_id)
-        elif not self.spatial_info.is_rectilinear and self.chunk_buffer == 0:
+        elif not self.spatial_info.is_rectilinear:
             return self._query_chunk_input_points_latlon_curvilinear(chunk_cell_id)
         else:
             log.warning(
