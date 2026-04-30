@@ -250,6 +250,35 @@ def compute_output_extent_latlon(
     return output_extent
 
 
+def create_transform_coords(
+    x: xr.DataArray, y: xr.DataArray, transformer: pyproj.Transformer
+) -> xr.Coordinates:
+    xx, yy = xr.broadcast(
+        x.drop_indexes("x", errors="ignore"),
+        y.drop_indexes("y", errors="ignore"),
+    )
+
+    assert transformer.target_crs is not None
+    axis_names = [ax.abbrev.lower() for ax in transformer.target_crs.axis_info]
+
+    converted = xr.apply_ufunc(
+        transformer.transform, xx, yy, output_core_dims=[[]] * len(axis_names)
+    )
+
+    return xr.Coordinates(
+        {name: coord.variable for name, coord in zip(axis_names, converted)},
+        indexes={},
+    )
+
+
+def assign_transform_coords(
+    ds: xr.Dataset, source_crs: pyproj.CRS, target_crs: pyproj.CRS
+) -> xr.Dataset:
+    transformer = pyproj.Transformer.from_crs(source_crs, target_crs, always_xy=True)
+    new_coords = create_transform_coords(ds["x"], ds["y"], transformer)
+    return ds.assign_coords(new_coords)
+
+
 def compute_output_chunk_info(
     output_extent: shapely.Polygon,
     chunk_level: int,

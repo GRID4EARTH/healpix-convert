@@ -456,6 +456,8 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         - flatten (stack) input datasets and convert x/y coordinates to lat-lon.
 
         """
+        crs_wgs84 = pyproj.CRS.from_epsg(4326)
+
         # compute chunk cell polygon
         lon, lat = healpix_geo.nested.vertices(
             chunk_cell_id,
@@ -465,7 +467,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         chunk_poly_latlon = shapely.Polygon(list(zip(lon[0], lat[0])))
 
         chunk_polys = utils.reproject_to_multiple_crs(
-            chunk_poly_latlon, pyproj.CRS.from_epsg(4326), self.spatial_info.crs
+            chunk_poly_latlon, crs_wgs84, self.spatial_info.crs
         )
 
         # Maybe add buffer around polygon
@@ -487,7 +489,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         # - convert to lat/lon (wgs84) if needed
         # - flatten spatial dimensions
         prepared_datasets = []
-        for ds, poly in zip(self.datasets, overlap_polys):
+        for ds, crs, poly in zip(self.datasets, self.spatial_info.crs, overlap_polys):
             if poly.is_empty:
                 continue
 
@@ -498,7 +500,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
                 # TODO: check slice bounds for north vs. south hemisphere?
                 .sel(x=slice(xmin, xmax), y=slice(ymax, ymin))
                 .compute()
-                .grid4earth.convert_to(4326)
+                .pipe(lambda ds: utils.assign_transform_coords(ds, crs, crs_wgs84))
                 # note: the Xarray stack operation below already broadcasts
                 # the Dataset variables that only have a subset of the spatial dimensions
                 # (i.e., either x or y)
