@@ -25,5 +25,5 @@ def test_stac_item_values() -> None:
     assert item.bbox == bbox
     assert item.geometry == geom
     assert item.properties == {}
-    assert item.links == {}
+    assert item.links == []
     assert item.assets == {}
