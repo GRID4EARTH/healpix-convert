@@ -77,7 +77,7 @@ def test_extract_stac_metadata_empty(log: StructuredLogCapture) -> None:
 
     assert actual == expected
     assert log.events == [
-        log.warning("failed to extract STAC metadata", group=group_name)
+        log.warning("failed to extract STAC metadata from dataset", dataset=group_name)
     ]
 
 
