@@ -1,10 +1,5 @@
 import importlib.metadata
 
-from legacy_converters import interpolation  # noqa: F401
-from legacy_converters.accessor import (  # noqa: F401
-    DatasetConverterAccessor,
-    DataTreeConverterAccessor,
-)
 from legacy_converters.cache import create_staging_cache
 from legacy_converters.convert import (
     convert_group_to_healpix,
