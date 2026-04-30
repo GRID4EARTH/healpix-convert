@@ -59,6 +59,18 @@ healpix-plot = ">=0.1.1, <0.2"
 [feature.dev.tasks]
 jupyterlab = { cmd = "jupyter lab", cwd = "." }
 
+[feature.docs.dependencies]
+sphinx = ">=9,<10"
+myst-nb = "*"
+pydata-sphinx-theme = "*"
+ipython = ">=9.11.0,<10"
+sphinx-design = "*"
+sphinx-autobuild = "*"
+
+[feature.docs.tasks]
+build-docs = { cmd = "python -m sphinx -b html -n -W . _build/html", cwd = "docs" }
+autobuild-docs = { cmd = "sphinx-autobuild -b html -n -W . _build/html", cwd = "docs" }
+
 [feature.tests.dependencies]
 pytest = "*"
 pytest-cov = "*"
@@ -82,6 +94,7 @@ pyinstrument = "*"
 dev = ["tests", "profilers", "dev"]
 ci-py311 = ["tests", "ci-py311"]
 ci-py313 = ["tests", "ci-py313"]
+docs = ["docs", "ci-py313"]
 
 [tasks.ci-py311]
 depends-on = [{ task = "tests", environment = "ci-py311" }]
