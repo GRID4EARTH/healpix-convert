@@ -41,7 +41,7 @@ build-backend = "setuptools.build_meta"
 packages = ["legacy_converters"]
 
 [tool.setuptools_scm]
-fallback_version = "9999"
+fallback_version = "999"
 
 [tool.ruff]
 builtins = ["ellipsis"]
@@ -83,3 +83,5 @@ known-third-party = []
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
+
+
