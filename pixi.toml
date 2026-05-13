@@ -32,7 +32,7 @@ pytorch-gpu = ">=2.9.1,<3"
 legacy-converters = { path = ".", editable = true }
 rasterix = ">=0.1"
 healpix-resample = ">=0.1.5"
-healpix-compress = { git = "ssh://git@github.com/EOPF-DGGS/healpix-compress" }
+healpix-compress = { git = "ssh://git@github.com/GRID4EARTH/healpix-compress" }
 
 [feature.dev.dependencies]
 pystac-client = ">=0.9.0,<0.10"

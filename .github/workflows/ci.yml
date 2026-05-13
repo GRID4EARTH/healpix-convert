@@ -21,7 +21,7 @@ jobs:
     name: detect ci trigger
     runs-on: ubuntu-latest
     if: |
-      github.repository_owner == 'EOPF-DGGS'
+      github.repository_owner == 'GRID4EARTH'
       && (github.event_name == 'pull_request' || github.event_name == 'push')
     outputs:
       triggered: ${{ steps.detect-trigger.outputs.trigger-found }}
