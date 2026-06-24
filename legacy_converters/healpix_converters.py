@@ -3,12 +3,13 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from pathlib import PurePath
-from typing import Any, TypedDict, Unpack
+from typing import Any, NotRequired, TypedDict, Unpack, cast
 
 import dask.distributed
 import healpix_geo
 import healpix_resample
 import numpy as np
+import numpy.typing as npt
 import pyproj
 import shapely
 import structlog
@@ -23,7 +24,11 @@ from legacy_converters.core.conversion_models import (
     InputSpatialInfo,
     OutputSpatialInfo,
 )
-from legacy_converters.core.healpix_conventions import DGGSZarrConvention, Healpix
+from legacy_converters.core.healpix_conventions import (
+    CFHealpixGridMapping,
+    DGGSZarrConvention,
+    Healpix,
+)
 from legacy_converters.settings.common import (
     ConvertSettings,
     HealpixDenseChunkSettings,
@@ -38,11 +43,12 @@ log = structlog.get_logger()
 
 class ZarrCreateArrayKwargs(TypedDict):
     shape: tuple[int, ...]
-    dtype: np.dtype
-    data: np.ndarray
-    chunks: tuple[int, ...] | None
-    dimension_names: Iterable[str]
-    codecs: Iterable[dict[str, JSON]] | None
+    dtype: npt.DTypeLike | str
+    data: NotRequired[np.ndarray]
+    chunks: NotRequired[tuple[int, ...] | None]
+    dimension_names: NotRequired[Iterable[str]]
+    codecs: NotRequired[Iterable[dict[str, JSON]] | None]
+    attributes: NotRequired[dict[str, JSON] | None]
 
 
 class HealpixGroupConverter(ABC):
@@ -164,14 +170,29 @@ class HealpixGroupConverter(ABC):
             assert isinstance(arr, zarr.Array)
             zarrays[name] = arr
 
+        if isinstance(self.healpix.coordinate, str):
+            _get_maybe_create_array(
+                self.healpix.coordinate,
+                shape=(self.cell_dim_size,),
+                dtype=np.uint64,
+                chunks=(self.cell_dim_chunk_size,),
+                dimension_names=(self.cell_dim,),
+                fill_value=np.iinfo(np.uint64).max,
+                codecs=None,
+                # CF 1.13 conventions
+                # TODO: more flexible handling of attributes
+                attributes={"standard_name": "healpix_index", "units": "1"},
+            )
+
+        # CF HEALPix grid mapping variable
+        # TODO: more flexible handling of metadata
+        cf_hp = CFHealpixGridMapping.from_healpix(self.healpix)
         _get_maybe_create_array(
-            self.healpix.coordinate,
-            shape=(self.cell_dim_size,),
-            dtype=np.uint64,
-            chunks=(self.cell_dim_chunk_size,),
-            dimension_names=(self.cell_dim,),
-            fill_value=np.iinfo(np.uint64).max,
-            codecs=None,
+            "crs",
+            shape=(),
+            data=np.array(0, dtype=np.int8),
+            dtype=np.int8,
+            attributes=cf_hp.model_dump(),
         )
 
         ds0 = self.datasets[0]
@@ -211,8 +232,11 @@ class HealpixGroupConverter(ABC):
                     shape=shape,
                     dtype=dtype,
                     chunks=chunks,
-                    dimension_names=dims,
-                    codecs=self.settings.codecs,
+                    dimension_names=[str(d) for d in dims],
+                    codecs=cast(Iterable[dict[str, JSON]], self.settings.codecs),
+                    # CF 1.13 conventions
+                    # TODO: more flexible handling of attributes
+                    attributes={"grid_mapping": "crs"},
                 )
             else:
                 # write array unchanged in output group
@@ -223,7 +247,7 @@ class HealpixGroupConverter(ABC):
                     dtype=var.dtype,
                     data=var.values,
                     chunks=var.encoding.get("chunks"),
-                    dimension_names=var.dims,
+                    dimension_names=[str(d) for d in var.dims],
                     codecs=None,
                 )
 

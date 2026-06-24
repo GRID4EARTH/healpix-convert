@@ -71,8 +71,8 @@ class Healpix(BaseModel):
 
     name: Literal["healpix"] = "healpix"
 
-    refinement_level: Annotated[int | None, Field(ge=0)]
-    """HEALPix refinement level."""
+    refinement_level: Annotated[int | None, Field(ge=0, le=29)]
+    """HEALPix refinement level (must be defined for "nested" and "ring" indexing schemes)."""
 
     indexing_scheme: Literal["nested", "ring", "zuniq"] = "nested"
     """HEALPix indexing scheme."""
@@ -108,3 +108,52 @@ class Healpix(BaseModel):
                 )
 
         return self
+
+
+class CFHealpixGridMapping(BaseModel):
+    """CF-conventions HEALPix grid mapping (CF 1.13+)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    grid_mapping_name: Literal["healpix"] = "healpix"
+
+    refinement_level: Annotated[int | MISSING, Field(ge=0, le=29)] = MISSING
+    """HEALPix refinement level (must be given for "nested" and "ring" indexing schemes)."""
+
+    indexing_scheme: Literal["nested", "ring", "zuniq"] = "nested"
+    """HEALPix indexing scheme."""
+
+    reference_ellipsoid_name: str | MISSING = MISSING
+    semi_major_axis: float | MISSING = MISSING
+    inverse_flattening: float | MISSING = MISSING
+
+    @model_validator(mode="after")
+    def validate_indexing_scheme_vs_refinement_level(self) -> CFHealpixGridMapping:
+        if (
+            self.indexing_scheme in ("nested", "ring")
+            and self.refinement_level is MISSING
+        ):
+            raise ValueError(
+                f"refinement level must be defined for {self.indexing_scheme!r} indexing scheme"
+            )
+        if self.indexing_scheme == "zuniq" and isinstance(self.refinement_level, int):
+            raise ValueError(
+                f"refinement level must be omitted for {self.indexing_scheme!r} indexing scheme"
+            )
+
+        return self
+
+    @classmethod
+    def from_healpix(cls, hp: Healpix) -> CFHealpixGridMapping:
+        """Build a CF grid mapping from a :class:`Healpix` grid description."""
+        kwargs: dict = {
+            "refinement_level": hp.refinement_level,
+            "indexing_scheme": hp.indexing_scheme,
+        }
+        ellipsoid = hp.ellipsoid
+        if ellipsoid is not MISSING:
+            kwargs["reference_ellipsoid_name"] = ellipsoid.name.upper()
+            kwargs["semi_major_axis"] = ellipsoid.semimajor_axis
+            kwargs["inverse_flattening"] = ellipsoid.inverse_flattening
+
+        return cls(**kwargs)
