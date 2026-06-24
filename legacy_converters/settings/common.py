@@ -20,6 +20,9 @@ from pydantic import (
 )
 
 from legacy_converters.core.healpix_conventions import Healpix
+from legacy_converters.settings.cams import CAMS_CONVERT_SETTINGS
+from legacy_converters.settings.climatedt import CDT_SFC_CONVERT_SETTINGS
+from legacy_converters.settings.era5 import ERA5_CONVERT_SETTINGS
 from legacy_converters.settings. import (
     __CONVERT_SETTINGS,
     __CONVERT_SETTINGS,
@@ -476,6 +479,12 @@ def get_settings(name: str) -> ConvertSettings:
         return ConvertSettings.model_validate(__LST_PSF_CONVERT_SETTINGS)
     elif name == "--l2-frp-psf":
         return ConvertSettings.model_validate(__FRP_PSF_CONVERT_SETTINGS)
+    elif name == "era5":
+        return ConvertSettings.model_validate(ERA5_CONVERT_SETTINGS)
+    elif name == "cams-eac4":
+        return ConvertSettings.model_validate(CAMS_CONVERT_SETTINGS)
+    elif name == "climatedt-sfc":
+        return ConvertSettings.model_validate(CDT_SFC_CONVERT_SETTINGS)
 
     else:
         raise ValueError(f"settings not found for {name!r}")
