@@ -45,7 +45,11 @@ import xarray as xr
 import zarr.api.synchronous as zarr
 from healpix_resample import PSFResampler
 
-from legacy_converters.core.healpix_conventions import DGGSZarrConvention, Healpix
+from legacy_converters.core.healpix_conventions import (
+    DGGSZarrConvention,
+    Healpix,
+    write_cf_grid_mapping,
+)
 from legacy_converters.core.stac import StacItem
 from legacy_converters.settings.cams import (
     ADS_DATASET,
@@ -388,6 +392,8 @@ class CAMSConverter:
                 dimension_names=("time", "cells"),
                 attributes={"units": unit, "long_name": long_name, "valid_min": 0.0},
             )
+        # CF 1.13 HEALPix grid mapping alongside the DGGS-Zarr convention
+        write_cf_grid_mapping(grp, healpix_model, CAMS_VARIABLE_META)
         zarr.consolidate_metadata(root.store)
         log.info(f"CAMS zarr skeleton initialised: {output_path}")
 

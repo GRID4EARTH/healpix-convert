@@ -4,10 +4,14 @@ Pydantic model classes for DGGS / HEALPix conventions
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 from pydantic.experimental.missing_sentinel import MISSING
+
+if TYPE_CHECKING:
+    import zarr
 
 _UUID: str = "7b255807-140c-42ca-97f6-7a1cfecdbc38"
 _SCHEMA_URL = (
@@ -157,3 +161,42 @@ class CFHealpixGridMapping(BaseModel):
             kwargs["inverse_flattening"] = ellipsoid.inverse_flattening
 
         return cls(**kwargs)
+
+
+def write_cf_grid_mapping(
+    group: zarr.Group,
+    healpix: Healpix,
+    data_variables: Iterable[str],
+    *,
+    cell_id_coord: str = "cell_ids",
+) -> None:
+    """Emit the CF 1.13 HEALPix grid mapping into a HEALPix zarr ``group``.
+
+    This mirrors what :meth:`HealpixGroupConverter._get_arrays` writes on the
+    shared write path, so converters that build their zarr groups themselves
+    (ERA5, CAMS, ClimateDT) stay CF-conformant alongside the DGGS-Zarr
+    convention. The group is expected to already hold the cell-id coordinate
+    and the listed data variables.
+
+    It writes, in ``group``:
+
+    - the CF ``healpix_index`` standard name on the cell-id coordinate;
+    - a scalar ``crs`` grid-mapping variable carrying the CF HEALPix attributes
+      (derived from ``healpix`` via :meth:`CFHealpixGridMapping.from_healpix`);
+    - ``grid_mapping = "crs"`` on every data variable.
+    """
+    import numpy as np
+
+    # promote the HEALPix cell-id coordinate to a CF healpix_index coordinate
+    group[cell_id_coord].attrs.update({"standard_name": "healpix_index", "units": "1"})
+
+    # scalar CF grid-mapping variable
+    cf_hp = CFHealpixGridMapping.from_healpix(healpix)
+    crs = group.create_array(
+        "crs", shape=(), dtype=np.int8, attributes=cf_hp.model_dump()
+    )
+    crs[...] = 0
+
+    # reference the grid mapping from every resampled data variable
+    for name in data_variables:
+        group[name].attrs["grid_mapping"] = "crs"

@@ -44,7 +44,11 @@ import numpy as np
 import xarray as xr
 import zarr.api.synchronous as zarr
 
-from legacy_converters.core.healpix_conventions import DGGSZarrConvention, Healpix
+from legacy_converters.core.healpix_conventions import (
+    DGGSZarrConvention,
+    Healpix,
+    write_cf_grid_mapping,
+)
 from legacy_converters.core.stac import StacItem
 from legacy_converters.settings.climatedt import (
     CDT_CLASS,
@@ -372,6 +376,9 @@ class ClimateDTConverter:
                 dimension_names=("time", "cells"),
                 attributes={"units": unit, "long_name": long_name},
             )
+
+        # CF 1.13 HEALPix grid mapping alongside the DGGS-Zarr convention
+        write_cf_grid_mapping(grp, healpix_model, var_meta)
 
         zarr.consolidate_metadata(root.store)
         log.info(f"ClimateDT zarr skeleton initialised: {output_path}")
