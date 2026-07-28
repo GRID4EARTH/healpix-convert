@@ -1,7 +1,7 @@
 """Utility methods used internally for converting datasets onto HEALPix."""
 
 from collections import Counter
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import affine
 import healpix_geo
@@ -94,7 +94,7 @@ def get_crs_from_stac(xr_obj: xr.DataTree | xr.Dataset) -> pyproj.CRS:
     return crs
 
 
-def extract_spatial_info_stac(ds: xr.Dataset) -> dict | None:
+def extract_spatial_info_stac(ds: xr.Dataset, default_crs: pyproj.CRS) -> dict | None:
     """Extract spatial information from a Zarr group using STAC conventions.
 
     Assume that spatial information is represented as STAC (projection)
@@ -110,17 +110,30 @@ def extract_spatial_info_stac(ds: xr.Dataset) -> dict | None:
     var0 = next(iter(ds.data_vars.values()))
 
     crs = _get_stac_proj_crs(var0.attrs)
-    if crs is None:
-        return None
-
     spatial_dims = {"x", "y"}
+
+    if crs is None:
+        # TODO: remove the if condition below
+        # The case of x/y coordinates with no CRS nor affine transform metadata in
+        # a Zarr group shouldn't be covered, but it is here to support some groups
+        # in UTM EOPF datasets published on EOPF sample service where metadata is missing
+        # (e.g.,  conditions/geometry). In that case, the `default_crs` (extracted
+        # from the root group metadata) is passed here and the transform is computed from the
+        # x/y coordinates (rasterix assumes monotonic coordinate values)
+        if "x" not in ds.variables and "y" not in ds.variables:
+            return None
+        else:
+            crs = default_crs
+            ds_ = rasterix.assign_index(ds, x_dim="x", y_dim="y", crs=False)
+            transform = cast(rasterix.RasterIndex, ds_.xindexes["x"]).center_transform()
+    else:
+        transform = affine.Affine(*var0.attrs["proj:transform"])
+
     spatial_arrays = [
         name
         for name, var in ds.variables.items()
         if spatial_dims.intersection(var.dims) and name not in spatial_dims
     ]
-
-    transform = affine.Affine(*var0.attrs["proj:transform"])
 
     return {
         "crs": [crs],

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import PurePath
 
+import pyproj
 import shapely
 import structlog
 import xarray as xr
@@ -67,13 +68,15 @@ def _extract_root_spatial_info(datatrees: list[xr.DataTree]) -> InputSpatialInfo
     return spatial_info
 
 
-def _extract_spatial_info(ds: xr.Dataset) -> InputGroupSpatialInfo | None:
+def _extract_spatial_info(
+    ds: xr.Dataset, default_crs: pyproj.CRS
+) -> InputGroupSpatialInfo | None:
     """Extract spatial information in a group of a Zarr input dataset.
 
     Return None if no spatial information is found.
     """
 
-    info = utils.extract_spatial_info_stac(ds)
+    info = utils.extract_spatial_info_stac(ds, default_crs)
 
     if info is None:
         info = utils.extract_spatial_info_cf(ds)
@@ -87,6 +90,7 @@ def _extract_spatial_info(ds: xr.Dataset) -> InputGroupSpatialInfo | None:
 def _find_input_spatial_groups(
     datatrees: list[xr.DataTree],
     settings: ConvertSettings,
+    default_crss: list[pyproj.CRS],
 ) -> dict[PurePath, InputGroupSpatialInfo]:
     """Find spatial groups in input datasets, i.e., groups to convert to HEALPix.
 
@@ -109,10 +113,10 @@ def _find_input_spatial_groups(
                 "(non-compatible data vs. no data)"
             )
 
-        spatial_info = _extract_spatial_info(dts[0].dataset)
+        spatial_info = _extract_spatial_info(dts[0].dataset, default_crss[0])
 
-        for dt in dts[1:]:
-            info = _extract_spatial_info(dt.dataset)
+        for dt, default_crs in zip(dts[1:], default_crss[1:]):
+            info = _extract_spatial_info(dt.dataset, default_crs)
             if spatial_info is None and info is None:
                 continue
             elif spatial_info is not None and info is not None:
@@ -287,7 +291,10 @@ def create_staging_cache(
         "••• detecting spatial groups in input datasets (to convert to HEALPix)..."
     )
 
-    cache.input_spatial_groups = _find_input_spatial_groups(input_datatrees, settings)
+    default_crss = cache.input_spatial.crs
+    cache.input_spatial_groups = _find_input_spatial_groups(
+        input_datatrees, settings, default_crss=default_crss
+    )
 
     log.info(
         f"found {len(cache.input_spatial_groups)} spatial groups to convert to HEALPix:\n"

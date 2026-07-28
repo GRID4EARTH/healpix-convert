@@ -28,6 +28,7 @@ from legacy_converters.core.healpix_conventions import (
     CFHealpixGridMapping,
     DGGSZarrConvention,
     Healpix,
+    WGS84Ellipsoid,
 )
 from legacy_converters.settings.common import (
     ConvertSettings,
@@ -35,6 +36,7 @@ from legacy_converters.settings.common import (
     HealpixGroupSettings,
     HealpixSparseChunkSettings,
     HealpixUniformChunkSettings,
+    NoChunkSettings,
     broadcast_params,
 )
 
@@ -806,21 +808,170 @@ class SparseChunkConverter(UniformChunkConverter):
         del resampler
 
 
-class DummyConverter(HealpixGroupConverter):
+class NoChunkConverter(HealpixGroupConverter):
+    """Conversion of input data to HEALPix, where the output consists in
+    one single chunk of HEALPix cells that are  fully covering the extent
+    (polygon) of the output Zarr dataset at a fixed refinement level given
+    by the group conversion settings.
+
+    This class works only with the "nested" HEALPIX cell indexing scheme.
+
+    """
+
+    cell_ids: np.ndarray
+    ellipsoid: str
+
+    def __post_init__(self):
+        assert isinstance(self.settings.chunk, NoChunkSettings)
+        assert self.healpix.indexing_scheme == "nested"
+
+        if isinstance(self.healpix.ellipsoid, WGS84Ellipsoid):
+            self.ellipsoid = self.healpix.ellipsoid.name.upper()
+        else:
+            # TODO: is sphere really used here? If yes, need a fix below
+            # in `query_input_points` where input x/y coordinates are converted
+            # to lat/lon on the WGS84 datum.
+            self.ellipsoid = "sphere"
+
+        self.cell_ids, _, _ = healpix_geo.nested.polygon_coverage(
+            shapely.coordinates.get_coordinates(self.output_spatial.geometry_latlon),
+            self.healpix.refinement_level,
+            ellipsoid=self.ellipsoid,
+            flat=True,
+        )
+
+        cell_dim = self.healpix.spatial_dimension
+        log.info(f"one single chunk along the {cell_dim!r} dimension.")
+
     @property
     def cell_dim_size(self) -> int:
-        return 100
+        return self.cell_ids.size
 
     @property
     def cell_dim_chunk_size(self) -> int:
-        return 100
+        return self.cell_dim_size
+
+    def query_input_points(self, chunk_cell_id: int | None) -> xr.Dataset:
+        # this class does not support conversion chunk by chunk
+        assert chunk_cell_id is None
+
+        crs_wgs84 = pyproj.CRS.from_epsg(4326)
+
+        def maybe_convert_to_latlon(ds: xr.Dataset, crs: pyproj.CRS):
+            if self.spatial_info.is_projected:
+                return utils.assign_transform_coords(ds, crs, crs_wgs84)
+            else:
+                lon_name, lat_name = self.spatial_info.spatial_coordinates
+                return ds.assign_coords(lon=ds[lon_name], lat=ds[lat_name])
+
+        prepared_datasets = []
+        for ds, crs in zip(self.datasets, self.spatial_info.crs):
+            ds_latlon_flat = (
+                ds.compute().pipe(lambda ds: maybe_convert_to_latlon(ds, crs))
+                # note: the Xarray stack operation below already broadcasts
+                # the Dataset variables that only have a subset of the spatial dimensions
+                .stack(
+                    points=list(self.spatial_info.spatial_dimensions),
+                    create_index=False,
+                )
+            )
+
+            prepared_datasets.append(ds_latlon_flat)
+
+        ds_input_points = xr.concat(prepared_datasets, dim="points")
+        return ds_input_points
 
     def convert(self, chunk_index: int | None = None):
-        pass
+        # this class does not support conversion chunk by chunk
+        assert chunk_index is None
+
+        cell_ids = self.cell_ids
+
+        self.output_arrays[self.healpix.coordinate][:] = cell_ids
+
+        log.debug("query input points")
+        ds_input_points = self.query_input_points(None)
+
+        resampler_settings = self.settings.resampler
+
+        # For the "nearest" resample method: give output cell ids the resampler (forcing)
+        # For the other methods: best to let the resampler algorithm do the lookup
+        if resampler_settings.name == "nearest":
+            out_cell_ids = self.cell_ids
+        else:
+            out_cell_ids = None
+
+        resampler_cls = _RESAMPLER_NAME_CLS[resampler_settings.name]
+        # TODO: pass array dtype to resampler
+        # in case all arrays to resample have the same dtype
+
+        log.debug("initialize resampler")
+        resampler = resampler_cls(
+            lon_deg=ds_input_points.lon.values,
+            lat_deg=ds_input_points.lat.values,
+            level=self.healpix.refinement_level,
+            verbose=False,
+            out_cell_ids=out_cell_ids,
+            nest=self.healpix.indexing_scheme == "nested",
+            ellipsoid=self.ellipsoid,
+            **dict(resampler_settings.init_params),
+        )
+        # resample arrays (data variables)
+        var_names = [
+            str(name)
+            for name in ds_input_points.variables
+            if name in self.spatial_info.spatial_arrays
+        ]
+        resample_params = broadcast_params(
+            resampler_settings.resample_params, var_names
+        )
+
+        log.debug(f"resample {len(var_names)} arrays")
+        for name in var_names:
+            var = ds_input_points.variables[name]
+
+            assert "points" in var.dims
+            extra_dims = [d for d in var.dims if d != "points"]
+            extra_dim_sizes = [var.sizes[d] for d in extra_dims]
+
+            # make sure the "points" core dimension is moved to the last axis
+            # maybe stack non-spatial dimensions, to pass to `.resample()` as a single "batch" dimension
+            if extra_dims:
+                if len(extra_dims) == 1:
+                    var = var.transpose(extra_dims[0], "points")
+                else:
+                    var = var.stack(batch=extra_dims).transpose("batch", "points")
+
+                cell_data_shape = (var.shape[0], cell_ids.size)
+            else:
+                cell_data_shape = (cell_ids.size,)
+
+            # initialize cell data to nodata (TODO: get the right fill_value and dtype)
+            # index/fill the array below with data values returned by the resampler
+            cell_data = np.full(cell_data_shape, np.nan)
+
+            data = var.values.astype("f")
+
+            res = resampler.resample(data, **resample_params[name])
+
+            zarray = self.output_arrays[str(name)]
+
+            _, res_cell_data_idx, cell_data_idx = np.intersect1d(
+                res.cell_ids, cell_ids, assume_unique=True, return_indices=True
+            )
+
+            cell_data[..., cell_data_idx] = res.cell_data[..., res_cell_data_idx]
+            cell_data[..., np.isnan(cell_data)] = zarray.fill_value
+
+            # maybe unstack non-spatial dimensions from the resampled batch dimension
+            if len(extra_dims) > 1:
+                cell_data = cell_data.reshape(tuple(extra_dim_sizes + [cell_ids.size]))
+
+            zarray[..., :] = cell_data.astype(cell_data.dtype)
 
 
 _CONVERTER_NAME_CLS: dict[str, type[HealpixGroupConverter]] = {
-    "no_chunk": DummyConverter,  # TODO: change type when implemented
+    "no_chunk": NoChunkConverter,
     "healpix_cell_dense": DenseChunkConverter,
     "healpix_cell_sparse": SparseChunkConverter,
 }

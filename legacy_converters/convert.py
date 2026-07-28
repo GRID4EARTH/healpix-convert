@@ -45,8 +45,7 @@ def _convert_group_to_healpix(
     )
 
     if converter.settings.chunk.method == "no_chunk":
-        log.warning("non-chunked conversion not yet implemented...")
-        # converter.convert()
+        converter.convert()
         return
 
     log.info(f"chunking output data using {converter.settings.chunk.method!r} method")
