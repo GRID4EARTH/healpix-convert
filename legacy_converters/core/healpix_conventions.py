@@ -53,7 +53,7 @@ class WGS84Ellipsoid(BaseModel):
 
     @computed_field
     @property
-    def semimajor_axis(self) -> float:
+    def semi_major_axis(self) -> float:
         # workaround as Python's Literal doesn't support float
         return 6378137.0
 
@@ -157,7 +157,7 @@ class CFHealpixGridMapping(BaseModel):
         ellipsoid = hp.ellipsoid
         if ellipsoid is not MISSING:
             kwargs["reference_ellipsoid_name"] = ellipsoid.name.upper()
-            kwargs["semi_major_axis"] = ellipsoid.semimajor_axis
+            kwargs["semi_major_axis"] = ellipsoid.semi_major_axis
             kwargs["inverse_flattening"] = ellipsoid.inverse_flattening
 
         return cls(**kwargs)

@@ -51,7 +51,7 @@ def test_cf_grid_mapping_from_healpix_wgs84() -> None:
     assert attrs["indexing_scheme"] == hp.indexing_scheme
     assert attrs["reference_ellipsoid_name"] == "WGS84"
     assert isinstance(hp.ellipsoid, WGS84Ellipsoid)
-    assert attrs["semi_major_axis"] == hp.ellipsoid.semimajor_axis
+    assert attrs["semi_major_axis"] == hp.ellipsoid.semi_major_axis
     assert attrs["inverse_flattening"] == hp.ellipsoid.inverse_flattening
 
 

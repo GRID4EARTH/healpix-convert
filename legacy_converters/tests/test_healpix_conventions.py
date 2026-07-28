@@ -26,7 +26,7 @@ def test_wgs84_ellipsoid_values() -> None:
     e = WGS84Ellipsoid()
 
     assert e.name == "wgs84"
-    assert e.semimajor_axis == 6378137.0
+    assert e.semi_major_axis == 6378137.0
     assert e.inverse_flattening == 298.257223563
 
 
