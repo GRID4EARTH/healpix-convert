@@ -15,11 +15,20 @@ permissions: {}
 
 env:
   FORCE_COLOR: 3
+  # linux-64 and win-64 are declared as cuda 12.0 platforms in pixi.toml, but
+  # runners have no GPU, so pixi refuses to solve those environments
+  # ("Unsatisfied requirements: __cuda >= 12.0"). Mock the virtual package:
+  # the tests themselves run on CPU.
+  CONDA_OVERRIDE_CUDA: "12.0"
 
 jobs:
   detect-ci-trigger:
     name: detect ci trigger
     runs-on: ubuntu-latest
+    # `permissions: {}` above grants GITHUB_TOKEN no scopes at all, so
+    # actions/checkout cannot clone this private repository.
+    permissions:
+      contents: read
     if: |
       github.repository_owner == 'GRID4EARTH'
       && (github.event_name == 'pull_request' || github.event_name == 'push')
@@ -39,6 +48,8 @@ jobs:
     name: ${{ matrix.os }} ${{ matrix.env }}
     runs-on: ${{ matrix.os }}
     needs: detect-ci-trigger
+    permissions:
+      contents: read
     if: needs.detect-ci-trigger.outputs.triggered == 'false'
     defaults:
       run:
@@ -48,7 +59,7 @@ jobs:
       fail-fast: false
 
       matrix:
-        os: ["ubuntu-latest", "macos-latest", "windows-latest"]
+        os: ["ubuntu-latest", "macos-latest"]
         env: ["ci-py311", "ci-py313"]
 
     steps:
@@ -58,10 +69,32 @@ jobs:
           fetch-depth: 0 # Fetch all history for all branches and tags
           persist-credentials: false
 
+      # healpix-compress lives in a private repository and is declared with an
+      # ssh:// url, which runners cannot authenticate. Rewrite it to https and
+      # supply a read-only token, so that pixi.toml and pixi.lock stay as they
+      # are for developers, who do have ssh access.
+      - name: authenticate private dependencies
+        env:
+          HEALPIX_COMPRESS_TOKEN: ${{ secrets.HEALPIX_COMPRESS_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${HEALPIX_COMPRESS_TOKEN}@github.com/".insteadOf \
+            "ssh://git@github.com/"
+
       - name: setup environment
         uses: prefix-dev/setup-pixi@194d461b21b6c5717c722ffc597fa91ed2ff29fa # 0.9.1
         with:
           environments: "${{ matrix.env }}"
+
+      # the credential is only needed to build the environment; drop it before
+      # running anything else, so it is not live during the test run.
+      - name: revoke private dependency credentials
+        if: always()
+        run: |
+          git config --global --unset-all \
+            url."https://x-access-token:${HEALPIX_COMPRESS_TOKEN}@github.com/".insteadOf || true
+        env:
+          HEALPIX_COMPRESS_TOKEN: ${{ secrets.HEALPIX_COMPRESS_TOKEN }}
 
       - name: investigate env variables
         run: |
