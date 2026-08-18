@@ -7,7 +7,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import PurePath
-from typing import Annotated, Any, Literal, TypeAlias, TypedDict
+from typing import Annotated, Any, Literal, TypeAlias
 
 import structlog
 from pydantic import (
@@ -18,6 +18,9 @@ from pydantic import (
     field_serializer,
     model_validator,
 )
+
+# pydantic requires typing_extensions.TypedDict (not typing.TypedDict) on Python < 3.12
+from typing_extensions import TypedDict
 
 from legacy_converters.core.healpix_conventions import Healpix
 from legacy_converters.settings.cams import CAMS_CONVERT_SETTINGS
