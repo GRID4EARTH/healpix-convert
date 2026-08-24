@@ -26,28 +26,6 @@ from legacy_converters.core.healpix_conventions import Healpix
 from legacy_converters.settings.cams import CAMS_CONVERT_SETTINGS
 from legacy_converters.settings.climatedt import CDT_SFC_CONVERT_SETTINGS
 from legacy_converters.settings.era5 import ERA5_CONVERT_SETTINGS
-from legacy_converters.settings. import (
-    __CONVERT_SETTINGS,
-    __CONVERT_SETTINGS,
-)
-from legacy_converters.settings. import (
-    _CONVERT_SETTINGS,
-    __ERR_CONVERT_SETTINGS,
-    __LFR_CONVERT_SETTINGS,
-    __LRR_CONVERT_SETTINGS,
-    __FRP_CONVERT_SETTINGS,
-    __LST_CONVERT_SETTINGS,
-    __RBT_CONVERT_SETTINGS,
-)
-from legacy_converters.settings._psf import (
-    _PSF_CONVERT_SETTINGS,
-    __ERR_PSF_CONVERT_SETTINGS,
-    __LFR_PSF_CONVERT_SETTINGS,
-    __LRR_PSF_CONVERT_SETTINGS,
-    __FRP_PSF_CONVERT_SETTINGS,
-    __LST_PSF_CONVERT_SETTINGS,
-    __RBT_PSF_CONVERT_SETTINGS,
-)
 
 log = structlog.get_logger()
 
@@ -449,40 +427,7 @@ def get_settings(name: str) -> ConvertSettings:
     :py:class:`ConvertSettings`
 
     """
-    if name == "-":
-        return ConvertSettings.model_validate(__CONVERT_SETTINGS)
-
-    elif name == "-":
-        return ConvertSettings.model_validate(__CONVERT_SETTINGS)
-    elif name == "--l1-efr":
-        return ConvertSettings.model_validate(_CONVERT_SETTINGS)
-    elif name == "--l1-err":
-        return ConvertSettings.model_validate(__ERR_CONVERT_SETTINGS)
-    elif name == "--l2-lfr":
-        return ConvertSettings.model_validate(__LFR_CONVERT_SETTINGS)
-    elif name == "--l2-lrr":
-        return ConvertSettings.model_validate(__LRR_CONVERT_SETTINGS)
-    elif name == "--l1-rbt":
-        return ConvertSettings.model_validate(__RBT_CONVERT_SETTINGS)
-    elif name == "--l2-lst":
-        return ConvertSettings.model_validate(__LST_CONVERT_SETTINGS)
-    elif name == "--l2-frp":
-        return ConvertSettings.model_validate(__FRP_CONVERT_SETTINGS)
-    elif name == "--l1-efr-psf":
-        return ConvertSettings.model_validate(_PSF_CONVERT_SETTINGS)
-    elif name == "--l1-err-psf":
-        return ConvertSettings.model_validate(__ERR_PSF_CONVERT_SETTINGS)
-    elif name == "--l2-lfr-psf":
-        return ConvertSettings.model_validate(__LFR_PSF_CONVERT_SETTINGS)
-    elif name == "--l2-lrr-psf":
-        return ConvertSettings.model_validate(__LRR_PSF_CONVERT_SETTINGS)
-    elif name == "--l1-rbt-psf":
-        return ConvertSettings.model_validate(__RBT_PSF_CONVERT_SETTINGS)
-    elif name == "--l2-lst-psf":
-        return ConvertSettings.model_validate(__LST_PSF_CONVERT_SETTINGS)
-    elif name == "--l2-frp-psf":
-        return ConvertSettings.model_validate(__FRP_PSF_CONVERT_SETTINGS)
-    elif name == "era5":
+    if name == "era5":
         return ConvertSettings.model_validate(ERA5_CONVERT_SETTINGS)
     elif name == "cams-eac4":
         return ConvertSettings.model_validate(CAMS_CONVERT_SETTINGS)

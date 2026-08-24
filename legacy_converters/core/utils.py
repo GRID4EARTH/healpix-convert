@@ -116,8 +116,8 @@ def extract_spatial_info_stac(ds: xr.Dataset, default_crs: pyproj.CRS) -> dict |
         # TODO: remove the if condition below
         # The case of x/y coordinates with no CRS nor affine transform metadata in
         # a Zarr group shouldn't be covered, but it is here to support some groups
-        # in UTM EOPF datasets published on EOPF sample service where metadata is missing
-        # (e.g.,  conditions/geometry). In that case, the `default_crs` (extracted
+        # in UTM EOPF datasets published on EOPF sample service where metadata is missing.
+        # In that case, the `default_crs` (extracted
         # from the root group metadata) is passed here and the transform is computed from the
         # x/y coordinates (rasterix assumes monotonic coordinate values)
         if "x" not in ds.variables and "y" not in ds.variables:

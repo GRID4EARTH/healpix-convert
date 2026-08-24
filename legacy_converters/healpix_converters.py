@@ -387,7 +387,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
     def _query_chunk_input_points_latlon_curvilinear(
         self, chunk_cell_id: int
     ) -> xr.Dataset | None:
-        """Query input lat-lon points on a curvilinear grid (e.g., ).
+        """Query input lat-lon points on a curvilinear grid.
 
         Assumes 2-dimensional longitude and latitude coordinates present in the datasets.
 
@@ -468,7 +468,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         self, chunk_cell_id: int
     ) -> xr.Dataset | None:
         """
-        This function works with projected points (e.g.,  UTM) and
+        This function works with projected points and
         implements the following procedure:
         - extract output HEALPix cell ids enveloppe as a polygon
         - prepare each input dataset:
