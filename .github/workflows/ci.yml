@@ -69,18 +69,6 @@ jobs:
           fetch-depth: 0 # Fetch all history for all branches and tags
           persist-credentials: false
 
-      # healpix-compress lives in a private repository and is declared with an
-      # ssh:// url, which runners cannot authenticate. Rewrite it to https and
-      # supply a read-only token, so that pixi.toml and pixi.lock stay as they
-      # are for developers, who do have ssh access.
-      - name: authenticate private dependencies
-        env:
-          HEALPIX_COMPRESS_TOKEN: ${{ secrets.HEALPIX_COMPRESS_TOKEN }}
-        run: |
-          git config --global \
-            url."https://x-access-token:${HEALPIX_COMPRESS_TOKEN}@github.com/".insteadOf \
-            "ssh://git@github.com/"
-
       - name: setup environment
         uses: prefix-dev/setup-pixi@194d461b21b6c5717c722ffc597fa91ed2ff29fa # 0.9.1
         with:
