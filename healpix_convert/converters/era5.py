@@ -1,5 +1,5 @@
 """
-legacy_converters/converters/era5.py
+healpix_convert/converters/era5.py
 ======================================
 ERA5 legacy converter.
 
@@ -9,7 +9,7 @@ EOPF-compliant zarr.
 
 Usage
 -----
-    from legacy_converters.converters.era5 import ERA5Converter
+    from healpix_convert.converters.era5 import ERA5Converter
     converter = ERA5Converter(date="2025-01-01")
     result    = converter.prepare(output_path="out.zarr")
     for idx in range(result.n_chunks):
@@ -31,13 +31,13 @@ import xarray as xr
 import zarr
 from healpix_resample import PSFResampler
 
-from legacy_converters.core.healpix_conventions import (
+from healpix_convert.core.healpix_conventions import (
     DGGSZarrConvention,
     Healpix,
     write_cf_grid_mapping,
 )
-from legacy_converters.core.stac import StacItem
-from legacy_converters.settings.era5 import (
+from healpix_convert.core.stac import StacItem
+from healpix_convert.settings.era5 import (
     CDS_DATASET,
     CDS_URL,
     DEFAULT_NUMBERS,

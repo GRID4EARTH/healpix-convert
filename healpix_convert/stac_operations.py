@@ -11,8 +11,8 @@ import shapely
 import structlog
 import xarray as xr
 
-from legacy_converters.core.conversion_models import OutputSpatialInfo
-from legacy_converters.core.stac import StacItem
+from healpix_convert.core.conversion_models import OutputSpatialInfo
+from healpix_convert.core.stac import StacItem
 
 log = structlog.get_logger()
 

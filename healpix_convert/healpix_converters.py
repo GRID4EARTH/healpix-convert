@@ -17,20 +17,20 @@ import xarray as xr
 import zarr.api.synchronous as zarr
 from zarr.api.asynchronous import JSON
 
-import legacy_converters.core.utils as utils
-from legacy_converters.core.conversion_models import (
+import healpix_convert.core.utils as utils
+from healpix_convert.core.conversion_models import (
     ConvertStagingCache,
     InputGroupSpatialInfo,
     InputSpatialInfo,
     OutputSpatialInfo,
 )
-from legacy_converters.core.healpix_conventions import (
+from healpix_convert.core.healpix_conventions import (
     CFHealpixGridMapping,
     DGGSZarrConvention,
     Healpix,
     WGS84Ellipsoid,
 )
-from legacy_converters.settings.common import (
+from healpix_convert.settings.common import (
     ConvertSettings,
     HealpixDenseChunkSettings,
     HealpixGroupSettings,

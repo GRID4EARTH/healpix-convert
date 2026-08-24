@@ -6,8 +6,8 @@ import pytest
 import xarray as xr
 from pytest_structlog import StructuredLogCapture
 
-from legacy_converters import stac_operations
-from legacy_converters.core.stac import StacItem
+from healpix_convert import stac_operations
+from healpix_convert.core.stac import StacItem
 
 
 def generate_items(n_items, *, equal):

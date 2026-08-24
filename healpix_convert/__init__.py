@@ -1,13 +1,13 @@
 import importlib.metadata
 
-from legacy_converters.cache import create_staging_cache
-from legacy_converters.convert import (
+from healpix_convert.cache import create_staging_cache
+from healpix_convert.convert import (
     convert_group_to_healpix,
     create_healpix_dataset,
     prepare_healpix_dataset,
 )
-from legacy_converters.core.conversion_models import ConvertStagingCache
-from legacy_converters.settings.common import ConvertSettings, get_settings
+from healpix_convert.core.conversion_models import ConvertStagingCache
+from healpix_convert.settings.common import ConvertSettings, get_settings
 
 __all__ = [
     "ConvertSettings",
@@ -19,4 +19,4 @@ __all__ = [
     "prepare_healpix_dataset",
 ]
 
-__version__ = importlib.metadata.version("legacy-converters")
+__version__ = importlib.metadata.version("healpix-convert")

@@ -14,19 +14,19 @@ import structlog
 import xarray as xr
 import zarr.api.synchronous as zarr
 
-from legacy_converters.cache import create_staging_cache
-from legacy_converters.core.conversion_models import ConvertStagingCache
-from legacy_converters.core.healpix_conventions import DGGSZarrConvention
-from legacy_converters.core.multiscales_conventions import MultiscalesZarrConvention
-from legacy_converters.healpix_converters import (
+from healpix_convert.cache import create_staging_cache
+from healpix_convert.core.conversion_models import ConvertStagingCache
+from healpix_convert.core.healpix_conventions import DGGSZarrConvention
+from healpix_convert.core.multiscales_conventions import MultiscalesZarrConvention
+from healpix_convert.healpix_converters import (
     HealpixGroupConverter,
     init_converter,
 )
-from legacy_converters.settings.common import (
+from healpix_convert.settings.common import (
     ConvertSettings,
     validate_convert_settings,
 )
-from legacy_converters.stac_operations import _extract_stac_metadata, merge_stac_items
+from healpix_convert.stac_operations import _extract_stac_metadata, merge_stac_items
 
 log = structlog.get_logger()
 

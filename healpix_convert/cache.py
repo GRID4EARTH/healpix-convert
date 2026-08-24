@@ -10,16 +10,16 @@ import shapely
 import structlog
 import xarray as xr
 
-import legacy_converters.core.utils as utils
-from legacy_converters.core.conversion_models import (
+import healpix_convert.core.utils as utils
+from healpix_convert.core.conversion_models import (
     ConvertStagingCache,
     InputGroupSpatialInfo,
     InputSpatialInfo,
     OutputGroupInfo,
     OutputSpatialInfo,
 )
-from legacy_converters.core.multiscales_conventions import HealpixMultiscales
-from legacy_converters.settings.common import (
+from healpix_convert.core.multiscales_conventions import HealpixMultiscales
+from healpix_convert.settings.common import (
     ConvertSettings,
     HealpixGroupSettings,
     validate_convert_settings,

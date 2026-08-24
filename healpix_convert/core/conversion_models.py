@@ -21,8 +21,8 @@ from pydantic import (
     field_validator,
 )
 
-from legacy_converters.core.multiscales_conventions import HealpixMultiscales
-from legacy_converters.core.utils import open_datatrees
+from healpix_convert.core.multiscales_conventions import HealpixMultiscales
+from healpix_convert.core.utils import open_datatrees
 
 
 def serialize_crss(value: list[pyproj.CRS]) -> list[dict]:

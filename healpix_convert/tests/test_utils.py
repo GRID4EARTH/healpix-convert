@@ -2,7 +2,7 @@ import numpy as np
 import pyproj
 import xarray as xr
 
-from legacy_converters.core.utils import assign_transform_coords
+from healpix_convert.core.utils import assign_transform_coords
 
 
 def test_assign_transform_coords() -> None:

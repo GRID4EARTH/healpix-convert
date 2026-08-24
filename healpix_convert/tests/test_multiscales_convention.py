@@ -1,4 +1,4 @@
-from legacy_converters.core.multiscales_conventions import MultiscalesZarrConvention
+from healpix_convert.core.multiscales_conventions import MultiscalesZarrConvention
 
 
 def test_multiscales_convention_values() -> None:

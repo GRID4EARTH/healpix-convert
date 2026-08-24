@@ -22,10 +22,10 @@ from pydantic import (
 # pydantic requires typing_extensions.TypedDict (not typing.TypedDict) on Python < 3.12
 from typing_extensions import TypedDict
 
-from legacy_converters.core.healpix_conventions import Healpix
-from legacy_converters.settings.cams import CAMS_CONVERT_SETTINGS
-from legacy_converters.settings.climatedt import CDT_SFC_CONVERT_SETTINGS
-from legacy_converters.settings.era5 import ERA5_CONVERT_SETTINGS
+from healpix_convert.core.healpix_conventions import Healpix
+from healpix_convert.settings.cams import CAMS_CONVERT_SETTINGS
+from healpix_convert.settings.climatedt import CDT_SFC_CONVERT_SETTINGS
+from healpix_convert.settings.era5 import ERA5_CONVERT_SETTINGS
 
 log = structlog.get_logger()
 

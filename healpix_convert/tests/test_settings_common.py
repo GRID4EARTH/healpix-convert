@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from legacy_converters.settings.common import (
+from healpix_convert.settings.common import (
     ConvertSettings,
     HealpixGroupSettings,
     NearestResamplerSettings,

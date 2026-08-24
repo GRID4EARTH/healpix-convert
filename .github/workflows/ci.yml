@@ -103,10 +103,10 @@ jobs:
 
       - name: Import xdggs
         run: |
-          pixi run -e ${{ matrix.env }} python -c "import legacy_converters"
+          pixi run -e ${{ matrix.env }} python -c "import healpix_convert"
 
       - name: run tests
         if: success()
         id: status
         run: |
-          pixi run -e ${{ matrix.env }} tests --cov=legacy_converters
+          pixi run -e ${{ matrix.env }} tests --cov=healpix_convert

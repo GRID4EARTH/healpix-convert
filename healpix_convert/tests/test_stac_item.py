@@ -1,4 +1,4 @@
-from legacy_converters.core.stac import StacItem
+from healpix_convert.core.stac import StacItem
 
 
 def test_stac_item_values() -> None:

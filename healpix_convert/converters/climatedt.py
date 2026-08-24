@@ -1,5 +1,5 @@
 """
-legacy_converters/converters/climatedt.py
+healpix_convert/converters/climatedt.py
 ==========================================
 ClimateDT (IFS-NEMO) legacy converter.
 
@@ -13,7 +13,7 @@ per timestep but is usually not needed at level 7 precision.
 
 Usage
 -----
-    from legacy_converters.converters.climatedt import ClimateDTConverter
+    from healpix_convert.converters.climatedt import ClimateDTConverter
 
     # Surface fields
     converter = ClimateDTConverter(date="20200102", time="0100")
@@ -44,13 +44,13 @@ import numpy as np
 import xarray as xr
 import zarr.api.synchronous as zarr
 
-from legacy_converters.core.healpix_conventions import (
+from healpix_convert.core.healpix_conventions import (
     DGGSZarrConvention,
     Healpix,
     write_cf_grid_mapping,
 )
-from legacy_converters.core.stac import StacItem
-from legacy_converters.settings.climatedt import (
+from healpix_convert.core.stac import StacItem
+from healpix_convert.settings.climatedt import (
     CDT_CLASS,
     CDT_DATASET,
     CDT_DEFAULT_SFC_PARAMS,
@@ -70,7 +70,7 @@ from legacy_converters.settings.climatedt import (
 log = logging.getLogger(__name__)
 
 # ── HEALPix constants ─────────────────────────────────────────────────────────
-from legacy_converters.settings.climatedt import CDT_SFC_CONVERT_SETTINGS as _S
+from healpix_convert.settings.climatedt import CDT_SFC_CONVERT_SETTINGS as _S
 
 _g = _S["group_settings"]["measurements/sfc"]
 _CHILD_LEVEL = _g["healpix"]["refinement_level"]  # 7

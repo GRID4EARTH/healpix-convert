@@ -3,7 +3,7 @@ import pytest
 import zarr
 from pydantic import ValidationError
 
-from legacy_converters.core.healpix_conventions import (
+from healpix_convert.core.healpix_conventions import (
     CFHealpixGridMapping,
     Healpix,
     WGS84Ellipsoid,

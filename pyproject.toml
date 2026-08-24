@@ -1,5 +1,5 @@
 [project]
-name = "legacy-converters"
+name = "healpix-convert"
 requires-python = ">= 3.11"
 license = { text = "Apache-2.0" }
 dynamic = ["version"]
@@ -38,7 +38,7 @@ requires = ["setuptools>=64.0", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["legacy_converters"]
+packages = ["healpix_convert"]
 
 [tool.setuptools_scm]
 fallback_version = "999"
@@ -78,7 +78,7 @@ extend-safe-fixes = [
 
 
 [tool.ruff.lint.isort]
-known-first-party = ["legacy_converters"]
+known-first-party = ["healpix_convert"]
 known-third-party = []
 
 [tool.ruff.lint.flake8-tidy-imports]

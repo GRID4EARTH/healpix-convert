@@ -10,7 +10,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, field_serializer
 from pydantic.experimental.missing_sentinel import MISSING
 
-from legacy_converters.core.healpix_conventions import Healpix
+from healpix_convert.core.healpix_conventions import Healpix
 
 _UUID: str = "d35379db-88df-4056-af3a-620245f8e347"
 _SCHEMA_URL = "https://raw.githubusercontent.com/zarr-conventions/multiscales/refs/tags/v1/schema.json"

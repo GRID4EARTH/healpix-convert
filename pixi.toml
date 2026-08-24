@@ -1,6 +1,6 @@
 [workspace]
 channels = ["conda-forge"]
-name = "legacy-converters"
+name = "healpix-convert"
 platforms = [
   { platform = "linux-64", cuda = "12.0" },
   "osx-arm64",
@@ -30,7 +30,7 @@ botocore = ">=1.42.70,<2"
 pytorch-gpu = ">=2.9.1,<3"
 
 [pypi-dependencies]
-legacy-converters = { path = ".", editable = true }
+healpix-convert = { path = ".", editable = true }
 rasterix = ">=0.1"
 healpix-resample = ">=0.1.5"
 healpix-compress = { git = "ssh://git@github.com/GRID4EARTH/healpix-compress" }
@@ -80,7 +80,7 @@ pytest-cov = "*"
 pytest-structlog = "*"
 
 [feature.tests.tasks]
-tests = { cmd = "pytest --cov=legacy_converters", cwd = "." }
+tests = { cmd = "pytest --cov=healpix_convert", cwd = "." }
 
 [feature.ci-py313.dependencies]
 python = "3.13.*"

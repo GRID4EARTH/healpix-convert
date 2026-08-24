@@ -2,7 +2,7 @@ import pytest
 from pydantic import ValidationError
 from pydantic.experimental.missing_sentinel import MISSING
 
-from legacy_converters.core.healpix_conventions import (
+from healpix_convert.core.healpix_conventions import (
     DGGSZarrConvention,
     Healpix,
     WGS84Ellipsoid,

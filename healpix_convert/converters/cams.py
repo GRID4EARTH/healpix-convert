@@ -1,5 +1,5 @@
 """
-legacy_converters/converters/cams.py
+healpix_convert/converters/cams.py
 ======================================
 CAMS EAC4 legacy converter.
 
@@ -14,11 +14,11 @@ Resampling method (``method=`` argument, default ``"psf"``)
   - ``"nn"``: nearest-neighbour binning — exact, artifact-free and faster; the
     ~1% of empty equatorial pixels are filled from HEALPix ring neighbours.
   Both give 0 NaN / 0 negative at level 6; they correlate > 0.98. See
-  ``legacy_converters/settings/cams.py`` for the rationale.
+  ``healpix_convert/settings/cams.py`` for the rationale.
 
 Usage
 -----
-    from legacy_converters.converters.cams import CAMSConverter
+    from healpix_convert.converters.cams import CAMSConverter
 
     converter = CAMSConverter(date="2025-01-01")           # method="psf"
     result    = converter.prepare(output_path="out.zarr")
@@ -45,13 +45,13 @@ import xarray as xr
 import zarr.api.synchronous as zarr
 from healpix_resample import PSFResampler
 
-from legacy_converters.core.healpix_conventions import (
+from healpix_convert.core.healpix_conventions import (
     DGGSZarrConvention,
     Healpix,
     write_cf_grid_mapping,
 )
-from legacy_converters.core.stac import StacItem
-from legacy_converters.settings.cams import (
+from healpix_convert.core.stac import StacItem
+from healpix_convert.settings.cams import (
     ADS_DATASET,
     ADS_URL,
     CAMS_PSF_LAM,
@@ -62,7 +62,7 @@ from legacy_converters.settings.cams import (
 log = logging.getLogger(__name__)
 
 # ── HEALPix constants ─────────────────────────────────────────────────────────
-from legacy_converters.settings.cams import CAMS_CONVERT_SETTINGS as _S
+from healpix_convert.settings.cams import CAMS_CONVERT_SETTINGS as _S
 
 _g = _S["group_settings"]["measurements/aod"]
 _CHILD_LEVEL = _g["healpix"]["refinement_level"]  # 6
