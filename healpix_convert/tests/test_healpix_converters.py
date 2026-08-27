@@ -1,8 +1,9 @@
 import numpy as np
 import pytest
 import zarr
-from legacy_converters.core.healpix_conventions import Healpix, WGS84Ellipsoid
-from legacy_converters.healpix_converters import DenseChunkConverter
+
+from healpix_convert.core.healpix_conventions import Healpix, WGS84Ellipsoid
+from healpix_convert.healpix_converters import DenseChunkConverter
 
 
 @pytest.fixture
