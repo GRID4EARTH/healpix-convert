@@ -45,10 +45,12 @@ import xarray as xr
 import zarr.api.synchronous as zarr
 from healpix_resample import PSFResampler
 
-from healpix_convert.core.healpix_conventions import (
-    DGGSZarrConvention,
-    Healpix,
-    write_cf_grid_mapping,
+from healpix_convert.core.conventions import MetadataSettings
+from healpix_convert.core.healpix_conventions import Healpix
+from healpix_convert.core.metadata import (
+    maybe_write_cf_grid_mapping,
+    write_group_conventions,
+    write_root_conventions,
 )
 from healpix_convert.core.stac import StacItem
 from healpix_convert.settings.cams import (
@@ -135,9 +137,11 @@ class CAMSConverter:
         method: str = "psf",
         psf_threshold: float = CAMS_PSF_THRESHOLD,
         psf_lam: float = CAMS_PSF_LAM,
+        metadata: MetadataSettings | None = None,
     ):
         if method not in ("psf", "nn"):
             raise ValueError(f"method must be 'psf' or 'nn', got {method!r}")
+        self.metadata = metadata if metadata is not None else MetadataSettings()
         self.date = date
         self.time = time
         self.local_dir = Path(local_dir)
@@ -359,12 +363,13 @@ class CAMSConverter:
             indexing_scheme="nested",
             ellipsoid={"name": "wgs84"},
         )
-        dggs_convention = DGGSZarrConvention().model_dump()
-
         root = zarr.open_group(output_path, mode="w")
+        write_root_conventions(root, self.metadata)
+
         grp = root.require_group("measurements/aod")
-        grp.attrs["zarr_conventions"] = [dggs_convention]
-        grp.attrs["dggs"] = healpix_model.model_dump()
+        write_group_conventions(
+            grp, self.metadata, declare=("dggs",), dggs=healpix_model
+        )
 
         grp.create_array(
             "cell_ids",
@@ -393,7 +398,9 @@ class CAMSConverter:
                 attributes={"units": unit, "long_name": long_name, "valid_min": 0.0},
             )
         # CF 1.13 HEALPix grid mapping alongside the DGGS-Zarr convention
-        write_cf_grid_mapping(grp, healpix_model, CAMS_VARIABLE_META)
+        maybe_write_cf_grid_mapping(
+            grp, self.metadata, healpix_model, CAMS_VARIABLE_META
+        )
         zarr.consolidate_metadata(root.store)
         log.info(f"CAMS zarr skeleton initialised: {output_path}")
 
@@ -437,7 +444,6 @@ class CAMSConverter:
                     if self.method == "psf"
                     else "nearest-neighbour binning"
                 ),
-                "Conventions": "CF-1.9",
             },
             links=[],
             assets={},
