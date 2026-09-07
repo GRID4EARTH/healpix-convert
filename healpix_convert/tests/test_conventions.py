@@ -1,3 +1,5 @@
+import typing
+
 import pytest
 import zarr.api.synchronous as zarr
 from pydantic import ValidationError
@@ -11,7 +13,9 @@ from healpix_convert.core.conventions import (
 )
 from healpix_convert.core.healpix_conventions import Healpix
 from healpix_convert.core.metadata import (
+    CELL_METHODS,
     CF_GRID_MAPPING_VARIABLE,
+    cf_cell_methods,
     cf_cell_id_attrs,
     cf_data_variable_attrs,
     cf_grid_mapping_attrs,
@@ -288,3 +292,49 @@ def test_no_cf_metadata_when_cf_deselected(tmp_path, healpix) -> None:
     assert "coordinates" not in ds["t2m"].attrs
     assert "grid_mapping" not in ds["t2m"].encoding
     assert "standard_name" not in ds["cell_ids"].attrs
+
+
+@pytest.mark.parametrize(
+    ("resampler", "expected"),
+    [
+        ("nearest", "area: point"),
+        ("k-nearest", "area: point"),
+        ("bilinear", "area: point"),
+        ("cell-point", "area: point"),
+        ("psf", "area: mean (point spread function weighted)"),
+    ],
+)
+def test_cell_methods_per_resampler(resampler, expected) -> None:
+    # the resampling method is otherwise invisible in the output: two
+    # byte-different datasets from one input would be indistinguishable
+    attrs = cf_data_variable_attrs(
+        MetadataSettings(), resampler_name=resampler
+    )
+
+    assert attrs["cell_methods"] == expected
+
+
+def test_cell_methods_unknown_resampler() -> None:
+    with pytest.raises(ValueError, match=".*no CF cell_methods defined.*"):
+        cf_cell_methods(MetadataSettings(), "not-a-resampler")
+
+
+def test_cell_methods_covers_every_resampler() -> None:
+    # a new resampler must declare what its values represent
+    from healpix_convert.settings.common import ResamplerSettings
+
+    names = {
+        cls.model_fields["name"].default
+        for cls in typing.get_args(ResamplerSettings)
+    }
+
+    assert names == set(CELL_METHODS)
+
+
+def test_no_cell_methods_when_cf_deselected() -> None:
+    metadata = MetadataSettings.model_validate({"zarr_conventions": ["dggs"]})
+
+    assert cf_cell_methods(metadata, "nearest") is None
+    assert "cell_methods" not in cf_data_variable_attrs(
+        metadata, resampler_name="nearest"
+    )
