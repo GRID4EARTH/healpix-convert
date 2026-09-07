@@ -44,10 +44,12 @@ import numpy as np
 import xarray as xr
 import zarr.api.synchronous as zarr
 
-from healpix_convert.core.healpix_conventions import (
-    DGGSZarrConvention,
-    Healpix,
-    write_cf_grid_mapping,
+from healpix_convert.core.conventions import MetadataSettings
+from healpix_convert.core.healpix_conventions import Healpix
+from healpix_convert.core.metadata import (
+    maybe_write_cf_grid_mapping,
+    write_group_conventions,
+    write_root_conventions,
 )
 from healpix_convert.core.stac import StacItem
 from healpix_convert.settings.climatedt import (
@@ -126,7 +128,9 @@ class ClimateDTConverter:
         realization: str = "1",
         ellipsoid_correction: bool = False,
         local_dir: Path = Path("."),
+        metadata: MetadataSettings | None = None,
     ):
+        self.metadata = metadata if metadata is not None else MetadataSettings()
         self.date = date
         self.time = time
         self.params = params
@@ -342,13 +346,15 @@ class ClimateDTConverter:
             indexing_scheme="nested",
             ellipsoid={"name": "wgs84"},
         )
-        dggs_convention = DGGSZarrConvention().model_dump()
         grp_name = "measurements/ocean" if is_ocean else "measurements/sfc"
 
         root = zarr.open_group(output_path, mode="w")
+        write_root_conventions(root, self.metadata)
+
         grp = root.require_group(grp_name)
-        grp.attrs["zarr_conventions"] = [dggs_convention]
-        grp.attrs["dggs"] = healpix_model.model_dump()
+        write_group_conventions(
+            grp, self.metadata, declare=("dggs",), dggs=healpix_model
+        )
 
         grp.create_array(
             "cell_ids",
@@ -378,7 +384,7 @@ class ClimateDTConverter:
             )
 
         # CF 1.13 HEALPix grid mapping alongside the DGGS-Zarr convention
-        write_cf_grid_mapping(grp, healpix_model, var_meta)
+        maybe_write_cf_grid_mapping(grp, self.metadata, healpix_model, var_meta)
 
         zarr.consolidate_metadata(root.store)
         log.info(f"ClimateDT zarr skeleton initialised: {output_path}")
@@ -416,7 +422,6 @@ class ClimateDTConverter:
                 "healpix:ordering": "NESTED",
                 "source_grid": f"Native HEALPix L{_CHILD_LEVEL} (IFS-NEMO, DestinE)",
                 "source_dataset": CDT_DATASET,
-                "Conventions": "CF-1.9",
                 "ellipsoid_correction": self.ellipsoid_correction,
             },
             links=[],
