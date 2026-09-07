@@ -20,6 +20,11 @@ from healpix_convert.core.metadata import (
     group_conventions_attrs,
     write_root_conventions,
 )
+from healpix_convert.core.stac import (
+    PROCESSING_EXTENSION,
+    derived_from_links,
+    processing_properties,
+)
 from healpix_convert.healpix_converters import (
     HealpixGroupConverter,
     init_converter,
@@ -113,7 +118,6 @@ def _create_and_process_output(
 
     # --- create output Zarr dataset
     # TODO: check for any existing output Zarr dataset
-    # TODO: write root metadata (STAC / STAC discovery attributes, etc.)
     log.info(f"••• creating {output_path} Zarr dataset...")
 
     if dry_run:
@@ -130,6 +134,20 @@ def _create_and_process_output(
     merged_stac_metadata = merge_stac_items(
         stac_metadata, cache.output_spatial, output_path
     )
+
+    # record how this output was produced: without the settings, two outputs
+    # resampled from the same input by different methods are indistinguishable
+    input_paths = sorted(str(path) for path in cache.input_datatrees)
+    merged_stac_metadata.properties.update(
+        processing_properties(
+            settings,
+            input_ids=sorted(item.id for item in stac_metadata.values()),
+            input_paths=input_paths,
+        )
+    )
+    merged_stac_metadata.links.extend(derived_from_links(input_paths))
+    if PROCESSING_EXTENSION not in merged_stac_metadata.stac_extensions:
+        merged_stac_metadata.stac_extensions.append(PROCESSING_EXTENSION)
 
     root_group.attrs["stac_discovery"] = merged_stac_metadata.model_dump()
     log.info("••• finished propagating stac metadata.")
