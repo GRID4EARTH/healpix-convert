@@ -22,6 +22,7 @@ from pydantic import (
 # pydantic requires typing_extensions.TypedDict (not typing.TypedDict) on Python < 3.12
 from typing_extensions import TypedDict
 
+from healpix_convert.core.conventions import MetadataSettings
 from healpix_convert.core.healpix_conventions import Healpix
 from healpix_convert.settings.cams import CAMS_CONVERT_SETTINGS
 from healpix_convert.settings.climatedt import CDT_SFC_CONVERT_SETTINGS
@@ -341,6 +342,9 @@ class ConvertSettings(BaseModel):
 
     exclude_groups: list[PurePath] = Field(default_factory=list)
     """Groups to exclude from the conversion (won't be included in output)."""
+
+    metadata: MetadataSettings = Field(default_factory=MetadataSettings)
+    """Settings for the metadata (conventions) written in the output dataset."""
 
     multiscale_settings: MultiscaleSettings = Field(default_factory=MultiscaleSettings)
     """Settings for multiscale Zarr groups."""

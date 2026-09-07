@@ -16,8 +16,10 @@ import zarr.api.synchronous as zarr
 
 from healpix_convert.cache import create_staging_cache
 from healpix_convert.core.conversion_models import ConvertStagingCache
-from healpix_convert.core.healpix_conventions import DGGSZarrConvention
-from healpix_convert.core.multiscales_conventions import MultiscalesZarrConvention
+from healpix_convert.core.metadata import (
+    group_conventions_attrs,
+    write_root_conventions,
+)
 from healpix_convert.healpix_converters import (
     HealpixGroupConverter,
     init_converter,
@@ -132,6 +134,9 @@ def _create_and_process_output(
     root_group.attrs["stac_discovery"] = merged_stac_metadata.model_dump()
     log.info("••• finished propagating stac metadata.")
 
+    # declare the conventions followed by the whole output dataset (root group only)
+    write_root_conventions(root_group, settings.metadata)
+
     # --- process groups
     log.info("••• processing groups...")
 
@@ -154,13 +159,13 @@ def _create_and_process_output(
             zarr.create_group(
                 output_store,
                 path=group_path_rel,
-                attributes={
-                    "zarr_conventions": [
-                        MultiscalesZarrConvention().model_dump(),
-                        DGGSZarrConvention().model_dump(),
-                    ],
-                    "multiscales": multiscales_obj.model_dump(),
-                },
+                # the DGGS convention is declared here as well: it applies to the
+                # single-scale (HEALPix) children groups of this group.
+                attributes=group_conventions_attrs(
+                    settings.metadata,
+                    declare=("multiscales", "dggs"),
+                    multiscales=multiscales_obj,
+                ),
             )
         elif path in cache.input_spatial_groups:
             log.info(f"••• writing group '{group_path_rel}' to zarr")
