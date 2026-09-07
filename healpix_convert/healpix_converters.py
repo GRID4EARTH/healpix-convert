@@ -229,6 +229,23 @@ class HealpixGroupConverter(ABC):
                 else:
                     dtype = var.dtype
 
+                # carry the input's own description of the variable: units,
+                # standard_name, long_name and the like. xarray's decoding has
+                # already moved scale_factor/add_offset/_FillValue into
+                # `encoding`, so what remains in `attrs` is safe to copy.
+                attributes = dict(var.attrs)
+
+                if {"scale_factor", "add_offset"} & set(var.encoding):
+                    # CF defines these against the stored (packed) values, and
+                    # the output is unpacked, so they would misdescribe it
+                    for key in ("valid_min", "valid_max", "valid_range"):
+                        attributes.pop(key, None)
+
+                # ours describe the output and must win over the input's
+                # CF 1.13 conventions
+                # TODO: more flexible handling of attributes
+                attributes.update({"grid_mapping": "crs"})
+
                 _get_maybe_create_array(
                     str(name),
                     shape=shape,
@@ -236,9 +253,7 @@ class HealpixGroupConverter(ABC):
                     chunks=chunks,
                     dimension_names=[str(d) for d in dims],
                     codecs=cast(Iterable[dict[str, JSON]], self.settings.codecs),
-                    # CF 1.13 conventions
-                    # TODO: more flexible handling of attributes
-                    attributes={"grid_mapping": "crs"},
+                    attributes=attributes,
                 )
             else:
                 # write array unchanged in output group
