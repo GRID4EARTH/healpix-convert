@@ -144,8 +144,54 @@ def cf_grid_mapping_attrs(
     return CFHealpixGridMapping.from_healpix(healpix).model_dump()
 
 
+#: CF ``cell_methods`` for each resampling method, describing what a cell value
+#: represents.
+#:
+#: Interpolating resamplers estimate the value at the cell centre, which CF
+#: describes as ``point``: "if the data value pertains to the gridpoint alone,
+#: rather than to an interval, area or n-dimensional volume of non-zero size".
+#:
+#: PSF resampling instead weights the input by the instrument response over an
+#: area, so it is a mean rather than a point — but a *weighted* one, which CF
+#: has no standard method for. The parenthesis qualifies it without overclaiming:
+#: tools parsing only the method still read an areal quantity, while a reader is
+#: not told it is a plain average. CF allows this form, and drops the ``comment:``
+#: keyword when there is no standardized information to precede it (CF 7.3.2,
+#: whose own example is ``lat: mean (area-weighted)``).
+#:
+#: See CF conventions section 7.3 ("Cell Methods") and Appendix E.
+CELL_METHODS = {
+    "nearest": "area: point",
+    "k-nearest": "area: point",
+    "bilinear": "area: point",
+    "cell-point": "area: point",
+    "psf": "area: mean (point spread function weighted)",
+}
+
+
+def cf_cell_methods(metadata: MetadataSettings, resampler_name: str) -> str | None:
+    """CF ``cell_methods`` for a resampled variable, or None if CF is not selected.
+
+    Raises for an unknown resampling method rather than silently omitting the
+    attribute: a new resampler must state what its values represent.
+
+    """
+    if metadata.cf is None:
+        return None
+
+    if resampler_name not in CELL_METHODS:
+        raise ValueError(
+            f"no CF cell_methods defined for resampling method {resampler_name!r} "
+            f"(known: {', '.join(sorted(CELL_METHODS))})"
+        )
+
+    return CELL_METHODS[resampler_name]
+
+
 def cf_data_variable_attrs(
-    metadata: MetadataSettings, healpix: Healpix | None = None
+    metadata: MetadataSettings,
+    healpix: Healpix | None = None,
+    resampler_name: str | None = None,
 ) -> dict[str, Any]:
     """CF attributes of a resampled data variable (empty if CF is not selected).
 
@@ -161,6 +207,11 @@ def cf_data_variable_attrs(
 
     if healpix is not None and isinstance(healpix.coordinate, str):
         attrs["coordinates"] = healpix.coordinate
+
+    if resampler_name is not None:
+        cell_methods = cf_cell_methods(metadata, resampler_name)
+        if cell_methods is not None:
+            attrs["cell_methods"] = cell_methods
 
     return attrs
 

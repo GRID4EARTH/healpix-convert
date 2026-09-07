@@ -241,7 +241,9 @@ class HealpixGroupConverter(ABC):
                     chunks=chunks,
                     dimension_names=[str(d) for d in dims],
                     codecs=cast(Iterable[dict[str, JSON]], self.settings.codecs),
-                    attributes=cf_data_variable_attrs(self.metadata, self.healpix),
+                    attributes=cf_data_variable_attrs(
+                        self.metadata, self.healpix, self.settings.resampler.name
+                    ),
                 )
             else:
                 # write array unchanged in output group
