@@ -464,6 +464,72 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
 
         return ds_input_points
 
+    def _query_chunk_input_points_latlon_rectilinear(
+        self, chunk_cell_id: int
+    ) -> xr.Dataset | None:
+        """Select a buffered geographic window without broadcasting the whole grid.
+
+        Longitude axes may use either [-180, 180] or [0, 360], in either
+        direction. The window is deliberately conservative: the resampler
+        performs the final lookup. Geographic buffer widths are in metres.
+        """
+        lon_name, lat_name = self.spatial_info.spatial_coordinates
+        lon, lat = healpix_geo.nested.vertices(
+            chunk_cell_id,
+            self.chunk_healpix.refinement_level,
+            ellipsoid=self.chunk_healpix.ellipsoid.name.upper(),
+        )
+        lon, lat = np.asarray(lon).ravel(), np.asarray(lat).ravel()
+        # A lower bound on terrestrial curvature radii gives a conservative
+        # angular buffer for WGS84 (also suitable for the supported sphere).
+        padding = np.rad2deg(max(0.0, self.chunk_buffer) / 6_330_000)
+        south = max(-90.0, float(lat.min()) - padding)
+        north = min(90.0, float(lat.max()) + padding)
+        polar = south <= -90.0 or north >= 90.0
+        # Unwrap around the cell centre, not the first vertex (which may lie
+        # on the opposite side of the antimeridian).
+        centre_lon, _ = healpix_geo.nested.healpix_to_lonlat(
+            chunk_cell_id,
+            self.chunk_healpix.refinement_level,
+            ellipsoid=self.chunk_healpix.ellipsoid.name.upper(),
+        )
+        centre_lon = float(np.asarray(centre_lon).ravel()[0])
+        relative_lon = (lon - centre_lon + 180.0) % 360.0 - 180.0
+        lon_padding = (
+            180.0
+            if polar
+            else padding / np.cos(np.deg2rad(max(abs(south), abs(north))))
+        )
+        west, east = relative_lon.min() - lon_padding, relative_lon.max() + lon_padding
+
+        prepared = []
+        for ds in self.datasets:
+            x, y = ds[lon_name], ds[lat_name]
+            if x.ndim != 1 or y.ndim != 1 or x.dims == y.dims:
+                raise ValueError(
+                    "rectilinear longitude/latitude must have distinct 1D dimensions"
+                )
+            xvalues = (x.values - centre_lon + 180.0) % 360.0 - 180.0
+            xidx = np.flatnonzero(
+                np.ones(x.size, dtype=bool)
+                if polar
+                else (xvalues >= west) & (xvalues <= east)
+            )
+            yidx = np.flatnonzero((y.values >= south) & (y.values <= north))
+            if not xidx.size or not yidx.size:
+                continue
+            # Keep the data lazy until after spatial selection. Stack broadcasts
+            # coordinates and variables with only one spatial dimension too.
+            clipped = ds.isel({x.dims[0]: xidx, y.dims[0]: yidx}).stack(
+                points=[y.dims[0], x.dims[0]], create_index=False
+            )
+            clipped = clipped.assign_coords(
+                lon=(clipped[lon_name] + 180.0) % 360.0 - 180.0,
+                lat=clipped[lat_name],
+            )
+            prepared.append(clipped)
+        return xr.concat(prepared, dim="points") if prepared else None
+
     def _query_chunk_input_points_projected(
         self, chunk_cell_id: int
     ) -> xr.Dataset | None:
@@ -561,10 +627,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         elif not self.spatial_info.is_rectilinear:
             return self._query_chunk_input_points_latlon_curvilinear(chunk_cell_id)
         else:
-            log.warning(
-                "selection of chunk input data not supported or not yet implemented"
-            )
-            return
+            return self._query_chunk_input_points_latlon_rectilinear(chunk_cell_id)
 
 
 class DenseChunkConverter(UniformChunkConverter):

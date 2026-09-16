@@ -202,10 +202,11 @@ class HealpixDenseChunkSettings(HealpixUniformChunkSettings):
     """Fixed, uniform width to apply around the edges of a HEALPix coarse
     "chunk" cell.
 
-    This parameter is used for spatial filtering of input data given in a
-    projected coordinate reference system (CRS), prior to resampling it onto the
-    HEALPix cells within the chunk. The buffer width value should thus be given
-    in the same CRS units (usually in meters) and greater or equal to zero.
+    This parameter is used for spatial filtering of input data prior to
+    resampling it onto the HEALPix cells within the chunk. For projected
+    coordinates it is in CRS units (usually metres); for geographic longitude
+    and latitude coordinates it is in metres. It should be greater or equal
+    to zero.
 
     Set the value to zero if no buffer is needed (e.g., some resampling methods
     do not require it).

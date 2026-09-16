@@ -58,3 +58,11 @@ $ pixi install -e dev
 ## Basic usage
 
 See examples in the ``notebooks`` folder.
+
+### ESA CCI categorical land cover
+
+[The ESA CCI land-cover example](notebooks/esacci_land_cover_converter.ipynb)
+converts the local 2015 300 m GeoTIFF to WGS84 ellipsoidal HEALPix level 15
+with NESTED indexing and nearest-neighbor resampling. It includes a small
+regional trial and a full-global option, and requires the optional `rioxarray`
+TIFF reader. Class IDs (including no-data code 0) are never interpolated.
