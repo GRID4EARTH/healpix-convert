@@ -229,6 +229,10 @@ class HealpixGroupConverter(ABC):
                 else:
                     dtype = var.dtype
 
+                attributes = {"grid_mapping": "crs"}
+                if isinstance(self.healpix.coordinate, str):
+                    attributes["coordinates"] = self.healpix.coordinate
+
                 _get_maybe_create_array(
                     str(name),
                     shape=shape,
@@ -238,7 +242,7 @@ class HealpixGroupConverter(ABC):
                     codecs=cast(Iterable[dict[str, JSON]], self.settings.codecs),
                     # CF 1.13 conventions
                     # TODO: more flexible handling of attributes
-                    attributes={"grid_mapping": "crs"},
+                    attributes=attributes,
                 )
             else:
                 # write array unchanged in output group
