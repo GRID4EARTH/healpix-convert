@@ -229,6 +229,7 @@ class HealpixGroupConverter(ABC):
                 else:
                     dtype = var.dtype
 
+                # TODO: more flexible handling of attributes
                 # carry the input's own description of the variable: units,
                 # standard_name, long_name and the like. xarray's decoding has
                 # already moved scale_factor/add_offset/_FillValue into
@@ -243,8 +244,10 @@ class HealpixGroupConverter(ABC):
 
                 # ours describe the output and must win over the input's
                 # CF 1.13 conventions
-                # TODO: more flexible handling of attributes
-                attributes.update({"grid_mapping": "crs"})
+                attributes["grid_mapping"] = "crs"
+
+                if isinstance(self.healpix.coordinate, str):
+                    attributes["coordinates"] = self.healpix.coordinate
 
                 _get_maybe_create_array(
                     str(name),
