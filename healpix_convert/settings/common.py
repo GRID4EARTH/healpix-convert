@@ -205,7 +205,7 @@ class HealpixDenseChunkSettings(HealpixUniformChunkSettings):
     This parameter is used for spatial filtering of input data prior to
     resampling it onto the HEALPix cells within the chunk. For projected
     coordinates it is in CRS units (usually metres); for geographic longitude
-    and latitude coordinates it is in metres. It should be greater or equal
+    and latitude coordinates it is in always in meters. It should be greater or equal
     to zero.
 
     Set the value to zero if no buffer is needed (e.g., some resampling methods
