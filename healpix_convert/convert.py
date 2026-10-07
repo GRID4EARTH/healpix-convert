@@ -16,10 +16,6 @@ import zarr.api.synchronous as zarr
 
 from healpix_convert.cache import create_staging_cache
 from healpix_convert.core.conversion_models import ConvertStagingCache
-from healpix_convert.core.metadata import (
-    group_conventions_attrs,
-    write_root_conventions,
-)
 from healpix_convert.core.stac import (
     STAC_PROCESSING_SCHEMA_URL,
     format_stac_derived_links,
@@ -177,12 +173,8 @@ def _create_and_process_output(
             zarr.create_group(
                 output_store,
                 path=group_path_rel,
-                # the DGGS convention is declared here as well: it applies to the
-                # single-scale (HEALPix) children groups of this group.
-                attributes=group_conventions_attrs(
-                    settings.metadata,
-                    declare=("multiscales", "dggs"),
-                    multiscales=multiscales_obj,
+                attributes=get_multiscale_group_attrs(
+                    multiscales_obj, settings.metadata
                 ),
             )
         elif path in cache.input_spatial_groups:
