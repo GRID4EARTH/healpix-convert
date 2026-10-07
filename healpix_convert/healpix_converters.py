@@ -18,7 +18,6 @@ import zarr.api.synchronous as zarr
 from zarr.api.asynchronous import JSON
 
 import healpix_convert.core.utils as utils
-from healpix_convert.core.conventions import MetadataSettings
 from healpix_convert.core.conversion_models import (
     ConvertStagingCache,
     InputGroupSpatialInfo,
@@ -31,10 +30,10 @@ from healpix_convert.core.healpix_conventions import (
 )
 from healpix_convert.core.metadata import (
     CF_GRID_MAPPING_VARIABLE,
-    cf_cell_id_attrs,
-    cf_data_variable_attrs,
-    cf_grid_mapping_attrs,
-    group_conventions_attrs,
+    get_cf_cell_id_attrs,
+    get_cf_data_variable_attrs,
+    get_cf_grid_mapping_attrs,
+    get_healpix_group_attrs,
 )
 from healpix_convert.settings.common import (
     ConvertSettings,
@@ -45,6 +44,7 @@ from healpix_convert.settings.common import (
     NoChunkSettings,
     broadcast_params,
 )
+from healpix_convert.settings.conventions import MetadataSettings
 
 log = structlog.get_logger()
 
@@ -65,7 +65,7 @@ class HealpixGroupConverter(ABC):
     root_spatial_info: InputSpatialInfo
     spatial_info: InputGroupSpatialInfo
     settings: HealpixGroupSettings
-    metadata: MetadataSettings
+    metadata_settings: MetadataSettings
     healpix: Healpix
     group_path: str
     input_paths: list[str]
@@ -91,7 +91,7 @@ class HealpixGroupConverter(ABC):
         group_settings = settings.group_settings[path]
         assert isinstance(group_settings, HealpixGroupSettings)
         self.settings = group_settings
-        self.metadata = settings.metadata
+        self.metadata_settings = settings.metadata
         self.healpix = self.settings.healpix
 
         self.group_path = str(path)
@@ -124,9 +124,7 @@ class HealpixGroupConverter(ABC):
             self.output_store,
             path=str(self.output_path),
             mode="a",
-            attributes=group_conventions_attrs(
-                self.metadata, declare=("dggs",), dggs=self.healpix
-            ),
+            attributes=get_healpix_group_attrs(self.healpix, self.metadata_settings),
         )
 
         self.__post_init__()
@@ -188,11 +186,13 @@ class HealpixGroupConverter(ABC):
                 dimension_names=(self.cell_dim,),
                 fill_value=np.iinfo(np.uint64).max,
                 codecs=None,
-                attributes=cf_cell_id_attrs(self.metadata),
+                attributes=get_cf_cell_id_attrs(self.metadata_settings),
             )
 
         # CF HEALPix grid mapping variable
-        grid_mapping_attrs = cf_grid_mapping_attrs(self.metadata, self.healpix)
+        grid_mapping_attrs = get_cf_grid_mapping_attrs(
+            self.healpix, self.metadata_settings
+        )
         if grid_mapping_attrs is not None:
             _get_maybe_create_array(
                 CF_GRID_MAPPING_VARIABLE,
@@ -247,7 +247,9 @@ class HealpixGroupConverter(ABC):
                     for key in ("valid_min", "valid_max", "valid_range"):
                         attributes.pop(key, None)
 
-                attributes.update(cf_data_variable_attrs(self.metadata, self.healpix))
+                attributes.update(
+                    get_cf_data_variable_attrs(self.healpix, self.metadata_settings)
+                )
 
                 _get_maybe_create_array(
                     str(name),
