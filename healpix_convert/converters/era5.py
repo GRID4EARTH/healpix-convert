@@ -31,14 +31,17 @@ import xarray as xr
 import zarr
 from healpix_resample import PSFResampler
 
-from healpix_convert.core.conventions import MetadataSettings
 from healpix_convert.core.healpix_conventions import Healpix
 from healpix_convert.core.metadata import (
-    maybe_write_cf_grid_mapping,
-    write_group_conventions,
+    CF_GRID_MAPPING_VARIABLE,
+    get_cf_cell_id_attrs,
+    get_cf_data_variable_attrs,
+    get_cf_grid_mapping_attrs,
+    get_healpix_group_attrs,
     write_root_conventions,
 )
 from healpix_convert.core.stac import StacItem
+from healpix_convert.settings.conventions import MetadataSettings
 from healpix_convert.settings.era5 import (
     CDS_DATASET,
     CDS_URL,
@@ -460,16 +463,29 @@ class ERA5Converter:
             ("measurements/oper", vars_oper, ERA5_OPER_VARIABLE_META),
         ]:
             grp = root.require_group(group)
-            write_group_conventions(
-                grp, self.metadata, declare=("dggs",), dggs=healpix_model
-            )
+            grp.attrs.update(get_healpix_group_attrs(healpix_model, self.metadata))
             grp.create_array(
                 "cell_ids",
                 shape=(_N_CHILD,),
                 dtype=np.int64,
                 chunks=(_CHUNK_SIZE,),
                 dimension_names=("cells",),
+                attributes=get_cf_cell_id_attrs(self.metadata),
             )
+
+            # CF HEALPix grid mapping variable, alongside the DGGS-Zarr convention
+            grid_mapping_attrs = get_cf_grid_mapping_attrs(healpix_model, self.metadata)
+            if grid_mapping_attrs is not None:
+                crs = grp.create_array(
+                    CF_GRID_MAPPING_VARIABLE,
+                    shape=(),
+                    dtype=np.int8,
+                    attributes=grid_mapping_attrs,
+                )
+                crs[...] = 0
+
+            cf_variable_attrs = get_cf_data_variable_attrs(healpix_model, self.metadata)
+
             for var in variables:
                 _, unit, long_name = meta[var]
                 grp.create_array(
@@ -479,10 +495,12 @@ class ERA5Converter:
                     chunks=(1, _CHUNK_SIZE),
                     fill_value=np.nan,
                     dimension_names=("time", "cells"),
-                    attributes={"units": unit, "long_name": long_name},
+                    attributes={
+                        "units": unit,
+                        "long_name": long_name,
+                        **cf_variable_attrs,
+                    },
                 )
-            # CF 1.13 HEALPix grid mapping alongside the DGGS-Zarr convention
-            maybe_write_cf_grid_mapping(grp, self.metadata, healpix_model, variables)
         zarr.consolidate_metadata(root.store)
         log.info(f"ERA5 zarr skeleton initialised: {output_path}")
 
