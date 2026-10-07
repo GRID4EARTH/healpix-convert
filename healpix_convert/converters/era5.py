@@ -31,12 +31,17 @@ import xarray as xr
 import zarr
 from healpix_resample import PSFResampler
 
-from healpix_convert.core.healpix_conventions import (
-    DGGSZarrConvention,
-    Healpix,
-    write_cf_grid_mapping,
+from healpix_convert.core.healpix_conventions import Healpix
+from healpix_convert.core.metadata import (
+    CF_GRID_MAPPING_VARIABLE,
+    get_cf_cell_id_attrs,
+    get_cf_data_variable_attrs,
+    get_cf_grid_mapping_attrs,
+    get_healpix_group_attrs,
+    write_root_conventions,
 )
 from healpix_convert.core.stac import StacItem
+from healpix_convert.settings.conventions import MetadataSettings
 from healpix_convert.settings.era5 import (
     CDS_DATASET,
     CDS_URL,
@@ -108,6 +113,8 @@ class ERA5Converter:
     step      : MARS step (default "0")
     numbers   : ensemble member numbers (default 0-9)
     local_dir : directory for local GRIB cache
+    metadata  : conventions followed by the output dataset
+                (default: all of them, see :py:class:`MetadataSettings`)
     """
 
     def __init__(
@@ -117,12 +124,14 @@ class ERA5Converter:
         step: str = "0",
         numbers: list[int] = None,
         local_dir: Path = Path("."),
+        metadata: MetadataSettings | None = None,
     ):
         self.date = date
         self.time = time
         self.step = step
         self.numbers = numbers if numbers is not None else DEFAULT_NUMBERS
         self.local_dir = Path(local_dir)
+        self.metadata = metadata if metadata is not None else MetadataSettings()
         self._result: ERA5PrepareResult | None = None
         self._map_cache: dict = {}
         self._sub_resampler_cache: dict = {}
@@ -441,28 +450,42 @@ class ERA5Converter:
         end_dt: datetime,
     ) -> None:
         root = zarr.open_group(output_path, mode="w")
+        write_root_conventions(root, self.metadata)
 
         healpix_model = Healpix(
             refinement_level=_CHILD_LEVEL,
             indexing_scheme="nested",
             ellipsoid={"name": "wgs84"},
         )
-        dggs_convention = DGGSZarrConvention().model_dump()
 
         for group, variables, meta in [
             ("measurements/enda", vars_enda, ERA5_ENDA_VARIABLE_META),
             ("measurements/oper", vars_oper, ERA5_OPER_VARIABLE_META),
         ]:
             grp = root.require_group(group)
-            grp.attrs["zarr_conventions"] = [dggs_convention]
-            grp.attrs["dggs"] = healpix_model.model_dump()
+            grp.attrs.update(get_healpix_group_attrs(healpix_model, self.metadata))
             grp.create_array(
                 "cell_ids",
                 shape=(_N_CHILD,),
                 dtype=np.int64,
                 chunks=(_CHUNK_SIZE,),
                 dimension_names=("cells",),
+                attributes=get_cf_cell_id_attrs(self.metadata),
             )
+
+            # CF HEALPix grid mapping variable, alongside the DGGS-Zarr convention
+            grid_mapping_attrs = get_cf_grid_mapping_attrs(healpix_model, self.metadata)
+            if grid_mapping_attrs is not None:
+                crs = grp.create_array(
+                    CF_GRID_MAPPING_VARIABLE,
+                    shape=(),
+                    dtype=np.int8,
+                    attributes=grid_mapping_attrs,
+                )
+                crs[...] = 0
+
+            cf_variable_attrs = get_cf_data_variable_attrs(healpix_model, self.metadata)
+
             for var in variables:
                 _, unit, long_name = meta[var]
                 grp.create_array(
@@ -472,10 +495,12 @@ class ERA5Converter:
                     chunks=(1, _CHUNK_SIZE),
                     fill_value=np.nan,
                     dimension_names=("time", "cells"),
-                    attributes={"units": unit, "long_name": long_name},
+                    attributes={
+                        "units": unit,
+                        "long_name": long_name,
+                        **cf_variable_attrs,
+                    },
                 )
-            # CF 1.13 HEALPix grid mapping alongside the DGGS-Zarr convention
-            write_cf_grid_mapping(grp, healpix_model, variables)
         zarr.consolidate_metadata(root.store)
         log.info(f"ERA5 zarr skeleton initialised: {output_path}")
 
@@ -515,7 +540,6 @@ class ERA5Converter:
                 "source_grid": f"Gaussian {ERA5_ENDA_GRID}/{ERA5_OPER_GRID}",
                 "source_dataset": CDS_DATASET,
                 "resampling:method": (f"PSFResampler(level={_CHILD_LEVEL})"),
-                "Conventions": "CF-1.9",
             },
             links=[],
             assets={},

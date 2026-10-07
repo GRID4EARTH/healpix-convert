@@ -45,10 +45,14 @@ import xarray as xr
 import zarr.api.synchronous as zarr
 from healpix_resample import PSFResampler
 
-from healpix_convert.core.healpix_conventions import (
-    DGGSZarrConvention,
-    Healpix,
-    write_cf_grid_mapping,
+from healpix_convert.core.healpix_conventions import Healpix
+from healpix_convert.core.metadata import (
+    CF_GRID_MAPPING_VARIABLE,
+    get_cf_cell_id_attrs,
+    get_cf_data_variable_attrs,
+    get_cf_grid_mapping_attrs,
+    get_healpix_group_attrs,
+    write_root_conventions,
 )
 from healpix_convert.core.stac import StacItem
 from healpix_convert.settings.cams import (
@@ -58,6 +62,7 @@ from healpix_convert.settings.cams import (
     CAMS_PSF_THRESHOLD,
     CAMS_VARIABLE_META,
 )
+from healpix_convert.settings.conventions import MetadataSettings
 
 log = logging.getLogger(__name__)
 
@@ -135,9 +140,11 @@ class CAMSConverter:
         method: str = "psf",
         psf_threshold: float = CAMS_PSF_THRESHOLD,
         psf_lam: float = CAMS_PSF_LAM,
+        metadata: MetadataSettings | None = None,
     ):
         if method not in ("psf", "nn"):
             raise ValueError(f"method must be 'psf' or 'nn', got {method!r}")
+        self.metadata = metadata if metadata is not None else MetadataSettings()
         self.date = date
         self.time = time
         self.local_dir = Path(local_dir)
@@ -359,12 +366,11 @@ class CAMSConverter:
             indexing_scheme="nested",
             ellipsoid={"name": "wgs84"},
         )
-        dggs_convention = DGGSZarrConvention().model_dump()
-
         root = zarr.open_group(output_path, mode="w")
+        write_root_conventions(root, self.metadata)
+
         grp = root.require_group("measurements/aod")
-        grp.attrs["zarr_conventions"] = [dggs_convention]
-        grp.attrs["dggs"] = healpix_model.model_dump()
+        grp.attrs.update(get_healpix_group_attrs(healpix_model, self.metadata))
 
         grp.create_array(
             "cell_ids",
@@ -372,7 +378,20 @@ class CAMSConverter:
             dtype=np.int64,
             chunks=(_CHUNK_SIZE,),
             dimension_names=("cells",),
+            attributes=get_cf_cell_id_attrs(self.metadata),
         )
+
+        # CF HEALPix grid mapping variable, alongside the DGGS-Zarr convention
+        grid_mapping_attrs = get_cf_grid_mapping_attrs(healpix_model, self.metadata)
+        if grid_mapping_attrs is not None:
+            crs = grp.create_array(
+                CF_GRID_MAPPING_VARIABLE,
+                shape=(),
+                dtype=np.int8,
+                attributes=grid_mapping_attrs,
+            )
+            crs[...] = 0
+
         arr = grp.create_array(
             "number",
             shape=(n_times,),
@@ -382,6 +401,8 @@ class CAMSConverter:
         )
         arr[:] = np.arange(n_times)
 
+        cf_variable_attrs = get_cf_data_variable_attrs(healpix_model, self.metadata)
+
         for var, (_, unit, long_name) in CAMS_VARIABLE_META.items():
             grp.create_array(
                 var,
@@ -390,10 +411,13 @@ class CAMSConverter:
                 chunks=(1, _CHUNK_SIZE),
                 fill_value=np.nan,
                 dimension_names=("time", "cells"),
-                attributes={"units": unit, "long_name": long_name, "valid_min": 0.0},
+                attributes={
+                    "units": unit,
+                    "long_name": long_name,
+                    "valid_min": 0.0,
+                    **cf_variable_attrs,
+                },
             )
-        # CF 1.13 HEALPix grid mapping alongside the DGGS-Zarr convention
-        write_cf_grid_mapping(grp, healpix_model, CAMS_VARIABLE_META)
         zarr.consolidate_metadata(root.store)
         log.info(f"CAMS zarr skeleton initialised: {output_path}")
 
@@ -437,7 +461,6 @@ class CAMSConverter:
                     if self.method == "psf"
                     else "nearest-neighbour binning"
                 ),
-                "Conventions": "CF-1.9",
             },
             links=[],
             assets={},

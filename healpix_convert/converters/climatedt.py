@@ -44,10 +44,14 @@ import numpy as np
 import xarray as xr
 import zarr.api.synchronous as zarr
 
-from healpix_convert.core.healpix_conventions import (
-    DGGSZarrConvention,
-    Healpix,
-    write_cf_grid_mapping,
+from healpix_convert.core.healpix_conventions import Healpix
+from healpix_convert.core.metadata import (
+    CF_GRID_MAPPING_VARIABLE,
+    get_cf_cell_id_attrs,
+    get_cf_data_variable_attrs,
+    get_cf_grid_mapping_attrs,
+    get_healpix_group_attrs,
+    write_root_conventions,
 )
 from healpix_convert.core.stac import StacItem
 from healpix_convert.settings.climatedt import (
@@ -66,6 +70,7 @@ from healpix_convert.settings.climatedt import (
     POLYTOPE_ADDRESS,
     POLYTOPE_COLLECTION,
 )
+from healpix_convert.settings.conventions import MetadataSettings
 
 log = logging.getLogger(__name__)
 
@@ -126,7 +131,9 @@ class ClimateDTConverter:
         realization: str = "1",
         ellipsoid_correction: bool = False,
         local_dir: Path = Path("."),
+        metadata: MetadataSettings | None = None,
     ):
+        self.metadata = metadata if metadata is not None else MetadataSettings()
         self.date = date
         self.time = time
         self.params = params
@@ -342,13 +349,13 @@ class ClimateDTConverter:
             indexing_scheme="nested",
             ellipsoid={"name": "wgs84"},
         )
-        dggs_convention = DGGSZarrConvention().model_dump()
         grp_name = "measurements/ocean" if is_ocean else "measurements/sfc"
 
         root = zarr.open_group(output_path, mode="w")
+        write_root_conventions(root, self.metadata)
+
         grp = root.require_group(grp_name)
-        grp.attrs["zarr_conventions"] = [dggs_convention]
-        grp.attrs["dggs"] = healpix_model.model_dump()
+        grp.attrs.update(get_healpix_group_attrs(healpix_model, self.metadata))
 
         grp.create_array(
             "cell_ids",
@@ -356,7 +363,19 @@ class ClimateDTConverter:
             dtype=np.int64,
             chunks=(_CHUNK_SIZE,),
             dimension_names=("cells",),
+            attributes=get_cf_cell_id_attrs(self.metadata),
         )
+
+        # CF HEALPix grid mapping variable, alongside the DGGS-Zarr convention
+        grid_mapping_attrs = get_cf_grid_mapping_attrs(healpix_model, self.metadata)
+        if grid_mapping_attrs is not None:
+            crs = grp.create_array(
+                CF_GRID_MAPPING_VARIABLE,
+                shape=(),
+                dtype=np.int8,
+                attributes=grid_mapping_attrs,
+            )
+            crs[...] = 0
 
         grp.create_array(
             "time",
@@ -366,6 +385,8 @@ class ClimateDTConverter:
             dimension_names=("time",),
         )
 
+        cf_variable_attrs = get_cf_data_variable_attrs(healpix_model, self.metadata)
+
         for var, (_, unit, long_name) in var_meta.items():
             grp.create_array(
                 var,
@@ -374,11 +395,12 @@ class ClimateDTConverter:
                 chunks=(1, _CHUNK_SIZE),
                 fill_value=np.nan,
                 dimension_names=("time", "cells"),
-                attributes={"units": unit, "long_name": long_name},
+                attributes={
+                    "units": unit,
+                    "long_name": long_name,
+                    **cf_variable_attrs,
+                },
             )
-
-        # CF 1.13 HEALPix grid mapping alongside the DGGS-Zarr convention
-        write_cf_grid_mapping(grp, healpix_model, var_meta)
 
         zarr.consolidate_metadata(root.store)
         log.info(f"ClimateDT zarr skeleton initialised: {output_path}")
@@ -416,7 +438,6 @@ class ClimateDTConverter:
                 "healpix:ordering": "NESTED",
                 "source_grid": f"Native HEALPix L{_CHILD_LEVEL} (IFS-NEMO, DestinE)",
                 "source_dataset": CDT_DATASET,
-                "Conventions": "CF-1.9",
                 "ellipsoid_correction": self.ellipsoid_correction,
             },
             links=[],

@@ -18,7 +18,6 @@ import zarr.api.synchronous as zarr
 from zarr.api.asynchronous import JSON
 
 import healpix_convert.core.utils as utils
-from healpix_convert.core.conventions import MetadataSettings
 from healpix_convert.core.conversion_models import (
     ConvertStagingCache,
     InputGroupSpatialInfo,
