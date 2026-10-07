@@ -21,9 +21,9 @@ from healpix_convert.core.metadata import (
     write_root_conventions,
 )
 from healpix_convert.core.stac import (
-    PROCESSING_EXTENSION,
-    derived_from_links,
-    processing_properties,
+    STAC_PROCESSING_SCHEMA_URL,
+    format_stac_derived_links,
+    format_stac_processing,
 )
 from healpix_convert.healpix_converters import (
     HealpixGroupConverter,
@@ -139,15 +139,15 @@ def _create_and_process_output(
     # resampled from the same input by different methods are indistinguishable
     input_paths = sorted(str(path) for path in cache.input_datatrees)
     merged_stac_metadata.properties.update(
-        processing_properties(
+        format_stac_processing(
             settings,
             input_ids=sorted(item.id for item in stac_metadata.values()),
             input_paths=input_paths,
         )
     )
-    merged_stac_metadata.links.extend(derived_from_links(input_paths))
-    if PROCESSING_EXTENSION not in merged_stac_metadata.stac_extensions:
-        merged_stac_metadata.stac_extensions.append(PROCESSING_EXTENSION)
+    merged_stac_metadata.links.extend(format_stac_derived_links(input_paths))
+    if STAC_PROCESSING_SCHEMA_URL not in merged_stac_metadata.stac_extensions:
+        merged_stac_metadata.stac_extensions.append(STAC_PROCESSING_SCHEMA_URL)
 
     root_group.attrs["stac_discovery"] = merged_stac_metadata.model_dump()
     log.info("••• finished propagating stac metadata.")

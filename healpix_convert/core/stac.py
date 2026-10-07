@@ -52,7 +52,7 @@ class StacItem(BaseModel):
     """Links to data files"""
 
 
-PROCESSING_EXTENSION = (
+STAC_PROCESSING_SCHEMA_URL = (
     "https://stac-extensions.github.io/processing/v1.2.0/schema.json"
 )
 
@@ -79,7 +79,7 @@ def _package_versions() -> dict[str, str]:
     return versions
 
 
-def derived_from_links(input_paths: Iterable[str]) -> list[dict[str, Any]]:
+def format_stac_derived_links(input_paths: Iterable[str]) -> list[dict[str, Any]]:
     """STAC links pointing back at the datasets the output was derived from.
 
     `derived_from` is how STAC records that one item was produced from others,
@@ -93,7 +93,7 @@ def derived_from_links(input_paths: Iterable[str]) -> list[dict[str, Any]]:
     ]
 
 
-def processing_properties(
+def format_stac_processing(
     settings: ConvertSettings,
     *,
     input_ids: Iterable[str] = (),
