@@ -297,6 +297,12 @@ def compute_output_chunk_info(
     chunk_level: int,
     ellipsoid_name: str,
 ) -> tuple[np.ndarray, np.ndarray]:
+    # A world rectangle has coincident spherical edges at +/-180 degrees;
+    # passing it to polygon_coverage does not describe full-sphere coverage.
+    if output_extent.equals(shapely.box(-180, -90, 180, 90)):
+        cell_ids = np.arange(12 * 4**chunk_level, dtype=np.uint64)
+        return cell_ids, np.ones(cell_ids.size, dtype=bool)
+
     chunk_cell_ids, _, chunk_is_full = healpix_geo.nested.polygon_coverage(
         shapely.coordinates.get_coordinates(output_extent),
         chunk_level,

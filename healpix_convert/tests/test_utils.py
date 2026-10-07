@@ -37,3 +37,23 @@ def test_assign_transform_coords() -> None:
     expected = xr.Dataset(coords={"lon": (["x", "y"], lon), "lat": (["x", "y"], lat)})
 
     xr.testing.assert_allclose(actual, expected)
+
+
+def test_compute_output_chunk_info_world():
+    import shapely
+
+    from healpix_convert.core.utils import compute_output_chunk_info
+
+    ids, full = compute_output_chunk_info(shapely.box(-180, -90, 180, 90), 2, "wgs84")
+    np.testing.assert_array_equal(ids, np.arange(192, dtype=np.uint64))
+    assert full.all()
+
+
+def test_compute_output_chunk_info_regional():
+    import shapely
+
+    from healpix_convert.core.utils import compute_output_chunk_info
+
+    ids, full = compute_output_chunk_info(shapely.box(2, 48, 2.01, 48.01), 2, "wgs84")
+    assert 0 < ids.size < 192
+    assert ids.size == full.size
