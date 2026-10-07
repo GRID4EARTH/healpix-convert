@@ -16,6 +16,10 @@ import zarr.api.synchronous as zarr
 
 from healpix_convert.cache import create_staging_cache
 from healpix_convert.core.conversion_models import ConvertStagingCache
+from healpix_convert.core.metadata import (
+    get_multiscale_group_attrs,
+    write_root_conventions,
+)
 from healpix_convert.core.stac import (
     STAC_PROCESSING_SCHEMA_URL,
     format_stac_derived_links,
