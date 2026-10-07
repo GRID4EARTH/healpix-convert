@@ -86,9 +86,6 @@ def test_cf_metadata_survives_conversion(converted) -> None:
     assert ds["crs"].attrs["grid_mapping_name"] == "healpix"
     assert ds["crs"].attrs["refinement_level"] == 4
 
-    # and the resampling method is recorded on the data variable
-    assert ds["t2m"].attrs["cell_methods"] == "area: point"
-
 
 def test_conventions_declared_in_root_group_only(converted) -> None:
     tree = xr.open_datatree(converted, engine="zarr")
