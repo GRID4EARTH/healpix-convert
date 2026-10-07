@@ -26,6 +26,7 @@ from healpix_convert.core.conventions import MetadataSettings
 from healpix_convert.core.healpix_conventions import Healpix
 from healpix_convert.settings.cams import CAMS_CONVERT_SETTINGS
 from healpix_convert.settings.climatedt import CDT_SFC_CONVERT_SETTINGS
+from healpix_convert.settings.conventions import MetadataSettings
 from healpix_convert.settings.era5 import ERA5_CONVERT_SETTINGS
 
 log = structlog.get_logger()

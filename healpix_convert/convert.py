@@ -17,8 +17,13 @@ import zarr.api.synchronous as zarr
 from healpix_convert.cache import create_staging_cache
 from healpix_convert.core.conversion_models import ConvertStagingCache
 from healpix_convert.core.metadata import (
-    group_conventions_attrs,
+    get_multiscale_group_attrs,
     write_root_conventions,
+)
+from healpix_convert.core.stac import (
+    STAC_PROCESSING_SCHEMA_URL,
+    format_stac_derived_links,
+    format_stac_processing,
 )
 from healpix_convert.healpix_converters import (
     HealpixGroupConverter,
@@ -113,7 +118,6 @@ def _create_and_process_output(
 
     # --- create output Zarr dataset
     # TODO: check for any existing output Zarr dataset
-    # TODO: write root metadata (STAC / STAC discovery attributes, etc.)
     log.info(f"••• creating {output_path} Zarr dataset...")
 
     if dry_run:
@@ -130,6 +134,20 @@ def _create_and_process_output(
     merged_stac_metadata = merge_stac_items(
         stac_metadata, cache.output_spatial, output_path
     )
+
+    # record how this output was produced: without the settings, two outputs
+    # resampled from the same input by different methods are indistinguishable
+    input_paths = sorted(str(path) for path in cache.input_datatrees)
+    merged_stac_metadata.properties.update(
+        format_stac_processing(
+            settings,
+            input_ids=sorted(item.id for item in stac_metadata.values()),
+            input_paths=input_paths,
+        )
+    )
+    merged_stac_metadata.links.extend(format_stac_derived_links(input_paths))
+    if STAC_PROCESSING_SCHEMA_URL not in merged_stac_metadata.stac_extensions:
+        merged_stac_metadata.stac_extensions.append(STAC_PROCESSING_SCHEMA_URL)
 
     root_group.attrs["stac_discovery"] = merged_stac_metadata.model_dump()
     log.info("••• finished propagating stac metadata.")
@@ -159,12 +177,8 @@ def _create_and_process_output(
             zarr.create_group(
                 output_store,
                 path=group_path_rel,
-                # the DGGS convention is declared here as well: it applies to the
-                # single-scale (HEALPix) children groups of this group.
-                attributes=group_conventions_attrs(
-                    settings.metadata,
-                    declare=("multiscales", "dggs"),
-                    multiscales=multiscales_obj,
+                attributes=get_multiscale_group_attrs(
+                    multiscales_obj, settings.metadata
                 ),
             )
         elif path in cache.input_spatial_groups:
