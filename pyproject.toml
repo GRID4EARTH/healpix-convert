@@ -3,6 +3,12 @@ name = "healpix-convert"
 requires-python = ">= 3.11"
 license = { text = "Apache-2.0" }
 dynamic = ["version"]
+description = "Convert datasets into the HEALPix-based DGGS format"
+keywords = ["healpix"]
+authors = [
+  { name = "healpix-convert Developers" },
+]
+readme = "README.md"
 dependencies = [
   "xarray>=2025.11.0",
   "numpy>=2",
