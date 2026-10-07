@@ -247,12 +247,7 @@ class HealpixGroupConverter(ABC):
                     for key in ("valid_min", "valid_max", "valid_range"):
                         attributes.pop(key, None)
 
-                # ours describe the output and must win over the input's
-                # CF 1.13 conventions
-                attributes["grid_mapping"] = "crs"
-
-                if isinstance(self.healpix.coordinate, str):
-                    attributes["coordinates"] = self.healpix.coordinate
+                attributes.update(cf_data_variable_attrs(self.metadata, self.healpix))
 
                 _get_maybe_create_array(
                     str(name),
@@ -261,7 +256,7 @@ class HealpixGroupConverter(ABC):
                     chunks=chunks,
                     dimension_names=[str(d) for d in dims],
                     codecs=cast(Iterable[dict[str, JSON]], self.settings.codecs),
-                    attributes=cf_data_variable_attrs(self.metadata, self.healpix),
+                    attributes=attributes,
                 )
             else:
                 # write array unchanged in output group
