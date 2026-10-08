@@ -234,12 +234,12 @@ class HealpixGroupConverter(ABC):
                 else:
                     dtype = var.dtype
 
-                # TODO: more flexible handling of attributes
                 # carry the input's own description of the variable: units,
-                # standard_name, long_name and the like. xarray's decoding has
+                # standard_name, long_name and the like, minus the attributes
+                # the data provider asked to drop. xarray's decoding has
                 # already moved scale_factor/add_offset/_FillValue into
                 # `encoding`, so what remains in `attrs` is safe to copy.
-                attributes = dict(var.attrs)
+                attributes = self.settings.metadata.filter_attrs(var.attrs)
 
                 if {"scale_factor", "add_offset"} & set(var.encoding):
                     # CF defines these against the stored (packed) values, and

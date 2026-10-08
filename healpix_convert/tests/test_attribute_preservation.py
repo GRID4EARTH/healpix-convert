@@ -32,10 +32,12 @@ BAND_ATTRS = {
 }
 
 
-def _input(tmp_path, *, packed: bool):
+def _input(tmp_path, *, packed: bool, extra_attrs: dict | None = None):
     attrs = dict(BAND_ATTRS) | {"valid_min": 0, "valid_max": 1000}
     if packed:
         attrs |= {"scale_factor": 0.0136, "add_offset": 0.0}
+    if extra_attrs:
+        attrs |= extra_attrs
 
     values = np.arange(64, dtype="uint16" if packed else "float32").reshape(8, 8)
     ds = xr.Dataset(
@@ -48,29 +50,37 @@ def _input(tmp_path, *, packed: bool):
     tree = xr.DataTree.from_dict({"/measurements": ds})
     tree.attrs["stac_discovery"] = STAC_ITEM
 
-    path = tmp_path / f"input-{'packed' if packed else 'plain'}.zarr"
+    suffix = "packed" if packed else "plain"
+    if extra_attrs:
+        suffix += "-extra"
+    path = tmp_path / f"input-{suffix}.zarr"
     tree.to_zarr(path, mode="w", consolidated=True)
     return str(path)
 
 
-@pytest.fixture
-def settings():
+def _settings(exclude_attrs: list[str] | None = None):
+    group_settings: dict = {
+        "healpix": {"refinement_level": 4, "indexing_scheme": "nested"},
+        "chunk": {"method": "no_chunk"},
+        "resampler": {"name": "nearest"},
+    }
+    if exclude_attrs is not None:
+        group_settings["metadata"] = {"exclude_attrs": exclude_attrs}
+
     return ConvertSettings.model_validate(
-        {
-            "group_settings": {
-                "measurements": {
-                    "healpix": {"refinement_level": 4, "indexing_scheme": "nested"},
-                    "chunk": {"method": "no_chunk"},
-                    "resampler": {"name": "nearest"},
-                }
-            }
-        }
+        {"group_settings": {"measurements": group_settings}}
     )
 
 
-def _convert(tmp_path, settings, *, packed):
+@pytest.fixture
+def settings():
+    return _settings()
+
+
+def _convert(tmp_path, settings, *, packed, extra_attrs: dict | None = None):
     out = str(tmp_path / f"out-{'packed' if packed else 'plain'}.zarr")
-    create_healpix_dataset([_input(tmp_path, packed=packed)], settings, out)
+    input_path = _input(tmp_path, packed=packed, extra_attrs=extra_attrs)
+    create_healpix_dataset([input_path], settings, out)
     return xr.open_dataset(out, group="measurements", engine="zarr")
 
 
@@ -107,3 +117,48 @@ def test_valid_range_kept_when_unpacked(tmp_path, settings) -> None:
 
     assert attrs["valid_min"] == 0
     assert attrs["valid_max"] == 1000
+
+
+def test_excluded_attributes_are_not_propagated(tmp_path) -> None:
+    # the data provider does not want the input's internal bookkeeping in the output
+    extra_attrs = {"_io_config": "whatever", "history": "built by some pipeline"}
+    settings = _settings(["history"])
+
+    attrs = _convert(tmp_path, settings, packed=False, extra_attrs=extra_attrs)[
+        "radiance"
+    ].attrs
+
+    assert "history" not in attrs
+    # only the named attribute is dropped
+    assert attrs["_io_config"] == "whatever"
+    assert attrs["standard_name"] == BAND_ATTRS["standard_name"]
+
+
+def test_excluded_attributes_accept_patterns(tmp_path) -> None:
+    extra_attrs = {
+        "_io_config": "whatever",
+        "_eopf_attrs": "whatever",
+        "history": "built by some pipeline",
+    }
+    settings = _settings(["_.*", "history"])
+
+    attrs = _convert(tmp_path, settings, packed=False, extra_attrs=extra_attrs)[
+        "radiance"
+    ].attrs
+
+    assert "_io_config" not in attrs
+    assert "_eopf_attrs" not in attrs
+    assert "history" not in attrs
+    for key, value in BAND_ATTRS.items():
+        assert attrs[key] == value
+
+
+def test_excluded_attributes_do_not_drop_our_own(tmp_path) -> None:
+    # exclusion applies to the input metadata, not to the attributes that
+    # describe the HEALPix output
+    settings = _settings(["grid_mapping", "long_name"])
+
+    attrs = _convert(tmp_path, settings, packed=False)["radiance"].attrs
+
+    assert attrs["grid_mapping"] == "crs"
+    assert "long_name" not in attrs

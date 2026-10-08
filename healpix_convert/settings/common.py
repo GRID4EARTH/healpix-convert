@@ -4,8 +4,9 @@ Pydantic model classes for conversion settings.
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import PurePath
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -16,6 +17,7 @@ from pydantic import (
     Field,
     ValidationError,
     field_serializer,
+    field_validator,
     model_validator,
 )
 
@@ -259,6 +261,45 @@ class CodecSettings(TypedDict):
     configuration: dict[str, Any]
 
 
+class InputMetadataSettings(BaseModel):
+    """Settings for the metadata read from the input dataset(s)."""
+
+    model_config = ConfigDict(
+        frozen=True, use_attribute_docstrings=True, extra="forbid"
+    )
+
+    exclude_attrs: list[str] = Field(default_factory=list)
+    """Names of the input dataset attributes that must not be propagated to the output.
+
+    Each item is either the exact name of an attribute or a regular expression
+    matched against the whole attribute name (e.g., ``"history.*"`` excludes both
+    ``"history"`` and ``"history_of_appended_files"``).
+    """
+
+    @field_validator("exclude_attrs")
+    @classmethod
+    def validate_patterns(cls, value: list[str]) -> list[str]:
+        for pattern in value:
+            try:
+                re.compile(pattern)
+            except re.error as err:
+                raise ValueError(
+                    f"invalid regular expression {pattern!r}: {err}"
+                ) from None
+
+        return value
+
+    def is_excluded(self, name: str) -> bool:
+        """Returns True if the input attribute with the given name must not be
+        propagated to the output.
+        """
+        return any(re.fullmatch(pattern, name) for pattern in self.exclude_attrs)
+
+    def filter_attrs(self, attrs: Mapping[str, Any]) -> dict[str, Any]:
+        """Return a copy of the given input attributes without the excluded ones."""
+        return {k: v for k, v in attrs.items() if not self.is_excluded(k)}
+
+
 class HealpixGroupSettings(BaseModel):
     """Settings for converting a single Zarr group onto HEALPix."""
 
@@ -272,6 +313,11 @@ class HealpixGroupSettings(BaseModel):
 
     resampler: Annotated[ResamplerSettings, Field(discriminator="name")]
     """Resampling method name and settings."""
+
+    metadata: InputMetadataSettings = Field(default_factory=InputMetadataSettings)
+    """Settings for the metadata read from the input dataset(s) and propagated
+    to the output group.
+    """
 
     codecs: list[CodecSettings] | None = Field(default=None)
 
