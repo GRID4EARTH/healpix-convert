@@ -334,6 +334,38 @@ _RESAMPLER_NAME_CLS: dict[str, type] = {
 }
 
 
+def _log_overlap_without_pixel_center(
+    chunk_cell_id: int, overlap: shapely.Geometry, transform: Any
+) -> None:
+    """Log an input dataset skipped for a chunk because the overlap between the
+    (buffered) chunk polygon and the dataset extent contains no pixel center.
+
+    A sliver along the extent (narrower than half a pixel) is expected. An overlap
+    that contains a disk of radius `res * sqrt(2) / 2` (`res` = the larger pixel
+    size) always contains a pixel center of a grid that covers the extent, so the
+    spatial extent and the transform of the dataset probably disagree: warn.
+
+    """
+    resolution = None
+    if transform is not None:
+        resolution = max(abs(transform.a), abs(transform.e))
+    if resolution and not shapely.buffer(overlap, -resolution * 0.7072).is_empty:
+        log.warning(
+            "no pixel center in a large overlap between the chunk and the input "
+            "dataset extent: inconsistent spatial extent and transform?",
+            chunk_cell_id=int(chunk_cell_id),
+            overlap_area=float(overlap.area),
+            resolution=float(resolution),
+        )
+    else:
+        log.debug(
+            "no pixel center in the overlap between the chunk and the input "
+            "dataset extent: dataset skipped",
+            chunk_cell_id=int(chunk_cell_id),
+            overlap_area=float(overlap.area),
+        )
+
+
 class UniformChunkConverter(HealpixGroupConverter, ABC):
     """Common class for chunked conversion where chunks have a fixed-size and are aligned with
     HEALPix cells at a given refinement level.
@@ -565,6 +597,8 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
           - maybe exclude input dataset with overlapping zone is empty
           - slice input dataset (in projected coordinates) using the bounding box of the
             overlapping zone.
+          - select the data points inside the overlapping zone, exclude input dataset
+            if none is found (e.g., overlapping zone is a sliver with no pixel center).
         - flatten (stack) input datasets and convert x/y coordinates to lat-lon.
 
         """
@@ -601,16 +635,27 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         # - convert to lat/lon (wgs84) if needed
         # - flatten spatial dimensions
         prepared_datasets = []
-        for ds, crs, poly in zip(self.datasets, self.spatial_info.crs, overlap_polys):
+        transforms = self.spatial_info.transform or [None] * len(self.datasets)
+        for ds, crs, poly, transform in zip(
+            self.datasets, self.spatial_info.crs, overlap_polys, transforms
+        ):
             if poly.is_empty:
                 continue
 
             xmin, ymin, xmax, ymax = shapely.bounds(poly)
 
+            # slice bounds follow the direction of the x/y coordinates
+            # (y is usually decreasing, i.e., north-up rasters)
+            xslice = slice(xmin, xmax)
+            yslice = slice(ymax, ymin)
+            if transform is not None:
+                if transform.a < 0:
+                    xslice = slice(xmax, xmin)
+                if transform.e > 0:
+                    yslice = slice(ymin, ymax)
+
             ds_clipped = (
-                ds
-                # TODO: check slice bounds for north vs. south hemisphere?
-                .sel(x=slice(xmin, xmax), y=slice(ymax, ymin))
+                ds.sel(x=xslice, y=yslice)
                 .compute()
                 .pipe(lambda ds: utils.assign_transform_coords(ds, crs, crs_wgs84))
                 # note: the Xarray stack operation below already broadcasts
@@ -626,6 +671,13 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
             y = ds_clipped.y.values
             points = shapely.points(x, y)
             in_poly = shapely.within(points, poly)
+
+            if not in_poly.any():
+                # no pixel center in the overlapping zone, e.g., when the
+                # (buffered) chunk polygon only grazes the dataset extent
+                # (pixel edges): no input data from this dataset
+                _log_overlap_without_pixel_center(chunk_cell_id, poly, transform)
+                continue
 
             ds_clipped = ds_clipped.isel(points=in_poly)
 
@@ -675,6 +727,66 @@ class DenseChunkConverter(UniformChunkConverter):
         assert isinstance(self.settings.chunk, HealpixDenseChunkSettings)
         return self.settings.chunk.chunk_buffer_width
 
+    def _any_point_in_chunk(self, ds_input_points: xr.Dataset, chunk_cell_id) -> bool:
+        """True if at least one input point lies inside the chunk cell, i.e., its
+        HEALPix cell at the output level is one of the chunk's cells."""
+        level = self.healpix.refinement_level
+        chunk_level = self.chunk_healpix.refinement_level
+        assert level is not None and chunk_level is not None
+        point_cell_ids = healpix_geo.nested.lonlat_to_healpix(
+            np.asarray(ds_input_points.lon.values, dtype="float64"),
+            np.asarray(ds_input_points.lat.values, dtype="float64"),
+            level,
+            ellipsoid=self.healpix.ellipsoid.name.upper(),
+        )
+        # nested scheme: the parent cell at the chunk level
+        parent_ids = np.asarray(point_cell_ids, dtype="uint64") >> np.uint64(
+            2 * (level - chunk_level)
+        )
+        return bool(np.any(parent_ids == np.uint64(chunk_cell_id)))
+
+    def _points_surround_chunk(
+        self, ds_input_points: xr.Dataset, chunk_cell_id
+    ) -> bool:
+        """True if the chunk cell center lies within the convex hull of the input
+        points, i.e., the input points are around the chunk and not only on one side
+        of it.
+
+        The hull is computed in the plane tangent to the (unit) sphere at the chunk
+        cell center (gnomonic projection: great circles are straight lines).
+
+        """
+        chunk_level = self.chunk_healpix.refinement_level
+        assert chunk_level is not None
+        lon0, lat0 = healpix_geo.nested.healpix_to_lonlat(
+            np.array([chunk_cell_id], dtype="uint64"),
+            chunk_level,
+            ellipsoid=self.chunk_healpix.ellipsoid.name.upper(),
+        )
+        lon0, lat0 = np.deg2rad(lon0[0]), np.deg2rad(lat0[0])
+        lon = np.deg2rad(np.asarray(ds_input_points.lon.values, dtype="float64"))
+        lat = np.deg2rad(np.asarray(ds_input_points.lat.values, dtype="float64"))
+
+        points = np.stack(
+            [np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)],
+            axis=-1,
+        )
+        center = np.array(
+            [np.cos(lat0) * np.cos(lon0), np.cos(lat0) * np.sin(lon0), np.sin(lat0)]
+        )
+        east = np.array([-np.sin(lon0), np.cos(lon0), 0.0])
+        north = np.array(
+            [-np.sin(lat0) * np.cos(lon0), -np.sin(lat0) * np.sin(lon0), np.cos(lat0)]
+        )
+
+        dot = points @ center
+        front = dot > 0.0
+        u = (points[front] @ east) / dot[front]
+        v = (points[front] @ north) / dot[front]
+
+        hull = shapely.convex_hull(shapely.multipoints(np.column_stack([u, v])))
+        return bool(shapely.covers(hull, shapely.Point(0.0, 0.0)))
+
     def convert(self, chunk_index: int | None = None):
         # this class supports chunked conversion only
         assert chunk_index is not None
@@ -711,6 +823,25 @@ class DenseChunkConverter(UniformChunkConverter):
         # For the other methods: best to let the resampler algorithm do the lookup
         if resampler_settings.name == "nearest":
             out_cell_ids = cell_ids
+            # The resampler only keeps output cells near the input points, then fills
+            # the other forced output cells with the nearest point (no distance
+            # limit). If every point lies in the chunk buffer zone, outside the chunk
+            # cell, and on one side of it (i.e., the chunk is at the border of the
+            # input coverage), either none of the forced output cells is kept and the
+            # resampler raises an error, or the whole chunk is filled from points
+            # outside of it: no input data for this chunk.
+            # If the points are around the chunk (an input grid coarser than the
+            # chunk cell), their nearest values do fill the chunk: resample it.
+            if not self._any_point_in_chunk(
+                ds_input_points, chunk_cell_id
+            ) and not self._points_surround_chunk(ds_input_points, chunk_cell_id):
+                log.debug(
+                    "no input point inside the chunk cell (only in its buffer zone, "
+                    "on one side of it): chunk left empty",
+                    chunk_cell_id=int(chunk_cell_id),
+                    n_points=int(ds_input_points.sizes["points"]),
+                )
+                return
         else:
             out_cell_ids = None
 

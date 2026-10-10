@@ -155,3 +155,62 @@ def test_nearest_level15_preserves_classes_and_metadata(monkeypatch):
     assert metadata["ellipsoid"]["name"] == "wgs84"
     assert metadata["indexing_scheme"] == "nested"
     assert metadata["refinement_level"] == 15
+
+
+@pytest.mark.parametrize(
+    "position", [(5.625, 15.78), (9.84375, 19.55), (14.0625, 23.41)]
+)
+def test_nearest_fills_chunk_between_coarse_input_points(monkeypatch, position):
+    # The 2-degree input grid is coarser than the level-5 chunk cells: these chunks
+    # contain no input point, but the points selected in their buffer zone are
+    # around them. Like in the other chunks, the nearest values fill their cells.
+    lon = np.arange(-179.5, 180, 2)
+    lat = np.arange(-89.5, 90, 2)
+    ds = grid(lon, lat)
+    cell = healpix_geo.nested.lonlat_to_healpix(*position, 5, ellipsoid="WGS84")[0]
+    xx, yy = np.meshgrid(lon, lat)
+    parent_ids = healpix_geo.nested.lonlat_to_healpix(
+        xx.ravel(), yy.ravel(), 5, ellipsoid="WGS84"
+    )
+    assert not np.any(parent_ids == cell)
+
+    converter = make_converter(
+        monkeypatch, [ds], cell, chunk_level=5, level=7, buffer=300_000
+    )
+    selected = converter.query_input_points(cell)
+    assert selected is not None
+
+    converter.convert(0)
+
+    class_id = converter.output_arrays["class_id"]
+    actual = class_id[:]
+    assert not np.any(actual == class_id.fill_value)
+    assert np.isin(actual, selected.class_id.values).all()
+
+
+def test_nearest_leaves_chunk_at_coverage_border_empty(monkeypatch):
+    # The input grid ends west of the chunk cell, inside its buffer zone: the
+    # selected points are all on one side of the chunk, which is left empty
+    # (instead of being filled from points outside of it).
+    cell = healpix_geo.nested.lonlat_to_healpix(14.0625, 23.41, 5, ellipsoid="WGS84")[0]
+    lon_vertices, _ = healpix_geo.nested.vertices(cell, 5, ellipsoid="WGS84")
+    lon = np.arange(10.05, 12.6, 0.1)
+    assert lon.max() < lon_vertices.min()
+    lat = np.arange(21.05, 26, 0.1)
+    ds = grid(lon, lat)
+
+    converter = make_converter(
+        monkeypatch, [ds], cell, chunk_level=5, level=7, buffer=300_000
+    )
+    selected = converter.query_input_points(cell)
+    assert selected is not None
+    assert selected.sizes["points"] > 0
+
+    converter.convert(0)
+
+    np.testing.assert_array_equal(
+        converter.output_arrays["cell_ids"][:],
+        healpix_geo.nested.zoom_to(cell, 5, 7).ravel(),
+    )
+    class_id = converter.output_arrays["class_id"]
+    assert np.all(class_id[:] == class_id.fill_value)
