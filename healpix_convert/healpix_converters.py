@@ -334,6 +334,38 @@ _RESAMPLER_NAME_CLS: dict[str, type] = {
 }
 
 
+def _log_overlap_without_pixel_center(
+    chunk_cell_id: int, overlap: shapely.Geometry, transform: Any
+) -> None:
+    """Log an input dataset skipped for a chunk because the overlap between the
+    (buffered) chunk polygon and the dataset extent contains no pixel center.
+
+    A sliver along the extent (narrower than half a pixel) is expected. An overlap
+    that contains a disk of radius `res * sqrt(2) / 2` (`res` = the larger pixel
+    size) always contains a pixel center of a grid that covers the extent, so the
+    spatial extent and the transform of the dataset probably disagree: warn.
+
+    """
+    resolution = None
+    if transform is not None:
+        resolution = max(abs(transform.a), abs(transform.e))
+    if resolution and not shapely.buffer(overlap, -resolution * 0.7072).is_empty:
+        log.warning(
+            "no pixel center in a large overlap between the chunk and the input "
+            "dataset extent: inconsistent spatial extent and transform?",
+            chunk_cell_id=int(chunk_cell_id),
+            overlap_area=float(overlap.area),
+            resolution=float(resolution),
+        )
+    else:
+        log.debug(
+            "no pixel center in the overlap between the chunk and the input "
+            "dataset extent: dataset skipped",
+            chunk_cell_id=int(chunk_cell_id),
+            overlap_area=float(overlap.area),
+        )
+
+
 class UniformChunkConverter(HealpixGroupConverter, ABC):
     """Common class for chunked conversion where chunks have a fixed-size and are aligned with
     HEALPix cells at a given refinement level.
@@ -565,6 +597,8 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
           - maybe exclude input dataset with overlapping zone is empty
           - slice input dataset (in projected coordinates) using the bounding box of the
             overlapping zone.
+          - select the data points inside the overlapping zone, exclude input dataset
+            if none is found (e.g., overlapping zone is a sliver with no pixel center).
         - flatten (stack) input datasets and convert x/y coordinates to lat-lon.
 
         """
@@ -601,7 +635,10 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         # - convert to lat/lon (wgs84) if needed
         # - flatten spatial dimensions
         prepared_datasets = []
-        for ds, crs, poly in zip(self.datasets, self.spatial_info.crs, overlap_polys):
+        transforms = self.spatial_info.transform or [None] * len(self.datasets)
+        for ds, crs, poly, transform in zip(
+            self.datasets, self.spatial_info.crs, overlap_polys, transforms
+        ):
             if poly.is_empty:
                 continue
 
@@ -626,6 +663,13 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
             y = ds_clipped.y.values
             points = shapely.points(x, y)
             in_poly = shapely.within(points, poly)
+
+            if not in_poly.any():
+                # no pixel center in the overlapping zone, e.g., when the
+                # (buffered) chunk polygon only grazes the dataset extent
+                # (pixel edges): no input data from this dataset
+                _log_overlap_without_pixel_center(chunk_cell_id, poly, transform)
+                continue
 
             ds_clipped = ds_clipped.isel(points=in_poly)
 
@@ -675,6 +719,24 @@ class DenseChunkConverter(UniformChunkConverter):
         assert isinstance(self.settings.chunk, HealpixDenseChunkSettings)
         return self.settings.chunk.chunk_buffer_width
 
+    def _any_point_in_chunk(self, ds_input_points: xr.Dataset, chunk_cell_id) -> bool:
+        """True if at least one input point lies inside the chunk cell, i.e., its
+        HEALPix cell at the output level is one of the chunk's cells."""
+        level = self.healpix.refinement_level
+        chunk_level = self.chunk_healpix.refinement_level
+        assert level is not None and chunk_level is not None
+        point_cell_ids = healpix_geo.nested.lonlat_to_healpix(
+            np.asarray(ds_input_points.lon.values, dtype="float64"),
+            np.asarray(ds_input_points.lat.values, dtype="float64"),
+            level,
+            ellipsoid=self.healpix.ellipsoid.name.upper(),
+        )
+        # nested scheme: the parent cell at the chunk level
+        parent_ids = np.asarray(point_cell_ids, dtype="uint64") >> np.uint64(
+            2 * (level - chunk_level)
+        )
+        return bool(np.any(parent_ids == np.uint64(chunk_cell_id)))
+
     def convert(self, chunk_index: int | None = None):
         # this class supports chunked conversion only
         assert chunk_index is not None
@@ -711,6 +773,18 @@ class DenseChunkConverter(UniformChunkConverter):
         # For the other methods: best to let the resampler algorithm do the lookup
         if resampler_settings.name == "nearest":
             out_cell_ids = cell_ids
+            # The resampler only keeps output cells near the input points. If every
+            # point lies in the chunk buffer zone, outside the chunk cell (e.g., along
+            # the border of the input coverage), none of the forced output cells is
+            # kept and the resampler raises an error: no input data for this chunk.
+            if not self._any_point_in_chunk(ds_input_points, chunk_cell_id):
+                log.debug(
+                    "no input point inside the chunk cell (only in its buffer zone): "
+                    "chunk left empty",
+                    chunk_cell_id=int(chunk_cell_id),
+                    n_points=int(ds_input_points.sizes["points"]),
+                )
+                return
         else:
             out_cell_ids = None
 
