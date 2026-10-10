@@ -56,6 +56,7 @@ def tile(
     size: int = 10,
     resolution: float = RESOLUTION,
     data_shift: float = 0.0,
+    ascending_y: bool = False,
 ) -> tuple[xr.Dataset, shapely.Polygon]:
     """A projected raster ("tile") whose bottom-left corner is inside the
     buffered chunk polygon, `depth` meters below its north-east edge, so that
@@ -64,7 +65,8 @@ def tile(
     Like EOPF Zarr groups, the x/y coordinates are the pixel centres and the
     spatial metadata is given as STAC "proj:*" attributes. `data_shift` moves the
     data (coordinates and transform) east of the returned extent, i.e. makes the
-    extent and the transform disagree.
+    extent and the transform disagree. `ascending_y` gives a bottom-up raster
+    (increasing y coordinates, positive y pixel size).
     """
     chunk_poly = buffered_chunk_polygon()
     xmin, ymin, xmax, ymax = chunk_poly.bounds
@@ -78,6 +80,9 @@ def tile(
     transform = affine.Affine(resolution, 0.0, data_left, 0.0, -resolution, top)
     x = data_left + resolution * (np.arange(size) + 0.5)
     y = top - resolution * (np.arange(size) + 0.5)
+    if ascending_y:
+        transform = affine.Affine(resolution, 0.0, data_left, 0.0, resolution, bottom)
+        y = y[::-1]
     attrs = {"proj:code": "EPSG:32631", "proj:transform": list(transform)[:6]}
 
     ds = xr.Dataset(
@@ -173,9 +178,12 @@ def test_overlap_without_pixel_centre_is_no_input(
     assert converter.query_input_points(CELL) is None
 
 
+@pytest.mark.parametrize("ascending_y", [False, pytest.param(True, id="ascending-y")])
 @pytest.mark.parametrize("resampler", ["nearest", "psf"])
-def test_overlap_with_pixel_centres(monkeypatch, resampler) -> None:
-    ds, extent = tile(500.0)
+def test_overlap_with_pixel_centres(monkeypatch, resampler, ascending_y) -> None:
+    # (ascending y: the input points are selected with slice bounds that follow
+    # the direction of the y coordinates)
+    ds, extent = tile(500.0, ascending_y=ascending_y)
     overlap = shapely.intersection(buffered_chunk_polygon(), extent)
     n_points = pixel_centres_in(ds, overlap)
     assert n_points > 0
