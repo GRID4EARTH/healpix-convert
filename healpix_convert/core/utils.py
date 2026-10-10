@@ -125,7 +125,12 @@ def extract_spatial_info_stac(ds: xr.Dataset, default_crs: pyproj.CRS) -> dict |
         else:
             crs = default_crs
             ds_ = rasterix.assign_index(ds, x_dim="x", y_dim="y", crs=False)
-            transform = cast(rasterix.RasterIndex, ds_.xindexes["x"]).center_transform()
+            # Like "proj:transform", the returned transform must map pixel
+            # top-left corners: that is what `create_raster_index` (i.e.,
+            # `RasterIndex.from_transform`) expects. The x/y coordinates are
+            # pixel centres, so the center transform would shift the data by
+            # half a pixel.
+            transform = cast(rasterix.RasterIndex, ds_.xindexes["x"]).transform()
     else:
         transform = affine.Affine(*var0.attrs["proj:transform"])
 
