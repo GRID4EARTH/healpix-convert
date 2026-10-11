@@ -320,6 +320,35 @@ class HealpixGroupSettings(BaseModel):
     """
 
     codecs: list[CodecSettings] | None = Field(default=None)
+    """Zarr codecs of the group's resampled data variables (other arrays use
+    zarr's defaults).
+
+    Each codec is looked up by name in zarr's codec registry, so the package
+    that provides it must be installed where the settings are created, e.g.
+    ``healpix-compress`` for ``hcc-sentinel2-pyramid``.
+    """
+
+    @field_validator("codecs")
+    @classmethod
+    def validate_codecs(
+        cls, value: list[CodecSettings] | None
+    ) -> list[CodecSettings] | None:
+        if value is None:
+            return value
+
+        from zarr.registry import get_codec_class
+
+        for codec in value:
+            try:
+                get_codec_class(codec["name"])
+            except (KeyError, ValueError):
+                # zarr raises KeyError (zarr < 3.2) or UnknownCodecError, a ValueError
+                raise ValueError(
+                    f"zarr codec {codec['name']!r} is not available: install the package "
+                    "that registers it with zarr"
+                ) from None
+
+        return value
 
     @model_validator(mode="after")
     def validate_cell_point_resampler_level(self) -> HealpixGroupSettings:

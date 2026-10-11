@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from pathlib import PurePath
 
 import pytest
@@ -134,3 +135,31 @@ def test_convert_settings_metadata_roundtrip() -> None:
 
     group_settings = roundtripped.group_settings[PurePath("/root/group")]
     assert group_settings.metadata.exclude_attrs == ["_.*"]
+
+
+@pytest.mark.parametrize(
+    ["codecs", "expectation"],
+    [
+        pytest.param(None, nullcontext(), id="default"),
+        pytest.param(
+            [{"name": "bytes", "configuration": {}}], nullcontext(), id="known"
+        ),
+        pytest.param(
+            [{"name": "no-such-codec", "configuration": {}}],
+            pytest.raises(
+                ValidationError, match=".*'no-such-codec' is not available.*"
+            ),
+            id="unknown",
+        ),
+    ],
+)
+def test_convert_group_settings_codecs(codecs, expectation) -> None:
+    settings_dict = {
+        "healpix": {"refinement_level": 10},
+        "chunk": {"method": "no_chunk"},
+        "resampler": {"name": "nearest"},
+        "codecs": codecs,
+    }
+
+    with expectation:
+        HealpixGroupSettings.model_validate(settings_dict)
