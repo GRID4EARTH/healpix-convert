@@ -40,43 +40,72 @@ _READ_SIZE = 1 << 20
 
 class _Block:
     """Sorted cells of one refinement level within one block, with the
-    variables defined on them."""
+    variables defined on them.
 
-    def __init__(self, cells: np.ndarray, values: dict[str, np.ndarray]):
+    ``sums`` and ``counts`` hold, per variable, the sum and the number of the
+    valid cells each cell derives from (at the level the variable was read
+    from), so that coarsening gives the mean of all the valid descendants (a
+    block mean, like the provider's resampled copies) and not the mean of the
+    children's means. They are computed from the values when missing."""
+
+    def __init__(
+        self,
+        cells: np.ndarray,
+        values: dict[str, np.ndarray],
+        sums: dict[str, np.ndarray] | None = None,
+        counts: dict[str, np.ndarray] | None = None,
+    ):
         self.cells = cells
         self.values = values
+        self.sums = {} if sums is None else sums
+        self.counts = {} if counts is None else counts
+
+    def accumulators(self, name: str, fill: Any) -> tuple[np.ndarray, np.ndarray]:
+        """Running sum and count of the valid cells behind each cell of
+        ``name``; fill values and non-finite values are not valid."""
+        if name not in self.sums:
+            v = self.values[name]
+            valid = np.isfinite(v) & ~_fill_mask(v, fill)
+            self.sums[name] = np.where(valid, v, 0).astype(np.float64)
+            self.counts[name] = valid.astype(np.int64)
+        return self.sums[name], self.counts[name]
 
     def coarsen(self, fill_values: dict[str, Any]) -> _Block:
-        """Mean of the (up to 4) children of each parent cell, ignoring fill
-        values and non-finite values."""
+        """Each parent cell gets the mean of the valid cells it derives from
+        (the fill value when there is none)."""
         parents = self.cells >> 2
         starts = np.flatnonzero(np.r_[True, parents[1:] != parents[:-1]])
-        out = {}
+        values, sums, counts = {}, {}, {}
         for name, v in self.values.items():
             fill = fill_values[name]
-            valid = np.isfinite(v) & (v != fill) if fill is not None else np.isfinite(v)
-            total = np.add.reduceat(np.where(valid, v, 0).astype(np.float64), starts)
-            count = np.add.reduceat(valid.astype(np.int64), starts)
+            total, count = (
+                np.add.reduceat(a, starts) for a in self.accumulators(name, fill)
+            )
             with np.errstate(invalid="ignore", divide="ignore"):
                 mean = total / count
             if np.issubdtype(v.dtype, np.integer):
                 mean = np.rint(mean)
-            no_data = count == 0
-            mean[no_data] = 0 if fill is None else fill
-            out[name] = mean.astype(v.dtype)
-        return _Block(parents[starts], out)
+            mean[count == 0] = 0 if fill is None else fill
+            values[name] = mean.astype(v.dtype)
+            sums[name], counts[name] = total, count
+        return _Block(parents[starts], values, sums, counts)
 
     def merge(self, other: _Block, fill_values: dict[str, Any]) -> _Block:
-        """Both blocks' variables on the union of their cells."""
+        """Both blocks' variables on the union of their cells. A variable of
+        ``other`` replaces the same variable of ``self`` (with its own running
+        sums: a resampled copy restarts the mean from its values)."""
         cells = np.union1d(self.cells, other.cells)
-        values = {}
+        values, sums, counts = {}, {}, {}
         for block in (self, other):
             idx = np.searchsorted(cells, block.cells)
             for name, v in block.values.items():
-                full = np.full(len(cells), fill_values[name], dtype=v.dtype)
-                full[idx] = v
-                values[name] = full
-        return _Block(cells, values)
+                fill = fill_values[name]
+                values[name] = np.full(len(cells), fill, dtype=v.dtype)
+                values[name][idx] = v
+                sums[name] = np.zeros(len(cells), dtype=np.float64)
+                counts[name] = np.zeros(len(cells), dtype=np.int64)
+                sums[name][idx], counts[name][idx] = block.accumulators(name, fill)
+        return _Block(cells, values, sums, counts)
 
 
 class _LevelReader:
@@ -639,8 +668,10 @@ def create_multires_dataset(
     group holds every level from the finest native level down to ``min_level``:
 
     - a variable is copied unchanged at its native level and is coarsened
-      towards coarser levels, each parent cell being the mean of its (up to 4)
-      children (fill values and non-finite values are ignored);
+      towards coarser levels, each cell being the mean of the valid cells of
+      the native level (or of the resampled copy, see below) it derives from;
+      fill values and non-finite values are ignored, so this is a block mean
+      and not a mean of the children's means;
     - a variable never appears at levels finer than its native level (no
       upsampling);
     - the cells of a level are the union of the cells of its variables; a
@@ -673,7 +704,8 @@ def create_multires_dataset(
     The input is read sequentially, one block of cells sharing an ancestor at
     ``min(min_level, ~chunk level of the finest input level)`` at a time, so at
     most ``max(chunk size, 4 ** (finest level - min_level))`` cells of the
-    finest level are held in memory at once. The inputs are checked (levels, ``min_level``, serializers,
+    finest level are held in memory at once (plus a running sum and count per
+    variable). The inputs are checked (levels, ``min_level``, serializers,
     categorical variables) before the output is created.
 
     Only the default Zarr (bytes) serializer is supported: the derived levels

@@ -111,32 +111,43 @@ def _is_fill(v, fill):
     return np.isnan(v) if np.isnan(fill) else v == fill
 
 
+def _block_mean_reference(values: dict, from_level: int, to_level: int, dtype, fill):
+    """Per level: {cell: value}, each cell being the mean of all its valid
+    descendants at ``from_level`` (a block mean, not a mean of means)."""
+    levels = {from_level: values}
+    for level in range(from_level - 1, to_level - 1, -1):
+        shift = 2 * (from_level - level)
+        descendants: dict[int, list] = {}
+        for cell, value in values.items():
+            descendants.setdefault(cell >> shift, []).append(value)
+        out = {}
+        for parent, vs in descendants.items():
+            valid = [
+                v for v in vs if np.isfinite(v) and not _is_fill(np.float64(v), fill)
+            ]
+            if valid:
+                mean = np.mean(valid)
+                if np.issubdtype(np.dtype(dtype), np.integer):
+                    mean = np.rint(mean)
+                out[parent] = np.dtype(dtype).type(mean)
+            else:
+                out[parent] = np.dtype(dtype).type(fill)
+        levels[level] = out
+    return levels
+
+
 def _reference(cells, data, min_level):
-    """Per variable and level: {cell: value}, coarsening one level at a time."""
-    ref = {}
-    for name, (native, dtype, fill) in VARIABLES.items():
-        levels = {native: dict(zip(cells[native].tolist(), data[name].tolist()))}
-        for level in range(native - 1, min_level - 1, -1):
-            children: dict[int, list] = {}
-            for cell, value in levels[level + 1].items():
-                children.setdefault(cell >> 2, []).append(value)
-            out = {}
-            for parent, values in children.items():
-                valid = [
-                    v
-                    for v in values
-                    if np.isfinite(v) and not _is_fill(np.float64(v), fill)
-                ]
-                if valid:
-                    mean = np.mean(valid)
-                    if np.issubdtype(np.dtype(dtype), np.integer):
-                        mean = np.rint(mean)
-                    out[parent] = np.dtype(dtype).type(mean)
-                else:
-                    out[parent] = np.dtype(dtype).type(fill)
-            levels[level] = out
-        ref[name] = levels
-    return ref
+    """Per variable and level: {cell: value}."""
+    return {
+        name: _block_mean_reference(
+            dict(zip(cells[native].tolist(), data[name].tolist())),
+            native,
+            min_level,
+            dtype,
+            fill,
+        )
+        for name, (native, dtype, fill) in VARIABLES.items()
+    }
 
 
 @pytest.fixture
@@ -213,20 +224,6 @@ def _add_resampled_copy(path, cells, rng, name="a", attrs=None):
     return values
 
 
-def _coarsen_reference(values: dict, from_level: int, to_level: int, fill=0.0):
-    levels = {from_level: values}
-    for level in range(from_level - 1, to_level - 1, -1):
-        children: dict[int, list] = {}
-        for cell, value in levels[level + 1].items():
-            children.setdefault(cell >> 2, []).append(value)
-        out = {}
-        for parent, vs in children.items():
-            valid = [v for v in vs if np.isfinite(v) and v != fill]
-            out[parent] = np.mean(valid) if valid else fill
-        levels[level] = out
-    return levels
-
-
 def test_resampled_copies_kept(native, tmp_path):
     path, cells, data = native
     values = _add_resampled_copy(path, cells, np.random.default_rng(1))
@@ -256,7 +253,7 @@ def test_resampled_copies_kept(native, tmp_path):
         c: (0.0 if np.isnan(v) else float(v))
         for c, v in zip(cells[19].tolist(), values)
     }
-    ref = _coarsen_reference(copy, 19, 12)
+    ref = _block_mean_reference(copy, 19, 12, "float64", 0.0)
     for level in (19, 18, 12):
         out_cells = group[f"{level}/cell_ids"][:]
         a = group[f"{level}/a"]
@@ -379,6 +376,20 @@ def test_unsupported_method(native, tmp_path):
         create_multires_dataset(
             str(path), str(tmp_path / "out.zarr"), min_level=12, method="nearest"
         )
+
+
+def test_block_mean():
+    # a level-18 cell with four 1.0 under one child and a single 9.0 under
+    # another: the mean of the children's means would be 5.0
+    cells = np.array([0, 1, 2, 3, 4], dtype=np.uint64)
+    block = multires._Block(cells, {"v": np.array([1.0, 1.0, 1.0, 1.0, 9.0])})
+    fill = {"v": np.nan}
+    level19 = block.coarsen(fill)
+    np.testing.assert_array_equal(level19.cells, [0, 1])
+    np.testing.assert_allclose(level19.values["v"], [1.0, 9.0])
+    level18 = level19.coarsen(fill)
+    np.testing.assert_array_equal(level18.cells, [0])
+    np.testing.assert_allclose(level18.values["v"], [2.6])
 
 
 def test_integer_copy_is_rounded(native, tmp_path):
