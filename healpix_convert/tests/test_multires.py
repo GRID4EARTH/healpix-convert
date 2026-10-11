@@ -191,24 +191,89 @@ def test_values(native, tmp_path, monkeypatch, read_size):
             assert g[name].attrs["long_name"] == f"variable {name}"
 
 
-def test_variable_at_several_native_levels(native, tmp_path):
-    # like Sentinel-2 L2A: "a" is also stored, resampled, at level 19
-    path, cells, data = native
+def _add_resampled_copy(path, cells, rng):
+    """Like Sentinel-2 L2A: "a" (native at 20) is also stored, resampled by the
+    provider, at level 19, with another encoding (float32, NaN fill)."""
     level19 = zarr.open_group(path, mode="a")[f"{GROUP}/19"]
     copy = level19.create_array(
         "a",
         shape=cells[19].shape,
         chunks=(64,),
-        dtype="float64",
-        fill_value=0.0,
+        dtype="float32",
+        fill_value=np.nan,
         dimension_names=["cells"],
+        attributes={"long_name": "variable a, resampled at level 19"},
     )
-    copy[:] = 12345.0
+    values = (rng.random(len(cells[19])) + 10).astype("float32")
+    values[rng.random(len(values)) < 0.1] = np.nan
+    copy[:] = values
+    return values
+
+
+def _coarsen_reference(values: dict, from_level: int, to_level: int, fill=0.0):
+    levels = {from_level: values}
+    for level in range(from_level - 1, to_level - 1, -1):
+        children: dict[int, list] = {}
+        for cell, value in levels[level + 1].items():
+            children.setdefault(cell >> 2, []).append(value)
+        out = {}
+        for parent, vs in children.items():
+            valid = [v for v in vs if np.isfinite(v) and v != fill]
+            out[parent] = np.mean(valid) if valid else fill
+        levels[level] = out
+    return levels
+
+
+def test_resampled_copies_kept(native, tmp_path):
+    path, cells, data = native
+    values = _add_resampled_copy(path, cells, np.random.default_rng(1))
     out = tmp_path / "out.zarr"
     create_multires_dataset(str(path), str(out), min_level=12)
-
     group = zarr.open_group(out, mode="r")[GROUP]
+
+    assert group.attrs["native_refinement_levels"]["19"] == ["a", "c"]
+    assert group.attrs["resampled_copies"] == {
+        "levels": {"19": ["a"]},
+        "handling": "kept",
+    }
+    assert [
+        group[f"{lv}/a"].attrs["native_refinement_level"] for lv in (20, 19, 18, 12)
+    ] == [20, 19, 19, 19]
+
+    # the attributes follow the values
+    assert group["20/a"].attrs["long_name"] == "variable a"
+    assert group["19/a"].attrs["long_name"] == "variable a, resampled at level 19"
+    assert group["12/a"].attrs["long_name"] == "variable a, resampled at level 19"
+
+    # level 20 is untouched
+    np.testing.assert_array_equal(group["20/a"][:], data["a"])
+    # level 19 is the copy, re-encoded like level 20 (float64, fill 0), and
+    # the fill value where the copy has no cell
+    copy = {
+        c: (0.0 if np.isnan(v) else float(v))
+        for c, v in zip(cells[19].tolist(), values)
+    }
+    ref = _coarsen_reference(copy, 19, 12)
+    for level in (19, 18, 12):
+        out_cells = group[f"{level}/cell_ids"][:]
+        a = group[f"{level}/a"]
+        assert a.dtype == np.float64 and a.fill_value == 0.0
+        expected = [ref[level].get(c, 0.0) for c in out_cells.tolist()]
+        np.testing.assert_allclose(a[:], expected, rtol=1e-6)
+
+
+def test_resampled_copies_overwritten(native, tmp_path):
+    path, cells, data = native
+    _add_resampled_copy(path, cells, np.random.default_rng(1))
+    out = tmp_path / "out.zarr"
+    create_multires_dataset(str(path), str(out), min_level=12, overwrite_resampled=True)
+    group = zarr.open_group(out, mode="r")[GROUP]
+
     assert group.attrs["native_refinement_levels"]["19"] == ["c"]
+    assert group.attrs["resampled_copies"] == {
+        "levels": {"19": ["a"]},
+        "handling": "overwritten_with_mean",
+    }
     assert group["19/a"].attrs["native_refinement_level"] == 20
     ref = _reference(cells, data, 12)
     out_cells = group["19/cell_ids"][:]
@@ -253,6 +318,7 @@ def test_metadata(native, tmp_path):
         "17": ["d"],
     }
     assert [c["name"] for c in attrs["zarr_conventions"]] == ["multiscales", "dggs"]
+    assert "resampled_copies" not in attrs
 
     layout = attrs["multiscales"]["layout"]
     assert attrs["multiscales"]["resampling_method"] == "mean"

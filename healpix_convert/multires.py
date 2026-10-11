@@ -268,6 +268,35 @@ def _cell_variables(group: zarr.Group, dggs: dict) -> tuple[list[str], list[str]
     return sorted(cell_vars), sorted(others)
 
 
+def _normalize(block: _Block, group: zarr.Group, templates: dict[str, zarr.Array]):
+    """Give the values read from ``group`` the dtype and fill value of the
+    variable's finest level (a resampled copy may be encoded differently)."""
+    for name, v in block.values.items():
+        source, target = group[name], templates[name]
+        if source.dtype == target.dtype and _same_fill(
+            source.fill_value, target.fill_value
+        ):
+            continue
+        is_fill = _fill_mask(v, source.fill_value)
+        v = v.astype(target.dtype)
+        v[is_fill] = target.fill_value
+        block.values[name] = v
+
+
+def _same_fill(a: Any, b: Any) -> bool:
+    if a is None or b is None:
+        return a is b
+    return bool(np.isnan(a) and np.isnan(b)) if np.isnan(a) or np.isnan(b) else a == b
+
+
+def _fill_mask(v: np.ndarray, fill: Any) -> np.ndarray:
+    if fill is None:
+        return np.zeros(v.shape, dtype=bool)
+    if np.issubdtype(v.dtype, np.floating) and np.isnan(fill):
+        return np.isnan(v)
+    return v == fill
+
+
 def _with_refinement_level(attrs: dict, level: int) -> dict:
     attrs = copy.deepcopy(attrs)
     if "refinement_level" in attrs:
@@ -299,6 +328,7 @@ def _build_group(
     min_level: int,
     method: str,
     chunk_size: int | None,
+    overwrite_resampled: bool,
 ) -> dict[str, Any]:
     native = _native_level_groups(in_group)
     top = max(native)
@@ -312,33 +342,46 @@ def _build_group(
     coordinate = dggs_top.get("coordinate", "cell_ids")
     block_level = _block_level(native, coordinate, min_level)
 
-    # variables native at each level: a variable stored at several levels (e.g.,
-    # Sentinel-2 L2A also ships the 10 m bands resampled at 20 m and 60 m) is
-    # taken from its finest level only, so every level is derived the same way
+    # A variable may be stored at several levels: e.g., Sentinel-2 L2A also ships
+    # the 10 m bands resampled by the provider at 20 m and 60 m. By default these
+    # resampled copies are kept (used at their level, and coarsened from there);
+    # with ``overwrite_resampled`` they are ignored and every level below the
+    # finest one is the mean of the finer level.
     native_vars: dict[int, list[str]] = {}
+    resampled: dict[int, list[str]] = {}
     other_arrays: dict[str, zarr.Array] = {}
-    seen: dict[str, int] = {}
+    first_level: dict[str, int] = {}
     for level in sorted(native, reverse=True):
         cell_vars, others = _cell_variables(native[level], native[level].attrs["dggs"])
-        skipped = [name for name in cell_vars if name in seen]
-        if skipped:
+        copies = [name for name in cell_vars if name in first_level]
+        if copies:
+            resampled[level] = copies
             log.info(
-                f"level {level}: {skipped} also stored at a finer level, "
-                "derived from there instead"
+                f"level {level}: {copies} also stored at a finer level, "
+                + ("ignored" if overwrite_resampled else "kept")
             )
-        cell_vars = [name for name in cell_vars if name not in seen]
+            if overwrite_resampled:
+                cell_vars = [name for name in cell_vars if name not in first_level]
         for name in cell_vars:
-            seen[name] = level
+            first_level.setdefault(name, level)
         native_vars[level] = cell_vars
         for name in others:
             other_arrays.setdefault(name, native[level][name])
 
+    # the encoding of a variable is the one of its finest level
     fill_values: dict[str, Any] = {}
     templates: dict[str, zarr.Array] = {}
-    for level, names in native_vars.items():
-        for name in names:
-            templates[name] = native[level][name]
-            fill_values[name] = native[level][name].fill_value
+    for name, level in first_level.items():
+        templates[name] = native[level][name]
+        fill_values[name] = native[level][name].fill_value
+
+    # level the values of each variable come from, at each output level
+    origin: dict[int, dict[str, int]] = {}
+    current_origin: dict[str, int] = {}
+    for level in range(top, min_level - 1, -1):
+        for name in native_vars.get(level, []):
+            current_origin[name] = level
+        origin[level] = dict(current_origin)
     coordinate_template = native[top][coordinate]
     if chunk_size is None:
         chunk_size = coordinate_template.chunks[0]
@@ -354,7 +397,7 @@ def _build_group(
     writers: dict[int, _LevelWriter] = {}
     layout = []
     for level in range(top, min_level - 1, -1):
-        names = [n for lv, ns in native_vars.items() if lv >= level for n in ns]
+        names = sorted(origin[level])
         source_group = native.get(level, native[top])
         group_attrs = copy.deepcopy(dict(source_group.attrs))
         dggs = Healpix.model_validate(dggs_top).model_copy(
@@ -380,9 +423,11 @@ def _build_group(
 
         attrs = {coordinate: dict(coordinate_template.attrs)}
         for name in names:
+            # the attributes follow the values: those of the level they come from
+            # (e.g., a provider's resampled copy), the encoding is the finest one
             attrs[name] = {
-                **dict(templates[name].attrs),
-                "native_refinement_level": seen[name],
+                **dict(native[origin[level][name]][name].attrs),
+                "native_refinement_level": origin[level][name],
             }
         writers[level] = _LevelWriter(
             level_group,
@@ -412,6 +457,8 @@ def _build_group(
             if level in readers:
                 new = readers[level].take(block)
                 if new is not None:
+                    _normalize(new, native[level], templates)
+                    # a kept resampled copy replaces the coarsened values
                     current = (
                         new if current is None else current.merge(new, fill_values)
                     )
@@ -440,10 +487,15 @@ def _build_group(
             "multiscales": multiscales.model_dump(),
             "multires_method": tag,
             "native_refinement_levels": {
-                str(level): names for level, names in native_vars.items()
+                str(level): names for level, names in native_vars.items() if names
             },
         }
     )
+    if resampled:
+        group_attrs["resampled_copies"] = {
+            "levels": {str(level): names for level, names in resampled.items()},
+            "handling": "overwritten_with_mean" if overwrite_resampled else "kept",
+        }
     out_group.attrs.update(group_attrs)
     return {"tag": tag, "top": top, "sizes": sizes}
 
@@ -456,6 +508,7 @@ def create_multires_dataset(
     groups: str | Sequence[str] | None = None,
     method: Literal["mean"] = "mean",
     chunk_size: int | None = None,
+    overwrite_resampled: bool = False,
     input_storage_options: dict[str, Any] | None = None,
     output_storage_options: dict[str, Any] | None = None,
 ) -> str:
@@ -474,15 +527,22 @@ def create_multires_dataset(
       upsampling);
     - the cells of a level are the union of the cells of its variables; a
       variable has its fill value where it has no data;
-    - a variable stored at several native levels (e.g., Sentinel-2 L2A, which
-      also ships the 10 m bands resampled at 20 m and 60 m) is taken from its
-      finest level only; its copies at coarser levels are not used.
+    - a variable stored at several levels (e.g., Sentinel-2 L2A, which also
+      ships the 10 m bands resampled by the provider at 20 m and 60 m) keeps
+      these resampled copies by default: at such a level the copy is used as is
+      (it replaces the mean, with the fill value where the copy has no data),
+      and coarser levels are derived from it. With ``overwrite_resampled=True``
+      the copies are ignored and every level is the mean of the finer one.
+      The group then records the copies in ``resampled_copies``.
 
-    Every output array records its ``native_refinement_level``. The output
-    group carries a zarr-conventions ``multiscales`` layout (assets relative
-    to the group), the method tag (``multires_method``, e.g.
-    ``"mean-l20-l12"``) and the native variables of each level
-    (``native_refinement_levels``). In the root ``stac_discovery`` attribute,
+    Every output array records its ``native_refinement_level``: the level its
+    values come from. The output group carries a zarr-conventions
+    ``multiscales`` layout (assets relative to the group), the method tag
+    (``multires_method``, e.g. ``"mean-l20-l12"``), the input variables used
+    at each level (``native_refinement_levels``) and, when the input has
+    resampled copies, ``resampled_copies``
+    (``{"levels": {"19": [...]}, "handling": "kept" | "overwritten_with_mean"}``).
+    In the root ``stac_discovery`` attribute,
     the method tag is appended to the item ``id`` (so that several pyramids of
     one product can share a STAC collection) and the resampling method is
     recorded as the ``multires:resampling_method`` property.
@@ -514,6 +574,10 @@ def create_multires_dataset(
     chunk_size : int, optional
         Number of cells per output chunk. Defaults to the chunk size of the
         cell ids of the finest native level.
+    overwrite_resampled : bool, optional
+        If True, ignore the copies of a variable stored at a coarser level than
+        its finest one, and derive those levels with ``method`` instead
+        (default: False, the copies are kept).
     input_storage_options, output_storage_options : dict, optional
         Storage options passed to Zarr (useful for, e.g., S3 object stores).
 
@@ -560,6 +624,7 @@ def create_multires_dataset(
             min_level=min_level,
             method=method,
             chunk_size=chunk_size,
+            overwrite_resampled=overwrite_resampled,
         )
         tags.add(result["tag"])
 
