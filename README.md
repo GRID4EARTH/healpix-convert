@@ -20,6 +20,7 @@ new Zarr dataset compliant with the DGGS Zarr and CF-Healpix conventions.
 
 - **Multiple resampling methods** — nearest, bilinear, k-nearest neighbors, PSF, cell-point
 - **Multi-stage workflow** — first prepare the output dataset, then run data conversion in parallel jobs
+- **Multi-resolution copies** — `create_multires_dataset` writes a pyramid of HEALPix levels (finest native level down to a coarser one) from a converted dataset, for viewers that pick the level from the zoom
 - **Dask-native** — parallel conversion out of the box with a distributed Dask cluster
 - **Cloud-ready** — read from and write to S3 object stores
 - **STAC metadata** — input STAC discovery attributes are propagated and merged in the output

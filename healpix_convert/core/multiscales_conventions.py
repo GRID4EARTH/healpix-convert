@@ -39,6 +39,15 @@ class MultiscalesZarrConvention(BaseModel):
     description: Literal["Multiscale layout of zarr datasets"] = _DESCR
 
 
+class MultiscalesTransform(BaseModel):
+    """Relative transformation between two levels of a multiscales layout."""
+
+    model_config = ConfigDict(frozen=True, use_attribute_docstrings=True)
+
+    scale: list[float]
+    """Scale factor per spatial axis (2.0 per HEALPix level towards coarser levels)."""
+
+
 class HealpixMultiscalesLayoutItem(BaseModel):
     """Metadata for a single Healpix multiscales layout item."""
 
@@ -50,10 +59,19 @@ class HealpixMultiscalesLayoutItem(BaseModel):
     dggs: Healpix | MISSING = MISSING
     """HEALPix grid settings (absolute positioning)."""
 
-    @field_serializer("asset")
+    derived_from: PurePath | MISSING = MISSING
+    """Asset this level was resampled from."""
+
+    transform: MultiscalesTransform | MISSING = MISSING
+    """Transformation from the ``derived_from`` level to this level."""
+
+    resampling_method: str | MISSING = MISSING
+    """Resampling method used to derive this level."""
+
+    @field_serializer("asset", "derived_from")
     def serialize_group_settings(self, value):
         # always convert paths to strings (unix-style)
-        return value.as_posix()
+        return value.as_posix() if isinstance(value, PurePath) else value
 
 
 class HealpixMultiscales(BaseModel):
@@ -63,3 +81,6 @@ class HealpixMultiscales(BaseModel):
 
     layout: list[HealpixMultiscalesLayoutItem]
     """Multiscale description."""
+
+    resampling_method: str | MISSING = MISSING
+    """Default resampling method of the derived levels."""
