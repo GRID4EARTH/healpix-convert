@@ -12,6 +12,7 @@ Viewers such as Gridlook can then pick the level from the zoom.
 from __future__ import annotations
 
 import copy
+import fnmatch
 from collections.abc import Iterator, Sequence
 from pathlib import PurePath
 from typing import Any, Literal
@@ -19,6 +20,7 @@ from typing import Any, Literal
 import numpy as np
 import structlog
 import zarr
+from zarr.codecs import BytesCodec
 
 from healpix_convert.core.healpix_conventions import DGGSZarrConvention, Healpix
 from healpix_convert.core.multiscales_conventions import (
@@ -261,8 +263,14 @@ def _cell_variables(group: zarr.Group, dggs: dict) -> tuple[list[str], list[str]
     for name, array in group.arrays():
         if name == coordinate:
             continue
-        if tuple(array.metadata.dimension_names or ()) == (dim,):
+        dims = tuple(array.metadata.dimension_names or ())
+        if dims == (dim,):
             cell_vars.append(name)
+        elif dim in dims:
+            raise NotImplementedError(
+                f"{group.path}/{name}: only 1-D variables along {dim!r} are "
+                f"supported, got dimensions {dims}"
+            )
         else:
             others.append(name)
     return sorted(cell_vars), sorted(others)
@@ -273,11 +281,24 @@ def _normalize(block: _Block, group: zarr.Group, templates: dict[str, zarr.Array
     variable's finest level (a resampled copy may be encoded differently)."""
     for name, v in block.values.items():
         source, target = group[name], templates[name]
+        for key in ("scale_factor", "add_offset"):
+            if source.attrs.get(key) != target.attrs.get(key):
+                raise ValueError(
+                    f"{source.path!r} has {key}={source.attrs.get(key)!r} but "
+                    f"{target.path!r} has {key}={target.attrs.get(key)!r}: the "
+                    "copy cannot be re-encoded like the finest level"
+                )
         if source.dtype == target.dtype and _same_fill(
             source.fill_value, target.fill_value
         ):
             continue
         is_fill = _fill_mask(v, source.fill_value)
+        if np.issubdtype(target.dtype, np.integer) and not np.issubdtype(
+            v.dtype, np.integer
+        ):
+            # round like ``_Block.coarsen`` does, instead of truncating
+            is_fill |= ~np.isfinite(v)
+            v = np.rint(np.where(is_fill, 0, v))
         v = v.astype(target.dtype)
         v[is_fill] = target.fill_value
         block.values[name] = v
@@ -302,6 +323,106 @@ def _with_refinement_level(attrs: dict, level: int) -> dict:
     if "refinement_level" in attrs:
         attrs["refinement_level"] = level
     return attrs
+
+
+_FLAG_ATTRIBUTES = ("flag_values", "flag_masks", "flag_meanings")
+
+
+def _categorical_variables(native: dict[int, zarr.Group]) -> list[str]:
+    """Names of the variables with CF flag attributes (masks, classifications),
+    which a mean does not suit."""
+    found = []
+    for level in sorted(native, reverse=True):
+        cell_vars, _ = _cell_variables(native[level], native[level].attrs["dggs"])
+        for name in cell_vars:
+            attrs = native[level][name].attrs
+            if name not in found and any(k in attrs for k in _FLAG_ATTRIBUTES):
+                found.append(name)
+    return found
+
+
+def _check_serializers(path: str, native: dict[int, zarr.Group]) -> None:
+    """The output chunks hold a fixed number of cells, which at the derived
+    levels is not one parent cell per chunk even when the input is written
+    with ``healpix_cell_dense`` chunks: a serializer that relies on dense
+    chunks (e.g., the healpix-compress codecs) cannot be carried over."""
+    for level, group in native.items():
+        for name, array in group.arrays():
+            if not isinstance(array.serializer, BytesCodec):
+                raise NotImplementedError(
+                    f"{path}/{level}/{name} is written with the "
+                    f"{array.serializer.__class__.__name__} serializer; only the "
+                    "default bytes serializer is supported, as the derived levels "
+                    "are not chunked by parent cell"
+                )
+
+
+def _resolve_groups(root: zarr.Group, groups: str | Sequence[str] | None) -> list[str]:
+    """Paths of the groups to process: by default every group that has
+    HEALPix level child groups, otherwise the given paths or unix-like
+    patterns matched against them."""
+    candidates = _find_multires_groups(root)
+    if groups is None:
+        return candidates
+    paths: list[str] = []
+    for pattern in [groups] if isinstance(groups, str) else groups:
+        pattern = pattern.strip("/")
+        matches = [c for c in candidates if fnmatch.fnmatchcase(c, pattern)]
+        if not matches:
+            raise ValueError(
+                f"no group with HEALPix level child groups matches {pattern!r} "
+                f"(found: {candidates})"
+            )
+        paths.extend(m for m in matches if m not in paths)
+    return paths
+
+
+def _check_inputs(
+    root: zarr.Group, group_paths: list[str], *, min_level: int, explicit: bool
+) -> dict[str, frozenset[str]]:
+    """Everything that can go wrong before the output is created. Returns the
+    groups to process with, for each, the categorical variables to leave out
+    (a group with nothing else is left out as a whole)."""
+    tops: dict[str, int] = {}
+    skip: dict[str, frozenset[str]] = {}
+    for path in group_paths:
+        native = _native_level_groups(root[path])
+        if min_level > min(native):
+            raise ValueError(
+                f"group {path!r}: min_level {min_level} is finer than the "
+                f"coarsest native level {min(native)}"
+            )
+        _check_serializers(path, native)
+        cell_vars = {
+            name
+            for level in native
+            for name in _cell_variables(native[level], native[level].attrs["dggs"])[0]
+        }
+        categorical = _categorical_variables(native)
+        if categorical and explicit:
+            raise ValueError(
+                f"group {path!r}: {categorical} have CF flag attributes "
+                "(categorical data), which the mean does not suit"
+            )
+        if categorical:
+            whole = len(categorical) == len(cell_vars)
+            log.warning(
+                f"group {path!r}: {categorical} have CF flag attributes "
+                "(categorical data), which the mean does not suit; "
+                + ("the group is left out" if whole else "they are left out")
+            )
+            if whole:
+                continue
+        skip[path] = frozenset(categorical)
+        tops[path] = max(native)
+    if not skip:
+        raise ValueError("no group left to process")
+    if len(set(tops.values())) > 1:
+        raise ValueError(
+            f"the processed groups have different finest native levels ({tops}); "
+            "process them into separate datasets"
+        )
+    return skip
 
 
 def _block_level(native: dict[int, zarr.Group], coordinate: str, min_level: int) -> int:
@@ -329,14 +450,10 @@ def _build_group(
     method: str,
     chunk_size: int | None,
     overwrite_resampled: bool,
+    skip: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     native = _native_level_groups(in_group)
     top = max(native)
-    if min_level > min(native):
-        raise ValueError(
-            f"group {in_group.path!r}: min_level {min_level} is finer than the "
-            f"coarsest native level {min(native)}"
-        )
 
     dggs_top = dict(native[top].attrs["dggs"])
     coordinate = dggs_top.get("coordinate", "cell_ids")
@@ -353,6 +470,7 @@ def _build_group(
     first_level: dict[str, int] = {}
     for level in sorted(native, reverse=True):
         cell_vars, others = _cell_variables(native[level], native[level].attrs["dggs"])
+        cell_vars = [name for name in cell_vars if name not in skip]
         copies = [name for name in cell_vars if name in first_level]
         if copies:
             resampled[level] = copies
@@ -553,8 +671,14 @@ def create_multires_dataset(
     Gridlook).
 
     The input is read sequentially, one block of cells sharing an ancestor at
-    about the chunk level of the finest input level at a time, so the memory
-    use does not depend on the size of the dataset.
+    ``min(min_level, ~chunk level of the finest input level)`` at a time, so at
+    most ``max(chunk size, 4 ** (finest level - min_level))`` cells of the
+    finest level are held in memory at once. The inputs are checked (levels, ``min_level``, serializers,
+    categorical variables) before the output is created.
+
+    Only the default Zarr (bytes) serializer is supported: the derived levels
+    are chunked by a fixed number of cells, not by parent cell, so codecs that
+    rely on ``healpix_cell_dense`` chunks cannot be carried over.
 
     Parameters
     ----------
@@ -566,11 +690,15 @@ def create_multires_dataset(
         Coarsest refinement level to write. Must not be finer than the coarsest
         native level.
     groups : str or list, optional
-        Group(s) to process. By default, every group that has HEALPix level
-        child groups.
+        Group(s) to process: paths or unix-like patterns (as for
+        :py:func:`create_healpix_dataset`), matched against the groups that
+        have HEALPix level child groups. By default, every such group.
     method : {"mean"}
         Resampling method. Only ``"mean"`` is supported, which is not
-        suited to categorical variables (masks, classifications).
+        suited to categorical variables (masks, classifications): variables
+        with CF ``flag_values`` / ``flag_masks`` / ``flag_meanings``
+        attributes are left out (with a warning) when ``groups`` is not
+        given, and raise an error when their group is explicitly requested.
     chunk_size : int, optional
         Number of cells per output chunk. Defaults to the chunk size of the
         cell ids of the finest native level.
@@ -593,15 +721,13 @@ def create_multires_dataset(
     in_root = zarr.open_group(
         input_path, mode="r", storage_options=input_storage_options
     )
-    if groups is None:
-        group_paths = _find_multires_groups(in_root)
-    elif isinstance(groups, str):
-        group_paths = [groups]
-    else:
-        group_paths = list(groups)
-    group_paths = [g.strip("/") for g in group_paths]
+    group_paths = _resolve_groups(in_root, groups)
     if not group_paths:
         raise ValueError(f"no group with HEALPix level child groups in {input_path!r}")
+    skip = _check_inputs(
+        in_root, group_paths, min_level=min_level, explicit=groups is not None
+    )
+    group_paths = list(skip)
 
     out_root = zarr.open_group(
         output_path, mode="w-", zarr_format=3, storage_options=output_storage_options
@@ -625,15 +751,10 @@ def create_multires_dataset(
             method=method,
             chunk_size=chunk_size,
             overwrite_resampled=overwrite_resampled,
+            skip=skip[path],
         )
         tags.add(result["tag"])
-
-    if len(tags) != 1:
-        raise ValueError(
-            f"the processed groups have different finest native levels ({sorted(tags)}); "
-            "process them into separate datasets"
-        )
-    tag = tags.pop()
+    (tag,) = tags
 
     root_attrs = copy.deepcopy(dict(in_root.attrs))
     stac = root_attrs.get("stac_discovery")

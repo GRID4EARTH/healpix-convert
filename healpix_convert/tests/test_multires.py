@@ -191,18 +191,21 @@ def test_values(native, tmp_path, monkeypatch, read_size):
             assert g[name].attrs["long_name"] == f"variable {name}"
 
 
-def _add_resampled_copy(path, cells, rng):
-    """Like Sentinel-2 L2A: "a" (native at 20) is also stored, resampled by the
-    provider, at level 19, with another encoding (float32, NaN fill)."""
+def _add_resampled_copy(path, cells, rng, name="a", attrs=None):
+    """Like Sentinel-2 L2A: ``name`` (native at 20) is also stored, resampled
+    by the provider, at level 19, with another encoding (float32, NaN fill)."""
     level19 = zarr.open_group(path, mode="a")[f"{GROUP}/19"]
     copy = level19.create_array(
-        "a",
+        name,
         shape=cells[19].shape,
         chunks=(64,),
         dtype="float32",
         fill_value=np.nan,
         dimension_names=["cells"],
-        attributes={"long_name": "variable a, resampled at level 19"},
+        attributes={
+            "long_name": f"variable {name}, resampled at level 19",
+            **(attrs or {}),
+        },
     )
     values = (rng.random(len(cells[19])) + 10).astype("float32")
     values[rng.random(len(values)) < 0.1] = np.nan
@@ -376,3 +379,137 @@ def test_unsupported_method(native, tmp_path):
         create_multires_dataset(
             str(path), str(tmp_path / "out.zarr"), min_level=12, method="nearest"
         )
+
+
+def test_integer_copy_is_rounded(native, tmp_path):
+    # "b" is uint16 at level 20; a float32 copy at level 19 must be rounded,
+    # not truncated, when re-encoded like level 20
+    path, cells, _ = native
+    values = _add_resampled_copy(path, cells, np.random.default_rng(2), name="b")
+    out = tmp_path / "out.zarr"
+    create_multires_dataset(str(path), str(out), min_level=12)
+    b = zarr.open_group(out, mode="r")[f"{GROUP}/19/b"]
+    assert b.dtype == np.uint16
+    out_cells = zarr.open_group(out, mode="r")[f"{GROUP}/19/cell_ids"][:]
+    idx = np.searchsorted(out_cells, cells[19])
+    expected = np.where(np.isnan(values), 0, np.rint(values)).astype(np.uint16)
+    np.testing.assert_array_equal(b[:][idx], expected)
+
+
+def test_copy_with_other_scale_factor(native, tmp_path):
+    path, cells, _ = native
+    _add_resampled_copy(
+        path, cells, np.random.default_rng(2), attrs={"scale_factor": 0.0001}
+    )
+    with pytest.raises(ValueError, match="scale_factor"):
+        create_multires_dataset(str(path), str(tmp_path / "out.zarr"), min_level=12)
+
+
+def test_multidimensional_variable(native, tmp_path):
+    path, cells, _ = native
+    level20 = zarr.open_group(path, mode="a")[f"{GROUP}/20"]
+    t = level20.create_array(
+        "t",
+        shape=(3, len(cells[20])),
+        chunks=(3, 64),
+        dtype="float32",
+        fill_value=np.nan,
+        dimension_names=["time", "cells"],
+    )
+    t[:] = 1.0
+    with pytest.raises(NotImplementedError, match="only 1-D variables"):
+        create_multires_dataset(str(path), str(tmp_path / "out.zarr"), min_level=12)
+
+
+def _add_flag_variable(path, cells, group=GROUP):
+    root = zarr.open_group(path, mode="a")
+    if group not in root:
+        level20_attrs = dict(root[f"{GROUP}/20"].attrs)
+        level20 = root.create_group(f"{group}/20", attributes=level20_attrs)
+        ids = level20.create_array(
+            "cell_ids",
+            shape=cells[20].shape,
+            chunks=(64,),
+            dtype="uint64",
+            fill_value=np.iinfo("uint64").max,
+            dimension_names=["cells"],
+        )
+        ids[:] = cells[20]
+    level20 = root[f"{group}/20"]
+    scl = level20.create_array(
+        "scl",
+        shape=cells[20].shape,
+        chunks=(64,),
+        dtype="uint8",
+        fill_value=0,
+        dimension_names=["cells"],
+        attributes={"flag_values": [1, 2], "flag_meanings": "water land"},
+    )
+    scl[:] = 2
+
+
+def test_categorical_variable_skipped_by_default(native, tmp_path):
+    path, cells, _ = native
+    _add_flag_variable(path, cells)
+    out = tmp_path / "out.zarr"
+    create_multires_dataset(str(path), str(out), min_level=12)
+    group = zarr.open_group(out, mode="r")[GROUP]
+    assert "scl" not in group["20"]
+    assert group.attrs["native_refinement_levels"]["20"] == ["a", "b"]
+
+
+def test_categorical_group_skipped_by_default(native, tmp_path):
+    path, cells, _ = native
+    _add_flag_variable(path, cells, group="conditions/mask")
+    out = tmp_path / "out.zarr"
+    create_multires_dataset(str(path), str(out), min_level=12)
+    root = zarr.open_group(out, mode="r")
+    assert GROUP in root and "conditions" not in root
+    with pytest.raises(ValueError, match="categorical"):
+        create_multires_dataset(
+            str(path), str(tmp_path / "out2.zarr"), min_level=12, groups="conditions/*"
+        )
+
+
+def test_categorical_variable_in_requested_group(native, tmp_path):
+    path, cells, _ = native
+    _add_flag_variable(path, cells)
+    with pytest.raises(ValueError, match="categorical"):
+        create_multires_dataset(
+            str(path), str(tmp_path / "out.zarr"), min_level=12, groups=GROUP
+        )
+
+
+def test_non_default_serializer(native, tmp_path):
+    path, cells, _ = native
+    level20 = zarr.open_group(path, mode="a")[f"{GROUP}/20"]
+    level20.create_array(
+        "e",
+        shape=cells[20].shape,
+        chunks=(64,),
+        dtype="float32",
+        fill_value=np.nan,
+        dimension_names=["cells"],
+        serializer=zarr.codecs.ShardingCodec(chunk_shape=(16,)),
+    )
+    with pytest.raises(NotImplementedError, match="serializer"):
+        create_multires_dataset(str(path), str(tmp_path / "out.zarr"), min_level=12)
+
+
+def test_group_patterns(native, tmp_path):
+    path, _, _ = native
+    out = tmp_path / "out.zarr"
+    create_multires_dataset(str(path), str(out), min_level=17, groups="measurements/*")
+    assert GROUP in zarr.open_group(out, mode="r")
+    with pytest.raises(ValueError, match="no group .* matches"):
+        create_multires_dataset(
+            str(path), str(tmp_path / "out2.zarr"), min_level=17, groups=["nope/*"]
+        )
+
+
+def test_checks_run_before_writing(native, tmp_path):
+    path, _, _ = native
+    out = tmp_path / "out.zarr"
+    with pytest.raises(ValueError, match="finer than the coarsest native level"):
+        create_multires_dataset(str(path), str(out), min_level=18)
+    assert not out.exists()
