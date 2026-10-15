@@ -8,6 +8,7 @@ from typing import Any, NotRequired, TypedDict, Unpack, cast
 import dask.distributed
 import healpix_geo
 import healpix_resample
+import numcodecs.zarr3  # noqa: F401  (registers numcodecs.delta with zarr)
 import numpy as np
 import numpy.typing as npt
 import pyproj
@@ -45,6 +46,17 @@ from healpix_convert.settings.common import (
     broadcast_params,
 )
 from healpix_convert.settings.conventions import MetadataSettings
+
+#: Codecs of the HEALPix cell ids coordinate. The ids of a chunk are sorted,
+#: and one contiguous range for dense chunks, which zstd alone keeps at about one
+#: byte per cell; a delta filter first brings them to almost nothing. Reading
+#: needs numcodecs, a dependency of zarr.
+CELL_IDS_CODECS: list[dict[str, JSON]] = [
+    {"name": "numcodecs.delta", "configuration": {"dtype": "<u8"}},
+    {"name": "bytes", "configuration": {"endian": "little"}},
+    {"name": "zstd", "configuration": {"level": 3, "checksum": False}},
+]
+
 
 log = structlog.get_logger()
 
@@ -185,7 +197,7 @@ class HealpixGroupConverter(ABC):
                 chunks=(self.cell_dim_chunk_size,),
                 dimension_names=(self.cell_dim,),
                 fill_value=np.iinfo(np.uint64).max,
-                codecs=None,
+                codecs=CELL_IDS_CODECS,
                 attributes=get_cf_cell_id_attrs(self.metadata_settings),
             )
 
