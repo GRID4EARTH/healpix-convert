@@ -67,8 +67,9 @@ package must be installed. For reflectances with the Sentinel-2 scaling,
 [healpix-compress](https://github.com/GRID4EARTH/healpix-compress) provides
 `hcc-sentinel2` (digital numbers and lossless JPEG XL) and
 `hcc-sentinel2-pyramid` (lossless parent level, children quantised with a step
-that follows each chunk's own detail; its defaults aim at about 1.3 times the
-size of the native product). Both need `healpix_cell_dense` chunks:
+that follows each chunk's own detail; with its defaults, the reflectance of ten
+whole Sentinel-2 L2A products took 1.5 times its size under lossless JPEG 2000).
+Both need `healpix_cell_dense` chunks:
 
 ```python
 "codecs": [{"name": "hcc-sentinel2-pyramid", "configuration": {}}]

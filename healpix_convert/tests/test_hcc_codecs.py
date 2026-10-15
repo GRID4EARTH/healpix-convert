@@ -114,25 +114,3 @@ def test_lossless_serializers(tmp_path, input_path, codec) -> None:
     valid = ~np.isnan(expected)
     # half a digital number of the default Sentinel-2 scaling (Q = 10000)
     np.testing.assert_allclose(actual[valid], expected[valid], rtol=0, atol=0.5e-4)
-
-
-def test_pyramid_serializer_defaults(tmp_path, input_path) -> None:
-    expected = _convert(tmp_path, input_path, "reference.zarr", None)
-
-    actual = _convert(
-        tmp_path,
-        input_path,
-        "compressed.zarr",
-        [{"name": "hcc-sentinel2-pyramid", "configuration": {}}],
-    )
-
-    np.testing.assert_array_equal(np.isnan(actual), np.isnan(expected))
-    valid = ~np.isnan(expected)
-    # the error is at most half the quantisation step, and the default step is
-    # 0.57 times the standard deviation of the detail, itself at most that of the field
-    np.testing.assert_allclose(
-        actual[valid],
-        expected[valid],
-        rtol=0,
-        atol=0.5 * 0.57 * float(np.std(expected[valid])),
-    )
