@@ -39,10 +39,19 @@ def test_object_strings_are_written_as_variable_length_strings():
     assert array[:].tolist() == ["b02", "b03"]
 
 
-def test_other_arrays_are_written_unchanged():
-    values = np.arange(3.0)
+@pytest.mark.parametrize(
+    "values",
+    [
+        pytest.param(np.arange(3.0), id="float"),
+        pytest.param(
+            np.array(["b02", None], dtype=object), id="object-not-only-strings"
+        ),
+    ],
+)
+def test_other_arrays_are_written_unchanged(values):
+    actual = _unchanged_array_data(values)
 
-    assert _unchanged_array_data(values) == {"dtype": values.dtype, "data": values}
+    assert actual == {"dtype": values.dtype, "data": values}
 
 
 @pytest.fixture

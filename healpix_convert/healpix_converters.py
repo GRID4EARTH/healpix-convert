@@ -56,9 +56,11 @@ def _unchanged_array_data(values: np.ndarray) -> dict[str, Any]:
     Strings read from a Zarr v2 store may come back as a numpy ``object``
     array, from which zarr 3 refuses to infer a data type
     (zarr-developers/zarr-python#3117): they are written as variable-length
-    UTF-8 strings, with ``""`` as fill value.
+    UTF-8 strings, with ``""`` as fill value. Object arrays that do not hold
+    only strings are passed on unchanged, so that zarr reports them instead of
+    their values being silently turned into text.
     """
-    if values.dtype == object:
+    if values.dtype == object and all(isinstance(v, str) for v in values.flat):
         return {"dtype": str, "data": values.astype(str), "fill_value": ""}
     return {"dtype": values.dtype, "data": values}
 
