@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import PurePath
 from typing import Any, NotRequired, TypedDict, Unpack, cast
 
@@ -47,6 +48,39 @@ from healpix_convert.settings.common import (
 from healpix_convert.settings.conventions import MetadataSettings
 
 log = structlog.get_logger()
+
+
+# at most this many output arrays of a chunk are written at the same time
+MAX_CONCURRENT_WRITES = 8
+
+
+def _write_chunk_arrays(writes: list[tuple[Any, Any, np.ndarray]]) -> None:
+    """Write the output arrays of one chunk, concurrently.
+
+    Each write encodes one chunk of one array. zarr runs the encodings that leave
+    its event loop (e.g. ``zstd``, or any codec using ``asyncio.to_thread``) in
+    worker threads, so the variables of a chunk are then encoded in parallel
+    instead of one after the other.
+
+    Parameters
+    ----------
+    writes : list of (zarr.Array, key, numpy.ndarray)
+        Each array, the selection to write and the values.
+    """
+    if len(writes) <= 1:
+        for zarray, key, value in writes:
+            zarray[key] = value
+        return
+
+    def write(item):
+        zarray, key, value = item
+        zarray[key] = value
+
+    with ThreadPoolExecutor(
+        max_workers=min(len(writes), MAX_CONCURRENT_WRITES)
+    ) as pool:
+        # list() re-raises the first exception of a failed write
+        list(pool.map(write, writes))
 
 
 class ZarrCreateArrayKwargs(TypedDict):
@@ -740,6 +774,7 @@ class DenseChunkConverter(UniformChunkConverter):
         )
 
         log.debug(f"resample {len(var_names)} arrays")
+        writes = []
         for name in var_names:
             var = ds_input_points.variables[name]
 
@@ -780,7 +815,11 @@ class DenseChunkConverter(UniformChunkConverter):
             if len(extra_dims) > 1:
                 cell_data = cell_data.reshape(tuple(extra_dim_sizes + [cell_ids.size]))
 
-            zarray[..., chunk_slice] = cell_data.astype(cell_data.dtype)
+            writes.append(
+                (zarray, (..., chunk_slice), cell_data.astype(cell_data.dtype))
+            )
+
+        _write_chunk_arrays(writes)
 
 
 class SparseChunkConverter(UniformChunkConverter):
@@ -858,6 +897,7 @@ class SparseChunkConverter(UniformChunkConverter):
         )
 
         log.debug(f"resample {len(var_names)} arrays")
+        writes = []
         for name in var_names:
             var = ds_input_points.variables[name]
 
@@ -886,7 +926,9 @@ class SparseChunkConverter(UniformChunkConverter):
                 cell_data = res.cell_data
 
             zarray = self.output_arrays[str(name)]
-            zarray[..., chunk_slice] = cell_data.astype(var.dtype)
+            writes.append((zarray, (..., chunk_slice), cell_data.astype(var.dtype)))
+
+        _write_chunk_arrays(writes)
 
         del resampler
 
