@@ -52,10 +52,18 @@ def test_cell_ids_are_delta_coded(tmp_path):
         {
             "group_settings": {
                 "measurements": {
-                    "healpix": {"refinement_level": 8, "indexing_scheme": "nested"},
+                    "healpix": {
+                        "refinement_level": 8,
+                        "indexing_scheme": "nested",
+                        "ellipsoid": {"name": "wgs84"},
+                    },
                     "chunk": {
                         "method": "healpix_cell_dense",
-                        "healpix": {"refinement_level": 5, "indexing_scheme": "nested"},
+                        "healpix": {
+                            "refinement_level": 5,
+                            "indexing_scheme": "nested",
+                            "ellipsoid": {"name": "wgs84"},
+                        },
                     },
                     "resampler": {"name": "nearest"},
                 }
