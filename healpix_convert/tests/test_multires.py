@@ -524,3 +524,211 @@ def test_checks_run_before_writing(native, tmp_path):
     with pytest.raises(ValueError, match="finer than the coarsest native level"):
         create_multires_dataset(str(path), str(out), min_level=18)
     assert not out.exists()
+
+
+# ---------------------------------------------------------------------------
+# parent-aligned dense chunks (serializers such as the Sentinel-2 ones of
+# healpix-compress, which code a chunk as the raster of one parent cell)
+
+#: the parents of ``_native_data`` are level-14 cells: one per dense input chunk
+DENSE_CHUNK_LEVEL = 14
+
+
+def _write_dense_input(path, cells, data, serializers=None):
+    """The native data in ``healpix_cell_dense`` chunks: one level-14 cell per
+    chunk, all its cells, the fill value where there is no data."""
+    root = zarr.open_group(path, mode="w", zarr_format=3)
+    root.attrs["stac_discovery"] = {"id": "S2X_TEST", "properties": {"platform": "x"}}
+    root.create_group("measurements")
+    group = root.create_group(GROUP)
+    for level in sorted(cells, reverse=True):
+        parents = np.unique(cells[level] >> np.uint64(2 * (level - DENSE_CHUNK_LEVEL)))
+        dense = _descendants(parents, DENSE_CHUNK_LEVEL, level).ravel()
+        n = 4 ** (level - DENSE_CHUNK_LEVEL)
+        g = group.create_group(
+            str(level),
+            attributes={
+                "zarr_conventions": [DGGS_CONVENTION],
+                "dggs": {**DGGS, "refinement_level": level},
+            },
+        )
+        c = g.create_array(
+            "cell_ids",
+            shape=dense.shape,
+            chunks=(n,),
+            dtype="uint64",
+            fill_value=np.iinfo("uint64").max,
+            dimension_names=["cells"],
+        )
+        c[:] = dense
+        idx = np.searchsorted(dense, cells[level])
+        for name, (native, dtype, fill) in VARIABLES.items():
+            if native != level:
+                continue
+            v = np.full(dense.shape, fill, dtype=dtype)
+            v[idx] = data[name]
+            extra = {}
+            if serializers and name in serializers:
+                extra["serializer"] = serializers[name]
+            a = g.create_array(
+                name,
+                shape=dense.shape,
+                chunks=(n,),
+                dtype=dtype,
+                fill_value=fill,
+                dimension_names=["cells"],
+                attributes={"long_name": f"variable {name}"},
+                **extra,
+            )
+            a[:] = v
+
+
+@pytest.fixture
+def dense_native(tmp_path):
+    rng = np.random.default_rng(42)
+    cells, data = _native_data(rng)
+    path = tmp_path / "dense.zarr"
+    _write_dense_input(path, cells, data)
+    return path, cells, data
+
+
+def _valid_values(group, level, name):
+    """{cell: value} of the cells of ``name`` that hold data at ``level``."""
+    if name not in group[str(level)]:
+        return {}
+    ids = group[f"{level}/cell_ids"][:]
+    a = group[f"{level}/{name}"]
+    v = a[:]
+    keep = ~_is_fill(v.astype(np.float64), np.float64(a.fill_value)) & np.isfinite(
+        v.astype(np.float64)
+    )
+    return dict(zip(ids[keep].tolist(), v[keep].tolist()))
+
+
+def _check_against_reference(out, cells, data, min_level, atol=0.0):
+    group = zarr.open_group(out, mode="r")[GROUP]
+    reference = _reference(cells, data, min_level)
+    for name, (native, _, fill) in VARIABLES.items():
+        for level in range(native, min_level - 1, -1):
+            expected = {
+                c: v
+                for c, v in reference[name][level].items()
+                if np.isfinite(v) and not _is_fill(np.float64(v), fill)
+            }
+            actual = _valid_values(group, level, name)
+            assert actual.keys() == expected.keys(), (name, level)
+            keys = sorted(expected)
+            np.testing.assert_allclose(
+                [actual[k] for k in keys], [expected[k] for k in keys], atol=atol
+            )
+
+
+class TestDenseChunks:
+    def test_values(self, dense_native, tmp_path):
+        path, cells, data = dense_native
+        out = tmp_path / "out.zarr"
+        create_multires_dataset(str(path), str(out), min_level=12, dense_chunks=True)
+
+        _check_against_reference(out, cells, data, 12)
+
+    def test_layout(self, dense_native, tmp_path):
+        path, _, _ = dense_native
+        out = tmp_path / "out.zarr"
+        create_multires_dataset(str(path), str(out), min_level=12, dense_chunks=True)
+
+        group = zarr.open_group(out, mode="r")[GROUP]
+        # native levels keep the input chunks (one level-14 cell each); derived
+        # levels never go below the smallest input chunk (4**3 cells, level 17)
+        expected_depth = {20: 6, 19: 5, 18: 4, 17: 3, 16: 3, 15: 3, 14: 3, 13: 3, 12: 3}
+        for level, depth in expected_depth.items():
+            ids = group[f"{level}/cell_ids"][:]
+            n = 4**depth
+            assert group[f"{level}/cell_ids"].chunks == (n,)
+            chunks = ids.reshape(-1, n)
+            np.testing.assert_array_equal(chunks[:, 0] % n, 0)
+            np.testing.assert_array_equal(np.diff(chunks, axis=1), 1)
+
+    def test_needs_dense_input(self, native, tmp_path):
+        path, _, _ = native
+        with pytest.raises(NotImplementedError, match="healpix_cell_dense"):
+            create_multires_dataset(
+                str(path), str(tmp_path / "out.zarr"), min_level=12, dense_chunks=True
+            )
+
+    def test_chunk_size_is_rejected(self, dense_native, tmp_path):
+        path, _, _ = dense_native
+        with pytest.raises(ValueError, match="chunk_size"):
+            create_multires_dataset(
+                str(path),
+                str(tmp_path / "out.zarr"),
+                min_level=12,
+                dense_chunks=True,
+                chunk_size=64,
+            )
+
+
+def _stored_chunks(group, level, name):
+    """{first cell of the chunk: stored bytes} of a variable of a level group
+    written in dense chunks (the chunk index differs between input and output
+    when the output level has more chunks)."""
+    from zarr.core.buffer import default_buffer_prototype
+    from zarr.core.sync import sync
+
+    array = group[f"{level}/{name}"]
+    firsts = group[f"{level}/cell_ids"][:: array.chunks[0]]
+    out = {}
+    for k, first in enumerate(firsts.tolist()):
+        key = f"{array.path}/{array.metadata.encode_chunk_key((k,))}"
+        data = sync(array.store.get(key, prototype=default_buffer_prototype()))
+        if data is not None:
+            out[first] = data.to_bytes()
+    return out
+
+
+def _stored_values(path, cells):
+    """The values of the native variables as the input stores them, at the
+    native cells (a lossless serializer still rounds to its lattice)."""
+    group = zarr.open_group(path, mode="r")[GROUP]
+    out = {}
+    for name, (level, _, _) in VARIABLES.items():
+        ids = group[f"{level}/cell_ids"][:]
+        out[name] = group[f"{level}/{name}"][:][np.searchsorted(ids, cells[level])]
+    return out
+
+
+class TestSentinel2Serializers:
+    def test_lossless(self, tmp_path):
+        sentinel2 = pytest.importorskip("hcc.codecs.sentinel2")
+        rng = np.random.default_rng(42)
+        cells, data = _native_data(rng)
+        path = tmp_path / "input.zarr"
+        serializers = {n: sentinel2.HccSentinel2Codec() for n in ("a", "c", "d")}
+        _write_dense_input(path, cells, data, serializers)
+        out = tmp_path / "out.zarr"
+
+        # dense chunks by default, the serializer of the input on every level
+        create_multires_dataset(str(path), str(out), min_level=12)
+
+        group = zarr.open_group(out, mode="r")[GROUP]
+        assert isinstance(group["13/a"].serializer, sentinel2.HccSentinel2Codec)
+        # each derived mean is rounded to the digital-number lattice of the
+        # default Sentinel-2 scaling: half a digital number, 0.5e-4
+        stored = _stored_values(path, cells)
+        _check_against_reference(out, cells, stored, 12, atol=0.5e-4)
+
+    def test_native_chunks_copied_as_stored(self, tmp_path):
+        pyramid = pytest.importorskip("hcc.codecs.sentinel2_pyramid")
+        rng = np.random.default_rng(42)
+        cells, data = _native_data(rng)
+        path = tmp_path / "input.zarr"
+        serializers = {n: pyramid.HccSentinel2PyramidCodec() for n in ("a", "c", "d")}
+        _write_dense_input(path, cells, data, serializers)
+        out = tmp_path / "out.zarr"
+
+        create_multires_dataset(str(path), str(out), min_level=12)
+
+        src = zarr.open_group(path, mode="r")[GROUP]
+        dst = zarr.open_group(out, mode="r")[GROUP]
+        # lossy serializer: a native level decoded and re-encoded would differ
+        for level, name in ((20, "a"), (19, "c"), (17, "d")):
+            assert _stored_chunks(dst, level, name) == _stored_chunks(src, level, name)
