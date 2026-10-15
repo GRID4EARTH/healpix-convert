@@ -49,6 +49,20 @@ from healpix_convert.settings.conventions import MetadataSettings
 log = structlog.get_logger()
 
 
+def _unchanged_array_data(values: np.ndarray) -> dict[str, Any]:
+    """The ``dtype``, ``data`` (and ``fill_value``) arguments of ``zarr.create``
+    for an array written unchanged to the output.
+
+    Strings read from a Zarr v2 store may come back as a numpy ``object``
+    array, from which zarr 3 refuses to infer a data type
+    (zarr-developers/zarr-python#3117): they are written as variable-length
+    UTF-8 strings, with ``""`` as fill value.
+    """
+    if values.dtype == object:
+        return {"dtype": str, "data": values.astype(str), "fill_value": ""}
+    return {"dtype": values.dtype, "data": values}
+
+
 class ZarrCreateArrayKwargs(TypedDict):
     shape: tuple[int, ...]
     dtype: npt.DTypeLike | str
@@ -57,6 +71,7 @@ class ZarrCreateArrayKwargs(TypedDict):
     dimension_names: NotRequired[Iterable[str]]
     codecs: NotRequired[Iterable[dict[str, JSON]] | None]
     attributes: NotRequired[dict[str, JSON] | None]
+    fill_value: NotRequired[Any]
 
 
 class HealpixGroupConverter(ABC):
@@ -266,11 +281,10 @@ class HealpixGroupConverter(ABC):
                 _get_maybe_create_array(
                     str(name),
                     shape=var.shape,
-                    dtype=var.dtype,
-                    data=var.values,
                     chunks=var.encoding.get("chunks"),
                     dimension_names=[str(d) for d in var.dims],
                     codecs=None,
+                    **_unchanged_array_data(var.values),
                 )
 
         return zarrays
