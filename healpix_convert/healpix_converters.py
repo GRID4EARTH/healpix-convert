@@ -236,7 +236,10 @@ class HealpixGroupConverter(ABC):
                 chunks=(self.cell_dim_chunk_size,),
                 dimension_names=(self.cell_dim,),
                 fill_value=np.iinfo(np.uint64).max,
-                codecs=None,
+                codecs=cast(
+                    Iterable[dict[str, JSON]] | None,
+                    self.settings.healpix_coordinate_codecs,
+                ),
                 attributes=get_cf_cell_id_attrs(self.metadata_settings),
             )
 
