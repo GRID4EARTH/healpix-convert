@@ -58,19 +58,3 @@ $ pixi install -e dev
 ## Basic usage
 
 See examples in the ``notebooks`` folder.
-
-## Compression
-
-The `codecs` entry of a group's settings sets the zarr codecs of its resampled
-data variables. Codecs are looked up by name in zarr's registry, so their
-package must be installed. For reflectances with the Sentinel-2 scaling,
-[healpix-compress](https://github.com/GRID4EARTH/healpix-compress) provides
-`hcc-sentinel2` (digital numbers and lossless JPEG XL) and
-`hcc-sentinel2-pyramid` (lossless parent level, children quantised with a step
-that follows each chunk's own detail; with its defaults, the reflectance of ten
-whole Sentinel-2 L2A products took 1.5 times its size under lossless JPEG 2000).
-Both need `healpix_cell_dense` chunks:
-
-```python
-"codecs": [{"name": "hcc-sentinel2-pyramid", "configuration": {}}]
-```
