@@ -275,7 +275,13 @@ class _DenseLevelWriter:
     A variable whose values at this level are those of an input array with the
     same chunks and the same encoding (``raw_sources``: a native level) has its
     chunks copied as stored, without decoding and re-encoding them, so that a
-    lossy serializer does not add its error a second time."""
+    lossy serializer does not add its error a second time.
+
+    In a floating variable, the cells without data are written as NaN rather
+    than as the fill value: the Sentinel-2 serializers carry NaN as no data
+    (a validity mask), while a fill value such as ``0.0`` would be coded as a
+    value next to the real ones, come back as a slightly different value, and
+    widen the quantisation step of the chunk."""
 
     def __init__(
         self,
@@ -324,10 +330,14 @@ class _DenseLevelWriter:
         self.buffers: dict[str, np.ndarray] = {}
         self.size = 0
 
+    def _no_data(self, name: str) -> Any:
+        dtype = self.arrays[name].dtype
+        return np.nan if np.issubdtype(dtype, np.floating) else self.fill_values[name]
+
     def _start(self, chunk_id: int):
         self.current = chunk_id
         self.buffers = {
-            name: np.full(self.n, self.fill_values[name], dtype=self.arrays[name].dtype)
+            name: np.full(self.n, self._no_data(name), dtype=self.arrays[name].dtype)
             for name in self.names[1:]
         }
 
@@ -346,7 +356,8 @@ class _DenseLevelWriter:
             raw = self.raw.get(name)
             if raw is not None and self.current in raw[1]:
                 _copy_stored_chunk(raw[0], raw[1][self.current], self.arrays[name], j)
-            else:
+            elif not np.all(_fill_mask(self.buffers[name], self._no_data(name))):
+                # a chunk without data is not written (it reads as the fill value)
                 self.arrays[name][start:stop] = self.buffers[name]
         self.size = stop
         self.current = None
@@ -365,8 +376,13 @@ class _DenseLevelWriter:
             pos = (block.cells[s:e] - first).astype(np.int64)
             for name in self.names[1:]:
                 v = block.values.get(name)
-                if v is not None:
-                    self.buffers[name][pos] = v[s:e]
+                if v is None:
+                    continue
+                v = v[s:e]
+                fill = self.fill_values[name]
+                if np.issubdtype(v.dtype, np.floating) and not _same_fill(fill, np.nan):
+                    v = np.where(_fill_mask(v, fill), np.nan, v)
+                self.buffers[name][pos] = v
 
     def close(self) -> int:
         self._flush()

@@ -565,11 +565,15 @@ def _write_dense_input(path, cells, data, serializers=None):
         for name, (native, dtype, fill) in VARIABLES.items():
             if native != level:
                 continue
-            v = np.full(dense.shape, fill, dtype=dtype)
-            v[idx] = data[name]
             extra = {}
+            no_data = fill
             if serializers and name in serializers:
                 extra["serializer"] = serializers[name]
+                # the Sentinel-2 serializers carry NaN as no data; a fill value
+                # would be coded as a value
+                no_data = np.nan
+            v = np.full(dense.shape, no_data, dtype=dtype)
+            v[idx] = data[name]
             a = g.create_array(
                 name,
                 shape=dense.shape,
@@ -605,7 +609,7 @@ def _valid_values(group, level, name):
     return dict(zip(ids[keep].tolist(), v[keep].tolist()))
 
 
-def _check_against_reference(out, cells, data, min_level, atol=0.0):
+def _check_against_reference(out, cells, data, min_level, atol=0.0, values=True):
     group = zarr.open_group(out, mode="r")[GROUP]
     reference = _reference(cells, data, min_level)
     for name, (native, _, fill) in VARIABLES.items():
@@ -617,6 +621,8 @@ def _check_against_reference(out, cells, data, min_level, atol=0.0):
             }
             actual = _valid_values(group, level, name)
             assert actual.keys() == expected.keys(), (name, level)
+            if not values:
+                continue
             keys = sorted(expected)
             np.testing.assert_allclose(
                 [actual[k] for k in keys], [expected[k] for k in keys], atol=atol
@@ -726,6 +732,12 @@ class TestSentinel2Serializers:
         out = tmp_path / "out.zarr"
 
         create_multires_dataset(str(path), str(out), min_level=12)
+
+        # "a" and "d" have the fill value 0.0: the cells without data must not
+        # come back from the lossy serializer as (slightly different) values
+        _check_against_reference(
+            out, cells, _stored_values(path, cells), 12, values=False
+        )
 
         src = zarr.open_group(path, mode="r")[GROUP]
         dst = zarr.open_group(out, mode="r")[GROUP]
