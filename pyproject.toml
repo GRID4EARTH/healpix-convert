@@ -111,5 +111,3 @@ known-third-party = []
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
-
-
