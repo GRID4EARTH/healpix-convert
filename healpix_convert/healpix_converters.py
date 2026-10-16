@@ -380,12 +380,34 @@ class HealpixGroupConverter(ABC):
         ...
 
 
+def _warn_if_resampling_lost_data(
+    logger, name: str, values: np.ndarray, cell_data: np.ndarray
+) -> None:
+    """Warn when a variable had valid input points in a chunk but came back from
+    the resampler without any finite value (e.g. healpix-resample < 2026.7.0
+    returned an all-NaN result whenever one input point was NaN). Such a chunk
+    is written as the fill value and zarr does not store it, so the loss would
+    otherwise be silent.
+
+    ``values`` and ``cell_data`` have one row per slice of the variable (see
+    :func:`_resample_variables`), the points, or the cells, along the last axis.
+    """
+    lost = np.isfinite(values).any(axis=-1) & ~np.isfinite(cell_data).any(axis=-1)
+    if lost.any():
+        logger.warning(
+            "variable has valid input points in this chunk but no finite resampled value",
+            variable=name,
+            slices=np.flatnonzero(lost).tolist(),
+        )
+
+
 def _resample_variables(
     resampler,
     ds_input_points: xr.Dataset,
     var_names: list[str],
     resample_params: dict,
     chunk_cell_ids: np.ndarray | None = None,
+    logger=log,
 ) -> dict[str, np.ndarray]:
     """Resample the data variables of a chunk, with one resampler call per group of
     variables that share the same resample parameters.
@@ -402,6 +424,9 @@ def _resample_variables(
     first and the cell dimension last. With ``chunk_cell_ids`` (dense chunks)
     they are given on those cells, NaN where the resampler returned no value;
     otherwise on the resampler's own cells.
+
+    A variable with valid input points but no finite value after resampling is
+    reported on ``logger``.
     """
     slices: dict[str, tuple[tuple[int, ...], np.ndarray]] = {}
     for name in var_names:
@@ -437,6 +462,7 @@ def _resample_variables(
         for name in names:
             shape, values = slices[name]
             stop = start + values.shape[0]
+            _warn_if_resampling_lost_data(logger, name, values, cell_data[start:stop])
             results[name] = cell_data[start:stop].reshape(*shape, cell_data.shape[1])
             start = stop
 
@@ -864,6 +890,7 @@ class DenseChunkConverter(UniformChunkConverter):
             var_names,
             resample_params,
             chunk_cell_ids=cell_ids,
+            logger=log.bind(group=self.group_path, chunk_index=chunk_index),
         )
         
         writes = []
@@ -954,7 +981,11 @@ class SparseChunkConverter(UniformChunkConverter):
 
         log.debug(f"resample {len(var_names)} arrays")
         resampled = _resample_variables(
-            resampler, ds_input_points, var_names, resample_params
+            resampler,
+            ds_input_points,
+            var_names,
+            resample_params,
+            logger=log.bind(group=self.group_path, chunk_index=chunk_index),
         )
         
         writes = []
