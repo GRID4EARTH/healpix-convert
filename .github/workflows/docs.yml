@@ -1,0 +1,70 @@
+name: Docs
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+# one build per branch / pull request: a new push cancels the build of a pull
+# request still running, never a deployment (see the `deploy` job)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+env:
+  FORCE_COLOR: 3
+  # linux-64 and win-64 are declared as cuda 12.0 platforms in pixi.toml, but
+  # runners have no GPU, so pixi refuses to solve those environments
+  # ("Unsatisfied requirements: __cuda >= 12.0"). Mock the virtual package:
+  # the docs are built on CPU.
+  CONDA_OVERRIDE_CUDA: "12.0"
+
+jobs:
+  build-docs:
+    name: Build docs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # tags are needed for the package version
+          persist-credentials: false
+
+      - name: Setup environment
+        uses: prefix-dev/setup-pixi@194d461b21b6c5717c722ffc597fa91ed2ff29fa # 0.9.1
+        with:
+          environments: docs
+
+      - name: Build docs
+        run: pixi run -e docs build-docs
+
+      - name: Upload pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs/_build/html
+
+  deploy:
+    name: Deploy to GitHub Pages
+    # only deploy on pushes to main, not on pull requests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-docs
+    runs-on: ubuntu-latest
+    # allow only one concurrent deployment, and don't cancel it
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    permissions:
+      pages: write # deploy the site to GitHub Pages
+      id-token: write # verify that the deployment comes from this workflow
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
