@@ -991,8 +991,8 @@ class SparseChunkConverter(UniformChunkConverter):
         writes = []
         for name, cell_data in resampled.items():
             dtype = ds_input_points.variables[name].dtype
-            zarray = self.output_arrays[str(name)]
-            writes.append((zarray, (..., chunk_slice), cell_data.astype(var.dtype)))
+            zarray = self.output_arrays[name]
+            writes.append((zarray, (..., chunk_slice), cell_data.astype(dtype)))
 
         _write_chunk_arrays(writes)
 
