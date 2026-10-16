@@ -44,9 +44,14 @@ def _descendants(parents, parent_level, level):
     return (np.asarray(parents, dtype=np.uint64)[:, None] << np.uint64(shift)) + offsets
 
 
-def _native_data(rng):
+def _native_data(rng, parents=None):
     """Sparse cells at levels 20, 19 and 17 under a few level-14 parents."""
-    parents = {20: [1000, 1001, 5000], 19: [1000, 5000, 7000], 17: [1000, 1001, 5000]}
+    if parents is None:
+        parents = {
+            20: [1000, 1001, 5000],
+            19: [1000, 5000, 7000],
+            17: [1000, 1001, 5000],
+        }
     cells = {}
     for level, ps in parents.items():
         all_cells = _descendants(ps, 14, level).ravel()
@@ -654,6 +659,40 @@ class TestDenseChunks:
             np.testing.assert_array_equal(chunks[:, 0] % n, 0)
             np.testing.assert_array_equal(np.diff(chunks, axis=1), 1)
 
+    def test_extent(self, tmp_path):
+        # every input cell under level-10 cell 3 (level-14 cells 768 to 1023): no
+        # output chunk may reach outside it, although a 4**3-cell chunk at level
+        # 12 would be a level-9 cell
+        rng = np.random.default_rng(7)
+        cells, data = _native_data(
+            rng, {level: [800, 1000, 1001] for level in (20, 19, 17)}
+        )
+        path = tmp_path / "dense.zarr"
+        _write_dense_input(path, cells, data)
+        out = tmp_path / "out.zarr"
+        create_multires_dataset(str(path), str(out), min_level=12, dense_chunks=True)
+
+        group = zarr.open_group(out, mode="r")[GROUP]
+        for level in range(20, 11, -1):
+            ids = group[f"{level}/cell_ids"][:]
+            np.testing.assert_array_equal(ids >> np.uint64(2 * (level - 10)), 3)
+        # level 12: one chunk of the 16 cells of level-10 cell 3
+        assert group["12/cell_ids"].chunks == (16,)
+        _check_against_reference(out, cells, data, 12)
+
+    def test_tag_and_serializers(self, dense_native, tmp_path):
+        path, _, _ = dense_native
+        out = tmp_path / "out.zarr"
+        tag = create_multires_dataset(
+            str(path), str(out), min_level=12, dense_chunks=True
+        )
+
+        # bytes serializers: no codec part in the tag
+        assert tag == "mean-l20-l12"
+        group = zarr.open_group(out, mode="r")[GROUP]
+        assert group.attrs["multires_method"] == tag
+        assert group.attrs["derived_serializers"] == {n: "bytes" for n in "abcd"}
+
     def test_needs_dense_input(self, native, tmp_path):
         path, _, _ = native
         with pytest.raises(NotImplementedError, match="healpix_cell_dense"):
@@ -744,3 +783,88 @@ class TestSentinel2Serializers:
         # lossy serializer: a native level decoded and re-encoded would differ
         for level, name in ((20, "a"), (19, "c"), (17, "d")):
             assert _stored_chunks(dst, level, name) == _stored_chunks(src, level, name)
+
+    def test_lossy_derived_levels_by_default(self, tmp_path):
+        pyramid = pytest.importorskip("hcc.codecs.sentinel2_pyramid")
+        rng = np.random.default_rng(42)
+        cells, data = _native_data(rng)
+        path = tmp_path / "input.zarr"
+        serializers = {n: pyramid.HccSentinel2PyramidCodec() for n in ("a", "c", "d")}
+        _write_dense_input(path, cells, data, serializers)
+        out = tmp_path / "out.zarr"
+
+        tag = create_multires_dataset(str(path), str(out), min_level=12)
+
+        assert tag == "mean-l20-l12-hcc"
+        root = zarr.open_group(out, mode="r")
+        group = root[GROUP]
+        assert group.attrs["multires_method"] == tag
+        assert root.attrs["stac_discovery"]["id"] == f"S2X_TEST_{tag}"
+        assert group.attrs["derived_serializers"] == {
+            "a": "hcc-sentinel2-pyramid",
+            "b": "bytes",
+            "c": "hcc-sentinel2-pyramid",
+            "d": "hcc-sentinel2-pyramid",
+        }
+        assert isinstance(group["18/a"].serializer, pyramid.HccSentinel2PyramidCodec)
+
+    def test_lossless_derived_levels(self, tmp_path):
+        pyramid = pytest.importorskip("hcc.codecs.sentinel2_pyramid")
+        sentinel2 = pytest.importorskip("hcc.codecs.sentinel2")
+        rng = np.random.default_rng(42)
+        cells, data = _native_data(rng)
+        path = tmp_path / "input.zarr"
+        # a scaling other than the default one, to check that it is carried over
+        codec = pyramid.HccSentinel2PyramidCodec(
+            quantification_value=10000.0, add_offset=-2000.0
+        )
+        _write_dense_input(path, cells, data, {n: codec for n in ("a", "c", "d")})
+        out = tmp_path / "out.zarr"
+
+        tag = create_multires_dataset(
+            str(path), str(out), min_level=12, lossless_derived_levels=True
+        )
+
+        assert tag == "mean-l20-l12-hcc-lossless"
+        src = zarr.open_group(path, mode="r")[GROUP]
+        group = zarr.open_group(out, mode="r")[GROUP]
+        assert group.attrs["derived_serializers"]["a"] == "hcc-sentinel2"
+        # derived levels: the lossless serializer with the scaling of the input
+        for level, name in ((19, "a"), (18, "a"), (12, "a"), (16, "c"), (12, "d")):
+            serializer = group[f"{level}/{name}"].serializer
+            assert isinstance(serializer, sentinel2.HccSentinel2Codec)
+            configuration = serializer.to_dict()["configuration"]
+            assert configuration["quantification_value"] == 10000.0
+            assert configuration["add_offset"] == -2000.0
+        # native levels: still the input's chunks, as stored
+        for level, name in ((20, "a"), (19, "c"), (17, "d")):
+            assert isinstance(group[f"{level}/{name}"].serializer, type(codec))
+            assert _stored_chunks(group, level, name) == _stored_chunks(
+                src, level, name
+            )
+        # each derived mean of the stored values, rounded to the lattice of the
+        # scaling (1 / quantification_value): within half a digital number
+        _check_against_reference(
+            out, cells, _stored_values(path, cells), 12, atol=0.5e-4
+        )
+
+    def test_extent(self, tmp_path):
+        pyramid = pytest.importorskip("hcc.codecs.sentinel2_pyramid")
+        rng = np.random.default_rng(7)
+        cells, data = _native_data(
+            rng, {level: [800, 1000, 1001] for level in (20, 19, 17)}
+        )
+        path = tmp_path / "input.zarr"
+        serializers = {n: pyramid.HccSentinel2PyramidCodec() for n in ("a", "c", "d")}
+        _write_dense_input(path, cells, data, serializers)
+        out = tmp_path / "out.zarr"
+
+        create_multires_dataset(str(path), str(out), min_level=12)
+
+        group = zarr.open_group(out, mode="r")[GROUP]
+        for level in range(20, 11, -1):
+            ids = group[f"{level}/cell_ids"][:]
+            np.testing.assert_array_equal(ids >> np.uint64(2 * (level - 10)), 3)
+        _check_against_reference(
+            out, cells, _stored_values(path, cells), 12, values=False
+        )
