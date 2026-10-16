@@ -38,7 +38,7 @@ read their input data. Install them with the matching extra:
 
 ```sh
 $ python -m pip install "healpix-convert[era5]"       # cdsapi, cfgrib
-$ python -m pip install "healpix-convert[cams]"       # healpy, requests
+$ python -m pip install "healpix-convert[cams]"       # requests
 $ python -m pip install "healpix-convert[climatedt]"  # cfgrib, polytope-client, destinelab
 ```
 

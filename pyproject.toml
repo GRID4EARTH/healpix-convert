@@ -40,7 +40,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cams = ["healpy", "requests"]
+cams = ["requests"]
 climatedt = ["cfgrib", "destinelab", "polytope-client"]
 era5 = ["cdsapi", "cfgrib"]
 
