@@ -22,7 +22,7 @@ Resampler choice (PSF vs nearest-neighbour):
   A final clip(0, None) is the physical safety net. Validated on the 6 CAMS
   variables: 0 NaN, 0 negative, correlation > 0.98 with nearest-neighbour binning.
   Nearest-neighbour binning (method="nn") is exact and faster; the ~1% of empty
-  equatorial pixels are filled from HEALPix ring neighbours.
+  equatorial pixels are filled from their HEALPix neighbours.
 
 Output group layout:
   measurements/aod/   – all AOD variables

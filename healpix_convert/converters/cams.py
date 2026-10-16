@@ -12,7 +12,7 @@ Resampling method (``method=`` argument, default ``"psf"``)
     (Tikhonov damping, removes the Gibbs ringing that otherwise yields negative
     AOD on a regular grid). A final ``clip(0, None)`` is the physical safety net.
   - ``"nn"``: nearest-neighbour binning — exact, artifact-free and faster; the
-    ~1% of empty equatorial pixels are filled from HEALPix ring neighbours.
+    ~1% of empty equatorial pixels are filled from their HEALPix neighbours.
   Both give 0 NaN / 0 negative at level 6; they correlate > 0.98. See
   ``healpix_convert/settings/cams.py`` for the rationale.
 
@@ -38,7 +38,6 @@ from pathlib import Path
 from typing import Any
 
 import healpix_geo
-import healpy as hp
 import numpy as np
 import requests
 import xarray as xr
@@ -80,15 +79,17 @@ _CHUNK_SIZE = 4 ** (_CHILD_LEVEL - _CHUNK_LEVEL)  # 256
 def _nn_project(
     values: np.ndarray, lon: np.ndarray, lat: np.ndarray, level: int
 ) -> np.ndarray:
-    """Nearest-neighbour binning from regular lat/lon → HEALPix NESTED.
-    Fills the few empty equatorial pixels using HEALPix ring neighbours.
+    """Nearest-neighbour binning from regular lat/lon → HEALPix NESTED (WGS84).
+    Fills the few empty equatorial pixels using their HEALPix neighbours.
     Guaranteed zero NaN output.
     """
-    nside = 2**level
-    n_pix = 12 * nside**2
-    theta = np.deg2rad(90.0 - lat)
-    phi = np.deg2rad(lon % 360.0)
-    pix = hp.ang2pix(nside, theta, phi, nest=True)
+    n_pix = 12 * 4**level
+    pix = healpix_geo.nested.lonlat_to_healpix(
+        np.asarray(lon, dtype=np.float64),
+        np.asarray(lat, dtype=np.float64),
+        level,
+        ellipsoid="WGS84",
+    ).astype(np.int64)
 
     sums = np.zeros(n_pix, np.float64)
     cnts = np.zeros(n_pix, np.int32)
@@ -97,13 +98,16 @@ def _nn_project(
     with np.errstate(invalid="ignore"):
         result = np.where(cnts > 0, sums / cnts, np.nan).astype(np.float32)
 
-    r_ring = hp.reorder(result, n2r=True)
-    for p in np.where(np.isnan(r_ring))[0]:
-        nb = hp.get_all_neighbours(nside, p)
-        v = nb[(nb >= 0) & ~np.isnan(r_ring[nb])]
-        if len(v):
-            r_ring[p] = float(np.nanmean(r_ring[v]))
-    return hp.reorder(r_ring, r2n=True)
+    empty = np.flatnonzero(np.isnan(result))
+    if empty.size:
+        # all 8 neighbours of each empty pixel (-1 where there is none)
+        neighbours = healpix_geo.nested.neighbours(empty.astype(np.uint64), level)
+        for p, nb in zip(empty, neighbours):
+            nb = nb[nb >= 0]
+            v = nb[~np.isnan(result[nb])]
+            if len(v):
+                result[p] = float(np.mean(result[v]))
+    return result
 
 
 @dataclass
