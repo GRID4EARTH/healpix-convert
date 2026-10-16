@@ -49,20 +49,18 @@ from healpix_convert.settings.conventions import MetadataSettings
 log = structlog.get_logger()
 
 
-def _unchanged_array_data(values: np.ndarray) -> dict[str, Any]:
-    """The ``dtype``, ``data`` (and ``fill_value``) arguments of ``zarr.create``
-    for an array written unchanged to the output.
+def _maybe_coerce_str_array_dtype(values: np.ndarray) -> np.ndarray:
+    """Coerce an array of strings to numpy's variable-length string dtype.
 
-    Strings read from a Zarr v2 store may come back as a numpy ``object``
-    array, from which zarr 3 refuses to infer a data type
-    (zarr-developers/zarr-python#3117): they are written as variable-length
-    UTF-8 strings, with ``""`` as fill value. Object arrays that do not hold
-    only strings are passed on unchanged, so that zarr reports them instead of
-    their values being silently turned into text.
+    Strings read from a Zarr v2 store may come back as a numpy ``object`` array,
+    from which zarr 3 refuses to infer a data type
+    (zarr-developers/zarr-python#3117); as ``StringDType`` they are written as
+    zarr ``string`` (variable-length UTF-8). Other arrays, including object
+    arrays that do not hold only strings, are returned unchanged.
     """
     if values.dtype == object and all(isinstance(v, str) for v in values.flat):
-        return {"dtype": str, "data": values.astype(str), "fill_value": ""}
-    return {"dtype": values.dtype, "data": values}
+        return values.astype(np.dtypes.StringDType())
+    return values
 
 
 class ZarrCreateArrayKwargs(TypedDict):
@@ -73,7 +71,6 @@ class ZarrCreateArrayKwargs(TypedDict):
     dimension_names: NotRequired[Iterable[str]]
     codecs: NotRequired[Iterable[dict[str, JSON]] | None]
     attributes: NotRequired[dict[str, JSON] | None]
-    fill_value: NotRequired[Any]
 
 
 class HealpixGroupConverter(ABC):
@@ -280,13 +277,15 @@ class HealpixGroupConverter(ABC):
             else:
                 # write array unchanged in output group
                 # TODO: use dask.array.to_zarr() if var is chunked? (avoid memory blow-up)
+                data = _maybe_coerce_str_array_dtype(var.values)
                 _get_maybe_create_array(
                     str(name),
                     shape=var.shape,
+                    dtype=data.dtype,
+                    data=data,
                     chunks=var.encoding.get("chunks"),
                     dimension_names=[str(d) for d in var.dims],
                     codecs=None,
-                    **_unchanged_array_data(var.values),
                 )
 
         return zarrays
