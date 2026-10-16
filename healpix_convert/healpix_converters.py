@@ -108,6 +108,7 @@ class ZarrCreateArrayKwargs(TypedDict):
     dimension_names: NotRequired[Iterable[str]]
     codecs: NotRequired[Iterable[dict[str, JSON]] | None]
     attributes: NotRequired[dict[str, JSON] | None]
+    fill_value: NotRequired[Any]
 
 
 class HealpixGroupConverter(ABC):
@@ -305,6 +306,11 @@ class HealpixGroupConverter(ABC):
                     get_cf_data_variable_attrs(self.healpix, self.metadata_settings)
                 )
 
+                # cells without data are NaN in a floating output: with zarr's
+                # default fill value (0.0) they would be written as zeros, which
+                # a lossy serializer codes as values next to the real ones
+                fill = {"fill_value": np.nan} if np.dtype(dtype).kind == "f" else {}
+
                 _get_maybe_create_array(
                     str(name),
                     shape=shape,
@@ -313,6 +319,7 @@ class HealpixGroupConverter(ABC):
                     dimension_names=[str(d) for d in dims],
                     codecs=cast(Iterable[dict[str, JSON]], self.settings.codecs),
                     attributes=attributes,
+                    **fill,
                 )
             else:
                 # write array unchanged in output group
