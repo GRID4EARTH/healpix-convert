@@ -9,6 +9,18 @@ authors = [
   { name = "healpix-convert Developers" },
 ]
 readme = "README.md"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Scientific/Engineering :: Atmospheric Science",
+  "Topic :: Scientific/Engineering :: GIS",
+]
 dependencies = [
   "xarray>=2025.11.0",
   "numpy>=2",
@@ -26,6 +38,16 @@ dependencies = [
   "rasterix>=0.1",
   "s3fs>=2026.1.0",
 ]
+
+[project.optional-dependencies]
+cams = ["healpy", "requests"]
+climatedt = ["cfgrib", "destinelab", "polytope-client"]
+era5 = ["cdsapi", "cfgrib"]
+
+[project.urls]
+Repository = "https://github.com/GRID4EARTH/healpix-convert"
+Issues = "https://github.com/GRID4EARTH/healpix-convert/issues"
+Changelog = "https://github.com/GRID4EARTH/healpix-convert/releases"
 
 [dependency-groups]
 dev = [
