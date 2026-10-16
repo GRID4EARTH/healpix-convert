@@ -327,7 +327,9 @@ class HealpixGroupSettings(BaseModel):
     cell. A delta filter before the compressor brings them to almost nothing,
     e.g. ``[{"name": "numcodecs.delta", "configuration": {"dtype": "<u8"}},
     {"name": "bytes"}, {"name": "zstd"}]``; readers then need an implementation
-    of that codec.
+    of that codec. The delta filter is meant for plain cell ids: with
+    ``healpix.compression`` set to ``"compacted"`` or ``"ranges"`` the ids are
+    already compressed and it brings no further gain.
     """
 
     codecs: list[CodecSettings] | None = Field(default=None)
