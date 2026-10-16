@@ -45,6 +45,7 @@ climatedt = ["cfgrib", "destinelab", "polytope-client"]
 era5 = ["cdsapi", "cfgrib"]
 
 [project.urls]
+Documentation = "https://grid4earth.eu/healpix-convert/"
 Repository = "https://github.com/GRID4EARTH/healpix-convert"
 Issues = "https://github.com/GRID4EARTH/healpix-convert/issues"
 Changelog = "https://github.com/GRID4EARTH/healpix-convert/releases"
