@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The CAMS converter's nearest-neighbour method now assigns the input points
+  to cells with healpix-geo on the WGS84 ellipsoid that the output declares,
+  instead of healpy on the sphere. Some points move to a neighbouring cell,
+  and healpy is no longer needed ({pull}`50`).
+- The dependencies of the ERA5, CAMS and ClimateDT converters are the `era5`,
+  `cams` and `climatedt` extras, and the README (the PyPI page) shows how to
+  install from PyPI ({pull}`48`).
 - The variables of a chunk are resampled in one batched call ({pull}`31`) and
   the output arrays of a chunk are written concurrently ({pull}`39`).
 - The group codecs are checked when the settings are created ({pull}`27`).

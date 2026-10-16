@@ -28,13 +28,33 @@ uv add healpix-convert
 
 `healpix-convert` is not available on conda-forge yet.
 
-:::{note}
+### Dataset converters
+
+The ERA5, CAMS and ClimateDT converters need extra packages to download and
+read their input data. Install them with the matching extra:
+
+```bash
+pip install "healpix-convert[era5]"       # cdsapi, cfgrib
+pip install "healpix-convert[cams]"       # requests
+pip install "healpix-convert[climatedt]"  # cfgrib, polytope-client, destinelab
+```
+
+### PyTorch
+
 `healpix-convert` depends on [PyTorch](https://pytorch.org), which the
 resampling methods of
-[healpix-resample](https://grid4earth.eu/healpix-resample/) run on. See
-the [PyTorch installation guide](https://pytorch.org/get-started/locally/) to
-choose a CPU-only or a GPU (CUDA) build.
-:::
+[healpix-resample](https://grid4earth.eu/healpix-resample/) run on. On x86-64
+Linux, pip installs the CUDA build of PyTorch: with its NVIDIA libraries, that
+is about 3 GB to download. For a CPU-only environment, install PyTorch from its
+CPU index first:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install healpix-convert
+```
+
+The [PyTorch installation guide](https://pytorch.org/get-started/locally/)
+lists the other builds.
 
 ## Development install
 
