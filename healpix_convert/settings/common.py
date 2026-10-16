@@ -319,6 +319,17 @@ class HealpixGroupSettings(BaseModel):
     to the output group.
     """
 
+    healpix_coordinate_codecs: list[CodecSettings] | None = Field(default=None)
+    """Zarr codecs of the HEALPix cell ids coordinate (zarr's defaults if None).
+
+    The cell ids of a chunk are sorted, and one contiguous range with
+    ``healpix_cell_dense`` chunks, which zstd alone keeps at about one byte per
+    cell. A delta filter before the compressor brings them to almost nothing,
+    e.g. ``[{"name": "numcodecs.delta", "configuration": {"dtype": "<u8"}},
+    {"name": "bytes"}, {"name": "zstd"}]``; readers then need an implementation
+    of that codec.
+    """
+
     codecs: list[CodecSettings] | None = Field(default=None)
 
     @model_validator(mode="after")

@@ -1,4 +1,4 @@
-"""The cell ids coordinate is delta-coded before zstd (#32)."""
+"""The codecs of the cell ids coordinate are a group setting (#32)."""
 
 from __future__ import annotations
 
@@ -23,49 +23,37 @@ STAC_ITEM = {
     "links": [],
     "assets": {},
 }
+HEALPIX = {"indexing_scheme": "nested", "ellipsoid": {"name": "wgs84"}}
+DELTA = [
+    {"name": "numcodecs.delta", "configuration": {"dtype": "<u8"}},
+    {"name": "bytes", "configuration": {"endian": "little"}},
+    {"name": "zstd", "configuration": {"level": 3, "checksum": False}},
+]
 
 
-def test_cell_ids_are_delta_coded(tmp_path):
-    lon = np.linspace(-1.0, 1.0, 32)
-    lat = np.linspace(-1.0, 1.0, 32)
+def test_cell_ids_codecs(tmp_path):
     ds = xr.Dataset(
         {"t2m": (("lat", "lon"), np.ones((32, 32), dtype="float32"))},
         coords={
-            "lon": (
-                "lon",
-                lon,
-                {"standard_name": "longitude", "units": "degrees_east"},
-            ),
-            "lat": (
-                "lat",
-                lat,
-                {"standard_name": "latitude", "units": "degrees_north"},
-            ),
+            "lon": ("lon", np.linspace(-1.0, 1.0, 32), {"standard_name": "longitude"}),
+            "lat": ("lat", np.linspace(-1.0, 1.0, 32), {"standard_name": "latitude"}),
         },
     )
     tree = xr.DataTree.from_dict({"/measurements": ds})
     tree.attrs["stac_discovery"] = STAC_ITEM
     input_path = str(tmp_path / "input.zarr")
     tree.to_zarr(input_path, mode="w", consolidated=True)
-
     settings = ConvertSettings.model_validate(
         {
             "group_settings": {
                 "measurements": {
-                    "healpix": {
-                        "refinement_level": 8,
-                        "indexing_scheme": "nested",
-                        "ellipsoid": {"name": "wgs84"},
-                    },
+                    "healpix": {"refinement_level": 8, **HEALPIX},
                     "chunk": {
                         "method": "healpix_cell_dense",
-                        "healpix": {
-                            "refinement_level": 5,
-                            "indexing_scheme": "nested",
-                            "ellipsoid": {"name": "wgs84"},
-                        },
+                        "healpix": {"refinement_level": 5, **HEALPIX},
                     },
                     "resampler": {"name": "nearest"},
+                    "healpix_coordinate_codecs": DELTA,
                 }
             }
         }
@@ -75,8 +63,5 @@ def test_cell_ids_are_delta_coded(tmp_path):
 
     cell_ids = zarr.open_group(output_path, mode="r")["measurements/cell_ids"]
     actual = [codec["name"] for codec in cell_ids.metadata.to_dict()["codecs"]]
-    assert actual[0] == "numcodecs.delta"
-
-    # dense chunks: each chunk holds one contiguous range of ids
-    ids = cell_ids[:].reshape(-1, 4 ** (8 - 5))
-    np.testing.assert_array_equal(np.diff(ids, axis=1), 1)
+    assert actual == ["numcodecs.delta", "bytes", "zstd"]
+    np.testing.assert_array_equal(np.diff(cell_ids[:].reshape(-1, 4**3), axis=1), 1)
