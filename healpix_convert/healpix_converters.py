@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from pathlib import PurePath
@@ -16,6 +17,7 @@ import structlog
 import xarray as xr
 import zarr.api.synchronous as zarr
 from zarr.api.asynchronous import JSON
+from zarr.core.sync import sync
 
 import healpix_convert.core.utils as utils
 from healpix_convert.core.conversion_models import (
@@ -47,6 +49,40 @@ from healpix_convert.settings.common import (
 from healpix_convert.settings.conventions import MetadataSettings
 
 log = structlog.get_logger()
+
+
+# at most this many output arrays of a chunk are written at the same time
+MAX_CONCURRENT_WRITES = 8
+
+
+async def _write_all(writes: list[tuple[Any, Any, np.ndarray]]) -> None:
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_WRITES)
+
+    async def write(zarray, key, value):
+        async with semaphore:
+            await zarray.async_array.setitem(key, value)
+
+    # gather re-raises the first exception of a failed write
+    await asyncio.gather(*(write(*w) for w in writes))
+
+
+def _write_chunk_arrays(writes: list[tuple[Any, Any, np.ndarray]]) -> None:
+    """Write the output arrays of one chunk, concurrently.
+
+    Each write encodes one chunk of one array. The writes run together on zarr's
+    event loop, and zarr runs the encodings that leave the loop (e.g. ``zstd``,
+    or any codec using ``asyncio.to_thread``) in worker threads, so the
+    variables of a chunk are encoded in parallel instead of one after the other.
+
+    Parameters
+    ----------
+    writes : list of (zarr.Array, key, numpy.ndarray)
+        Each array, the selection to write and the values.
+    """
+    # zarr.core.sync.sync is not public API, but it is what zarr's synchronous
+    # API runs on (and xarray uses it too): it runs the coroutine on zarr's own
+    # event loop thread, also from a Jupyter cell, where a loop already runs
+    sync(_write_all(writes))
 
 
 def _maybe_coerce_str_array_dtype(values: np.ndarray) -> np.ndarray:
@@ -755,6 +791,7 @@ class DenseChunkConverter(UniformChunkConverter):
         )
 
         log.debug(f"resample {len(var_names)} arrays")
+        writes = []
         for name in var_names:
             var = ds_input_points.variables[name]
 
@@ -795,7 +832,11 @@ class DenseChunkConverter(UniformChunkConverter):
             if len(extra_dims) > 1:
                 cell_data = cell_data.reshape(tuple(extra_dim_sizes + [cell_ids.size]))
 
-            zarray[..., chunk_slice] = cell_data.astype(cell_data.dtype)
+            writes.append(
+                (zarray, (..., chunk_slice), cell_data.astype(cell_data.dtype))
+            )
+
+        _write_chunk_arrays(writes)
 
 
 class SparseChunkConverter(UniformChunkConverter):
@@ -873,6 +914,7 @@ class SparseChunkConverter(UniformChunkConverter):
         )
 
         log.debug(f"resample {len(var_names)} arrays")
+        writes = []
         for name in var_names:
             var = ds_input_points.variables[name]
 
@@ -901,7 +943,9 @@ class SparseChunkConverter(UniformChunkConverter):
                 cell_data = res.cell_data
 
             zarray = self.output_arrays[str(name)]
-            zarray[..., chunk_slice] = cell_data.astype(var.dtype)
+            writes.append((zarray, (..., chunk_slice), cell_data.astype(var.dtype)))
+
+        _write_chunk_arrays(writes)
 
         del resampler
 
