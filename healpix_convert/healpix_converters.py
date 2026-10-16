@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import PurePath
 from typing import Any, NotRequired, TypedDict, Unpack, cast
 
@@ -17,6 +17,7 @@ import structlog
 import xarray as xr
 import zarr.api.synchronous as zarr
 from zarr.api.asynchronous import JSON
+from zarr.core.sync import sync
 
 import healpix_convert.core.utils as utils
 from healpix_convert.core.conversion_models import (
@@ -54,33 +55,34 @@ log = structlog.get_logger()
 MAX_CONCURRENT_WRITES = 8
 
 
+async def _write_all(writes: list[tuple[Any, Any, np.ndarray]]) -> None:
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_WRITES)
+
+    async def write(zarray, key, value):
+        async with semaphore:
+            await zarray.async_array.setitem(key, value)
+
+    # gather re-raises the first exception of a failed write
+    await asyncio.gather(*(write(*w) for w in writes))
+
+
 def _write_chunk_arrays(writes: list[tuple[Any, Any, np.ndarray]]) -> None:
     """Write the output arrays of one chunk, concurrently.
 
-    Each write encodes one chunk of one array. zarr runs the encodings that leave
-    its event loop (e.g. ``zstd``, or any codec using ``asyncio.to_thread``) in
-    worker threads, so the variables of a chunk are then encoded in parallel
-    instead of one after the other.
+    Each write encodes one chunk of one array. The writes run together on zarr's
+    event loop, and zarr runs the encodings that leave the loop (e.g. ``zstd``,
+    or any codec using ``asyncio.to_thread``) in worker threads, so the
+    variables of a chunk are encoded in parallel instead of one after the other.
 
     Parameters
     ----------
     writes : list of (zarr.Array, key, numpy.ndarray)
         Each array, the selection to write and the values.
     """
-    if len(writes) <= 1:
-        for zarray, key, value in writes:
-            zarray[key] = value
-        return
-
-    def write(item):
-        zarray, key, value = item
-        zarray[key] = value
-
-    with ThreadPoolExecutor(
-        max_workers=min(len(writes), MAX_CONCURRENT_WRITES)
-    ) as pool:
-        # list() re-raises the first exception of a failed write
-        list(pool.map(write, writes))
+    # zarr.core.sync.sync is not public API, but it is what zarr's synchronous
+    # API runs on (and xarray uses it too): it runs the coroutine on zarr's own
+    # event loop thread, also from a Jupyter cell, where a loop already runs
+    sync(_write_all(writes))
 
 
 class ZarrCreateArrayKwargs(TypedDict):

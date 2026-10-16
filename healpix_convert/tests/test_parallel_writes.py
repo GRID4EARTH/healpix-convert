@@ -1,6 +1,6 @@
 """The output arrays of a chunk are written concurrently."""
 
-import threading
+import asyncio
 
 import numpy as np
 import pytest
@@ -9,20 +9,29 @@ import zarr
 from healpix_convert.healpix_converters import _write_chunk_arrays
 
 
+class _AsyncArray:
+    def __init__(self, setitem):
+        self.setitem = setitem
+
+
 class BarrierArray:
     """Stands for an output array: each write waits until all the writes have started."""
 
     def __init__(self, barrier):
         self.barrier = barrier
         self.written = None
+        self.async_array = _AsyncArray(self._setitem)
 
-    def __setitem__(self, key, value):
-        self.barrier.wait(timeout=5)
+    async def _setitem(self, key, value):
+        await asyncio.wait_for(self.barrier.wait(), timeout=5)
         self.written = (key, value)
 
 
 class FailingArray:
-    def __setitem__(self, key, value):
+    def __init__(self):
+        self.async_array = _AsyncArray(self._setitem)
+
+    async def _setitem(self, key, value):
         raise OSError("disk full")
 
 
@@ -46,8 +55,8 @@ class TestWriteChunkArrays:
 
     def test_concurrent(self):
         # every write blocks until all of them have started: this only completes
-        # when the writes run at the same time (a sequential loop times out)
-        barrier = threading.Barrier(4)
+        # when the writes run at the same time (one after the other times out)
+        barrier = asyncio.Barrier(4)
         arrays = [BarrierArray(barrier) for _ in range(4)]
 
         _write_chunk_arrays([(a, i, np.zeros(1)) for i, a in enumerate(arrays)])
