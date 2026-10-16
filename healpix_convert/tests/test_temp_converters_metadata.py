@@ -42,7 +42,7 @@ def _init_era5_zarr(path, metadata) -> str:
 
 
 def _init_cams_zarr(path, metadata) -> str:
-    pytest.importorskip("healpy")
+    pytest.importorskip("requests")
 
     from healpix_convert.converters.cams import CAMSConverter
 
