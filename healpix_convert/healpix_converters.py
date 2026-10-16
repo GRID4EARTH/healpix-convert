@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from collections.abc import Iterable
 from pathlib import PurePath
 from typing import Any, NotRequired, TypedDict, Unpack, cast
@@ -374,6 +375,69 @@ class HealpixGroupConverter(ABC):
 
         """
         ...
+
+
+def _resample_variables(
+    resampler,
+    ds_input_points: xr.Dataset,
+    var_names: list[str],
+    resample_params: dict,
+    chunk_cell_ids: np.ndarray | None = None,
+) -> dict[str, np.ndarray]:
+    """Resample the data variables of a chunk, with one resampler call per group of
+    variables that share the same resample parameters.
+
+    All the variables of a chunk are resampled from the same input points, so
+    one call can resample several of them: each variable is flattened into an
+    array of shape ``(n_slices, n_points)``, one slice per combination of its
+    non-spatial dimensions (a single slice when it has none), and the slices of
+    the variables of a group are concatenated along the first axis. For the PSF
+    resampler, the conjugate gradient then runs once per group instead of once
+    per variable.
+
+    Returns, per variable, the resampled values with the non-spatial dimensions
+    first and the cell dimension last. With ``chunk_cell_ids`` (dense chunks)
+    they are given on those cells, NaN where the resampler returned no value;
+    otherwise on the resampler's own cells.
+    """
+    slices: dict[str, tuple[tuple[int, ...], np.ndarray]] = {}
+    for name in var_names:
+        var = ds_input_points.variables[name]
+        assert "points" in var.dims
+        extra_dims = [d for d in var.dims if d != "points"]
+        values = var.transpose(*extra_dims, "points").values.astype("f")
+        shape = tuple(var.sizes[d] for d in extra_dims)
+        slices[name] = (shape, values.reshape(-1, values.shape[-1]))
+
+    groups: defaultdict[str, list[str]] = defaultdict(list)
+    for name in var_names:
+        groups[repr(sorted(resample_params[name].items()))].append(name)
+
+    results = {}
+    for names in groups.values():
+        stacked = np.concatenate([slices[name][1] for name in names], axis=0)
+        res = resampler.resample(stacked, **resample_params[names[0]])
+        cell_ids = np.asarray(res.cell_ids)
+        cell_data = np.asarray(res.cell_data).reshape(stacked.shape[0], -1)
+
+        if chunk_cell_ids is not None:
+            # assume nested indexing scheme -> chunk cell ids is a range
+            in_chunk = (cell_ids >= chunk_cell_ids[0]) & (
+                cell_ids <= chunk_cell_ids[-1]
+            )
+            positions = (cell_ids[in_chunk] - chunk_cell_ids[0]).astype("int")
+            dense = np.full((stacked.shape[0], chunk_cell_ids.size), np.nan)
+            dense[:, positions] = cell_data[:, in_chunk]
+            cell_data = dense
+
+        start = 0
+        for name in names:
+            shape, values = slices[name]
+            stop = start + values.shape[0]
+            results[name] = cell_data[start:stop].reshape(*shape, cell_data.shape[1])
+            start = stop
+
+    return results
 
 
 _RESAMPLER_NAME_CLS: dict[str, type] = {
@@ -791,47 +855,19 @@ class DenseChunkConverter(UniformChunkConverter):
         )
 
         log.debug(f"resample {len(var_names)} arrays")
+        resampled = _resample_variables(
+            resampler,
+            ds_input_points,
+            var_names,
+            resample_params,
+            chunk_cell_ids=cell_ids,
+        )
+        
         writes = []
-        for name in var_names:
-            var = ds_input_points.variables[name]
-
-            assert "points" in var.dims
-            extra_dims = [d for d in var.dims if d != "points"]
-            extra_dim_sizes = [var.sizes[d] for d in extra_dims]
-
-            # make sure the "points" core dimension is moved to the last axis
-            # maybe stack non-spatial dimensions, to pass to `.resample()` as a single "batch" dimension
-            if extra_dims:
-                if len(extra_dims) == 1:
-                    var = var.transpose(extra_dims[0], "points")
-                else:
-                    var = var.stack(batch=extra_dims).transpose("batch", "points")
-
-                cell_data_shape = (var.shape[0], cell_ids.size)
-            else:
-                cell_data_shape = (cell_ids.size,)
-
-            # initialize cell data to nodata (TODO: get the right fill_value and dtype)
-            # index/fill the array below with data values returned by the resampler
-            cell_data = np.full(cell_data_shape, np.nan)
-
-            data = var.values.astype("f")
-
-            res = resampler.resample(data, **resample_params[name])
-
-            zarray = self.output_arrays[str(name)]
-
-            # assume nested indexing scheme -> chunk cell ids is a range
-            in_chunk = (res.cell_ids >= cell_ids[0]) & (res.cell_ids <= cell_ids[-1])
-            res_indices = (res.cell_ids - cell_ids[0]).astype("int")
-
-            cell_data[..., res_indices[in_chunk]] = res.cell_data[..., in_chunk]
-            cell_data[..., np.isnan(cell_data)] = zarray.fill_value
-
-            # maybe unstack non-spatial dimensions from the resampled batch dimension
-            if len(extra_dims) > 1:
-                cell_data = cell_data.reshape(tuple(extra_dim_sizes + [cell_ids.size]))
-
+        for name, cell_data in resampled.items():
+            zarray = self.output_arrays[name]
+            # cells without data (TODO: get the right fill_value and dtype)
+            cell_data[np.isnan(cell_data)] = zarray.fill_value
             writes.append(
                 (zarray, (..., chunk_slice), cell_data.astype(cell_data.dtype))
             )
@@ -914,34 +950,13 @@ class SparseChunkConverter(UniformChunkConverter):
         )
 
         log.debug(f"resample {len(var_names)} arrays")
+        resampled = _resample_variables(
+            resampler, ds_input_points, var_names, resample_params
+        )
+        
         writes = []
-        for name in var_names:
-            var = ds_input_points.variables[name]
-
-            assert "points" in var.dims
-            extra_dims = [d for d in var.dims if d != "points"]
-            extra_dim_sizes = [var.sizes[d] for d in extra_dims]
-
-            # make sure the "points" core dimension is moved to the last axis
-            # maybe stack non-spatial dimensions, to pass to `.resample()` as a single "batch" dimension
-            if extra_dims:
-                if len(extra_dims) == 1:
-                    var = var.transpose(extra_dims[0], "points")
-                else:
-                    var = var.stack(batch=extra_dims).transpose("batch", "points")
-
-            data = var.values.astype("f")
-
-            res = resampler.resample(data, **resample_params[name])
-
-            # maybe unstack non-spatial dimensions from the resampled batch dimension
-            if len(extra_dims) > 1:
-                cell_data = res.cell_data.reshape(
-                    tuple(extra_dim_sizes + [cell_ids.size])
-                )
-            else:
-                cell_data = res.cell_data
-
+        for name, cell_data in resampled.items():
+            dtype = ds_input_points.variables[name].dtype
             zarray = self.output_arrays[str(name)]
             writes.append((zarray, (..., chunk_slice), cell_data.astype(var.dtype)))
 
