@@ -43,9 +43,9 @@ $ python -m pip install "healpix-convert[climatedt]"  # cfgrib, polytope-client,
 ```
 
 healpix-convert depends on PyTorch (through healpix-resample). On x86-64 Linux,
-pip installs the CUDA build of PyTorch, which pulls several GB of NVIDIA
-libraries. For a CPU-only environment, install PyTorch from its CPU index
-first:
+pip installs the CUDA build of PyTorch: with its NVIDIA libraries, that is
+about 3 GB to download. For a CPU-only environment, install PyTorch from its
+CPU index first:
 
 ```sh
 $ python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
