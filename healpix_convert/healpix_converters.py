@@ -85,6 +85,20 @@ def _write_chunk_arrays(writes: list[tuple[Any, Any, np.ndarray]]) -> None:
     sync(_write_all(writes))
 
 
+def _maybe_coerce_str_array_dtype(values: np.ndarray) -> np.ndarray:
+    """Coerce an array of strings to numpy's variable-length string dtype.
+
+    Strings read from a Zarr v2 store may come back as a numpy ``object`` array,
+    from which zarr 3 refuses to infer a data type
+    (zarr-developers/zarr-python#3117); as ``StringDType`` they are written as
+    zarr ``string`` (variable-length UTF-8). Other arrays, including object
+    arrays that do not hold only strings, are returned unchanged.
+    """
+    if values.dtype == object and all(isinstance(v, str) for v in values.flat):
+        return values.astype(np.dtypes.StringDType())
+    return values
+
+
 class ZarrCreateArrayKwargs(TypedDict):
     shape: tuple[int, ...]
     dtype: npt.DTypeLike | str
@@ -299,11 +313,12 @@ class HealpixGroupConverter(ABC):
             else:
                 # write array unchanged in output group
                 # TODO: use dask.array.to_zarr() if var is chunked? (avoid memory blow-up)
+                data = _maybe_coerce_str_array_dtype(var.values)
                 _get_maybe_create_array(
                     str(name),
                     shape=var.shape,
-                    dtype=var.dtype,
-                    data=var.values,
+                    dtype=data.dtype,
+                    data=data,
                     chunks=var.encoding.get("chunks"),
                     dimension_names=[str(d) for d in var.dims],
                     codecs=None,
