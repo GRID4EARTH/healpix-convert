@@ -10,6 +10,8 @@ new Zarr dataset compliant with the DGGS Zarr and CF-Healpix conventions.
 
 **Note: this repository is currently under heavy development. API is not stable yet.**
 
+Documentation: <https://grid4earth.eu/healpix-convert/>
+
 ## Supported data products
 
 - ERA5
@@ -80,4 +82,5 @@ $ pixi install -e dev
 
 ## Basic usage
 
-See examples in the `notebooks` folder.
+See the [quickstart](https://grid4earth.eu/healpix-convert/tutorials/quickstart.html)
+in the documentation, and the examples in the `notebooks` folder.
