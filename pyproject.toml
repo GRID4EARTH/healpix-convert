@@ -1,7 +1,7 @@
 [project]
 name = "healpix-convert"
 requires-python = ">= 3.11"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 dynamic = ["version"]
 description = "Convert datasets into the HEALPix-based DGGS format"
 keywords = ["healpix"]
@@ -62,11 +62,11 @@ dev = [
 ]
 
 [build-system]
-requires = ["setuptools>=64.0", "setuptools-scm"]
+requires = ["setuptools>=77.0", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["healpix_convert"]
+[tool.setuptools.packages.find]
+include = ["healpix_convert*"]
 
 [tool.setuptools_scm]
 fallback_version = "999"
