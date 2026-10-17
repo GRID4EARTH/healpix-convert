@@ -21,6 +21,9 @@ import numpy as np
 import structlog
 import zarr
 from zarr.codecs import BytesCodec
+from zarr.core.buffer import default_buffer_prototype
+from zarr.core.sync import sync
+from zarr.registry import get_codec_class
 
 from healpix_convert.core.healpix_conventions import DGGSZarrConvention, Healpix
 from healpix_convert.core.multiscales_conventions import (
@@ -36,6 +39,11 @@ STAC_RESAMPLING_PROPERTY = "multires:resampling_method"
 
 #: Cells read at once from an input array (when larger than its chunks).
 _READ_SIZE = 1 << 20
+
+#: Lossless counterpart of a lossy serializer, for ``lossless_derived_levels``:
+#: same scaling, so the derived levels keep the digital-number lattice.
+_LOSSLESS_SERIALIZERS = {"hcc-sentinel2-pyramid": "hcc-sentinel2"}
+_LOSSLESS_KEYS = ("quantification_value", "add_offset", "effort")
 
 
 class _Block:
@@ -246,6 +254,216 @@ class _LevelWriter:
         return self.size
 
 
+def _same_encoding(a: zarr.Array, b: zarr.Array) -> bool:
+    """Whether a stored chunk of ``a`` decodes to the same values in ``b``."""
+    da, db = a.metadata.to_dict(), b.metadata.to_dict()
+    keys = ("data_type", "fill_value", "codecs", "chunk_grid", "chunk_key_encoding")
+    return all(da.get(k) == db.get(k) for k in keys)
+
+
+def _copy_stored_chunk(src: zarr.Array, k: int, dst: zarr.Array, j: int) -> None:
+    """Copy chunk ``k`` of ``src`` to chunk ``j`` of ``dst`` as stored, without
+    decoding it (an absent chunk, i.e. all fill value, stays absent)."""
+    key = f"{src.path}/{src.metadata.encode_chunk_key((k,))}"
+    data = sync(src.store.get(key, prototype=default_buffer_prototype()))
+    if data is not None:
+        sync(dst.store.set(f"{dst.path}/{dst.metadata.encode_chunk_key((j,))}", data))
+
+
+class _DenseLevelWriter:
+    """Appends the cells and variables of one output level group in
+    parent-aligned dense chunks: each chunk holds the ``4 ** depth`` cells of
+    one cell at level ``level - depth``, in nested order, with the fill value
+    where there is no data. Serializers that code a chunk as the raster of one
+    parent cell (``healpix_cell_dense`` chunks, e.g. the Sentinel-2
+    serializers of healpix-compress) need this layout.
+
+    A variable whose values at this level are those of an input array with the
+    same chunks and the same encoding (``raw_sources``: a native level) has its
+    chunks copied as stored, without decoding and re-encoding them, so that a
+    lossy serializer does not add its error a second time.
+
+    In a floating variable, the cells without data are written as NaN rather
+    than as the fill value: the Sentinel-2 serializers carry NaN as no data
+    (a validity mask), while a fill value such as ``0.0`` would be coded as a
+    value next to the real ones, come back as a slightly different value, and
+    widen the quantisation step of the chunk."""
+
+    def __init__(
+        self,
+        group: zarr.Group,
+        coordinate: str,
+        templates: dict[str, zarr.Array],
+        attrs: dict[str, dict],
+        depth: int,
+        raw_sources: dict[str, tuple[zarr.Array, zarr.Array]],
+        serializers: dict[str, Any] | None = None,
+    ):
+        self.n = 4**depth
+        self.shift = 2 * depth
+        self.coordinate = coordinate
+        self.names = [coordinate, *[n for n in templates if n != coordinate]]
+        self.fill_values = {}
+        self.arrays = {}
+        for name in self.names:
+            template = templates[name]
+            self.fill_values[name] = template.fill_value
+            self.arrays[name] = group.create_array(
+                name,
+                shape=(0,),
+                chunks=(self.n,),
+                dtype=template.dtype,
+                fill_value=template.fill_value,
+                serializer=(serializers or {}).get(name, template.serializer),
+                compressors=template.compressors,
+                filters=template.filters,
+                dimension_names=template.metadata.dimension_names,
+                attributes=attrs[name],
+            )
+        # stored chunks to copy: input array, and input chunk index per chunk id
+        self.raw: dict[str, tuple[zarr.Array, dict[int, int]]] = {}
+        index_cache: dict[str, dict[int, int]] = {}
+        for name, (source, source_cells) in raw_sources.items():
+            if not _same_encoding(source, self.arrays[name]):
+                continue
+            key = str(source_cells.store_path)
+            if key not in index_cache:
+                firsts = np.asarray(source_cells[:: self.n], dtype=np.uint64)
+                index_cache[key] = {
+                    int(c) >> self.shift: k for k, c in enumerate(firsts.tolist())
+                }
+            self.raw[name] = (source, index_cache[key])
+        self.current: int | None = None
+        self.buffers: dict[str, np.ndarray] = {}
+        self.size = 0
+
+    def _no_data(self, name: str) -> Any:
+        dtype = self.arrays[name].dtype
+        return np.nan if np.issubdtype(dtype, np.floating) else self.fill_values[name]
+
+    def _start(self, chunk_id: int):
+        self.current = chunk_id
+        self.buffers = {
+            name: np.full(self.n, self._no_data(name), dtype=self.arrays[name].dtype)
+            for name in self.names[1:]
+        }
+
+    def _flush(self):
+        if self.current is None:
+            return
+        start, stop = self.size, self.size + self.n
+        j = self.size // self.n
+        for array in self.arrays.values():
+            array.resize((stop,))
+        first = np.uint64(self.current) << np.uint64(self.shift)
+        self.arrays[self.coordinate][start:stop] = first + np.arange(
+            self.n, dtype=np.uint64
+        )
+        for name in self.names[1:]:
+            raw = self.raw.get(name)
+            if raw is not None and self.current in raw[1]:
+                _copy_stored_chunk(raw[0], raw[1][self.current], self.arrays[name], j)
+            elif not np.all(_fill_mask(self.buffers[name], self._no_data(name))):
+                # a chunk without data is not written (it reads as the fill value)
+                self.arrays[name][start:stop] = self.buffers[name]
+        self.size = stop
+        self.current = None
+
+    def append(self, block: _Block):
+        if not len(block.cells):
+            return
+        ids = block.cells >> np.uint64(self.shift)
+        starts = np.flatnonzero(np.r_[True, ids[1:] != ids[:-1]])
+        for s, e in zip(starts, np.r_[starts[1:], len(ids)]):
+            chunk_id = int(ids[s])
+            if chunk_id != self.current:
+                self._flush()
+                self._start(chunk_id)
+            first = np.uint64(chunk_id) << np.uint64(self.shift)
+            pos = (block.cells[s:e] - first).astype(np.int64)
+            for name in self.names[1:]:
+                v = block.values.get(name)
+                if v is None:
+                    continue
+                v = v[s:e]
+                fill = self.fill_values[name]
+                if np.issubdtype(v.dtype, np.floating) and not _same_fill(fill, np.nan):
+                    v = np.where(_fill_mask(v, fill), np.nan, v)
+                self.buffers[name][pos] = v
+
+    def close(self) -> int:
+        self._flush()
+        return self.size
+
+
+def _dense_chunk_level(native: dict[int, zarr.Group], coordinate: str) -> int | None:
+    """The level of the cells that the input chunks hold one each of, when every
+    native level is written in parent-aligned dense chunks (``healpix_cell_dense``),
+    else None. Checked on the chunk sizes and on the first chunk of cell ids."""
+    chunk_levels = set()
+    for level, group in native.items():
+        cells = group[coordinate]
+        n = cells.chunks[0]
+        depth = int(round(np.log(n) / np.log(4)))
+        if 4**depth != n or depth > level:
+            return None
+        if any(a.chunks != cells.chunks for _, a in group.arrays() if a.ndim == 1):
+            return None
+        first = np.asarray(cells[: min(n, cells.shape[0])], dtype=np.uint64)
+        if len(first) != n or int(first[0]) % n or np.any(np.diff(first) != 1):
+            return None
+        chunk_levels.add(level - depth)
+    return chunk_levels.pop() if len(chunk_levels) == 1 else None
+
+
+def _extent_level(native: dict[int, zarr.Group], coordinate: str) -> int | None:
+    """The finest level at which one cell holds every input cell (e.g., 7 for
+    the store of one level-7 parent cell), else None. Read from the first and
+    the last cell id of each native level (dense chunks: full, sorted ranges)."""
+    bounds = []
+    for level, group in native.items():
+        cells = group[coordinate]
+        if cells.shape[0]:
+            bounds.append((level, int(cells[0]), int(cells[cells.shape[0] - 1])))
+    if not bounds:
+        return None
+    for q in range(min(level for level, _, _ in bounds), -1, -1):
+        ancestors = {c >> 2 * (level - q) for level, *ends in bounds for c in ends}
+        if len(ancestors) == 1:
+            return q
+    return None
+
+
+def _serializer_name(serializer: Any) -> str:
+    return serializer.to_dict()["name"]
+
+
+def _lossless_serializer(serializer: Any) -> Any:
+    """The lossless counterpart of a lossy serializer, with the same scaling
+    (``_LOSSLESS_SERIALIZERS``); a lossless serializer is returned as is."""
+    spec = serializer.to_dict()
+    target = _LOSSLESS_SERIALIZERS.get(spec["name"])
+    if target is None:
+        return serializer
+    configuration = {
+        k: v for k, v in spec.get("configuration", {}).items() if k in _LOSSLESS_KEYS
+    }
+    codec_class = get_codec_class(target)
+    return codec_class.from_dict({"name": target, "configuration": configuration})
+
+
+def _codec_tag(derived_serializers: dict[str, str]) -> str:
+    """The codec part of the method tag, from the serializers of the derived
+    levels: ``-hcc`` when one of them is a lossy healpix-compress serializer,
+    ``-hcc-lossless`` when they are all lossless ones, else nothing."""
+    names = set(derived_serializers.values())
+    if names & set(_LOSSLESS_SERIALIZERS):
+        return "-hcc"
+    if any(name.startswith("hcc-") for name in names):
+        return "-hcc-lossless"
+    return ""
+
+
 def _native_level_groups(group: zarr.Group) -> dict[int, zarr.Group]:
     """Children of ``group`` named after their HEALPix refinement level."""
     levels = {}
@@ -370,20 +588,42 @@ def _categorical_variables(native: dict[int, zarr.Group]) -> list[str]:
     return found
 
 
-def _check_serializers(path: str, native: dict[int, zarr.Group]) -> None:
-    """The output chunks hold a fixed number of cells, which at the derived
-    levels is not one parent cell per chunk even when the input is written
-    with ``healpix_cell_dense`` chunks: a serializer that relies on dense
-    chunks (e.g., the healpix-compress codecs) cannot be carried over."""
-    for level, group in native.items():
-        for name, array in group.arrays():
-            if not isinstance(array.serializer, BytesCodec):
-                raise NotImplementedError(
-                    f"{path}/{level}/{name} is written with the "
-                    f"{array.serializer.__class__.__name__} serializer; only the "
-                    "default bytes serializer is supported, as the derived levels "
-                    "are not chunked by parent cell"
-                )
+def _check_serializers(
+    path: str, native: dict[int, zarr.Group], dense_chunks: bool | None
+) -> bool:
+    """Whether the group is written in parent-aligned dense chunks.
+
+    A serializer other than the default bytes one may code a chunk as the
+    raster of one parent cell (e.g., the Sentinel-2 serializers of
+    healpix-compress), so it can only be carried over to dense output chunks,
+    which need an input written in ``healpix_cell_dense`` chunks."""
+    special = [
+        (level, name, array.serializer.__class__.__name__)
+        for level, group in native.items()
+        for name, array in group.arrays()
+        if not isinstance(array.serializer, BytesCodec)
+    ]
+    dense = bool(special) if dense_chunks is None else dense_chunks
+    if special and not dense:
+        level, name, serializer = special[0]
+        raise NotImplementedError(
+            f"{path}/{level}/{name} is written with the {serializer} serializer, "
+            "which needs dense output chunks (dense_chunks=False was given)"
+        )
+    if dense:
+        coordinate = native[max(native)].attrs["dggs"].get("coordinate", "cell_ids")
+        if _dense_chunk_level(native, coordinate) is None:
+            what = (
+                f"{special[0][0]}/{special[0][1]} is written with the "
+                f"{special[0][2]} serializer"
+                if special
+                else "dense_chunks=True was given"
+            )
+            raise NotImplementedError(
+                f"{path}: {what}, which needs dense output chunks, but the input "
+                "is not written in parent-aligned dense (healpix_cell_dense) chunks"
+            )
+    return dense
 
 
 def _resolve_groups(root: zarr.Group, groups: str | Sequence[str] | None) -> list[str]:
@@ -407,13 +647,20 @@ def _resolve_groups(root: zarr.Group, groups: str | Sequence[str] | None) -> lis
 
 
 def _check_inputs(
-    root: zarr.Group, group_paths: list[str], *, min_level: int, explicit: bool
-) -> dict[str, frozenset[str]]:
+    root: zarr.Group,
+    group_paths: list[str],
+    *,
+    min_level: int,
+    explicit: bool,
+    dense_chunks: bool | None = None,
+) -> tuple[dict[str, frozenset[str]], dict[str, bool]]:
     """Everything that can go wrong before the output is created. Returns the
     groups to process with, for each, the categorical variables to leave out
-    (a group with nothing else is left out as a whole)."""
+    (a group with nothing else is left out as a whole), and whether each is
+    written in dense chunks."""
     tops: dict[str, int] = {}
     skip: dict[str, frozenset[str]] = {}
+    dense: dict[str, bool] = {}
     for path in group_paths:
         native = _native_level_groups(root[path])
         if min_level > min(native):
@@ -421,7 +668,7 @@ def _check_inputs(
                 f"group {path!r}: min_level {min_level} is finer than the "
                 f"coarsest native level {min(native)}"
             )
-        _check_serializers(path, native)
+        dense[path] = _check_serializers(path, native, dense_chunks)
         cell_vars = {
             name
             for level in native
@@ -451,7 +698,7 @@ def _check_inputs(
             f"the processed groups have different finest native levels ({tops}); "
             "process them into separate datasets"
         )
-    return skip
+    return skip, {path: dense[path] for path in skip}
 
 
 def _block_level(native: dict[int, zarr.Group], coordinate: str, min_level: int) -> int:
@@ -480,6 +727,8 @@ def _build_group(
     chunk_size: int | None,
     overwrite_resampled: bool,
     skip: frozenset[str] = frozenset(),
+    dense: bool = False,
+    lossless_derived_levels: bool = False,
 ) -> dict[str, Any]:
     native = _native_level_groups(in_group)
     top = max(native)
@@ -532,6 +781,31 @@ def _build_group(
     coordinate_template = native[top][coordinate]
     if chunk_size is None:
         chunk_size = coordinate_template.chunks[0]
+    derived_serializers: dict[str, Any] = {}
+    if dense:
+        # a native level keeps the input's chunks (one cell of the input chunk
+        # level each); a derived level has chunks of the same level, or of the
+        # smallest input chunk size when that would make them smaller, and never
+        # larger than the cell that holds all the input (e.g., the store of one
+        # level-7 parent cell keeps its level 12 inside that cell)
+        chunk_level = _dense_chunk_level(native, coordinate)
+        min_depth = min(level - chunk_level for level in native)
+        extent_level = _extent_level(native, coordinate)
+
+        def depth_at(level: int) -> int:
+            depth = max(level - chunk_level, min_depth)
+            if extent_level is not None:
+                depth = min(depth, max(level - extent_level, 0))
+            return depth
+
+        # the derived levels take the serializer of the finest level, or its
+        # lossless counterpart with ``lossless_derived_levels``
+        derived_serializers = {
+            name: _lossless_serializer(t.serializer)
+            if lossless_derived_levels
+            else t.serializer
+            for name, t in templates.items()
+        }
 
     readers = {
         level: _LevelReader(
@@ -576,13 +850,29 @@ def _build_group(
                 **dict(native[origin[level][name]][name].attrs),
                 "native_refinement_level": origin[level][name],
             }
-        writers[level] = _LevelWriter(
-            level_group,
-            coordinate,
-            {coordinate: coordinate_template, **{n: templates[n] for n in names}},
-            attrs,
-            chunk_size,
-        )
+        level_templates = {
+            coordinate: coordinate_template,
+            **{n: templates[n] for n in names},
+        }
+        if dense:
+            raw_sources = {
+                n: (native[level][n], native[level][coordinate])
+                for n in names
+                if level in native and origin[level][n] == level
+            }
+            writers[level] = _DenseLevelWriter(
+                level_group,
+                coordinate,
+                level_templates,
+                attrs,
+                depth_at(level),
+                raw_sources,
+                {n: derived_serializers[n] for n in names if origin[level][n] != level},
+            )
+        else:
+            writers[level] = _LevelWriter(
+                level_group, coordinate, level_templates, attrs, chunk_size
+            )
 
         entry: dict[str, Any] = {"asset": str(level), "dggs": dggs}
         if level < top:
@@ -616,7 +906,13 @@ def _build_group(
     for level, size in sizes.items():
         log.info(f"level {level}: {size} cells")
 
-    tag = f"{method}-l{top}-l{min_level}"
+    # names of the serializers of the derived levels, of the variables that have any
+    derived_names = {
+        name: _serializer_name(derived_serializers[name])
+        for name in derived_serializers
+        if any(origin[level].get(name, level) != level for level in origin)
+    }
+    tag = f"{method}-l{top}-l{min_level}{_codec_tag(derived_names)}"
     group_attrs = {
         k: v
         for k, v in in_group.attrs.items()
@@ -638,6 +934,8 @@ def _build_group(
             },
         }
     )
+    if derived_names:
+        group_attrs["derived_serializers"] = derived_names
     if resampled:
         group_attrs["resampled_copies"] = {
             "levels": {str(level): names for level, names in resampled.items()},
@@ -656,6 +954,8 @@ def create_multires_dataset(
     method: Literal["mean"] = "mean",
     chunk_size: int | None = None,
     overwrite_resampled: bool = False,
+    dense_chunks: bool | None = None,
+    lossless_derived_levels: bool = False,
     input_storage_options: dict[str, Any] | None = None,
     output_storage_options: dict[str, Any] | None = None,
 ) -> str:
@@ -708,9 +1008,26 @@ def create_multires_dataset(
     variable). The inputs are checked (levels, ``min_level``, serializers,
     categorical variables) before the output is created.
 
-    Only the default Zarr (bytes) serializer is supported: the derived levels
-    are chunked by a fixed number of cells, not by parent cell, so codecs that
-    rely on ``healpix_cell_dense`` chunks cannot be carried over.
+    By default the output chunks hold a fixed number of cells. An input written
+    with a serializer other than the default bytes one (e.g., the Sentinel-2
+    serializers of healpix-compress, which code a chunk as the raster of one
+    parent cell) is written in parent-aligned dense chunks instead, with the
+    serializer of each variable's finest level: each chunk holds all the
+    cells of one parent cell, with the fill value where there is no data. This
+    needs an input written in ``healpix_cell_dense`` chunks. The native levels
+    keep the input's chunks, and the variables copied unchanged there have
+    their chunks copied as stored (not decoded and re-encoded, so that a lossy
+    serializer does not add its error twice); a derived level has chunks of the
+    same parent level, or of the smallest input chunk size when that would make
+    them smaller, and never larger than the cell that holds all the input (so
+    that the store of one parent cell writes no cell outside it). The derived
+    levels take the serializer of the variable's finest level, which may be
+    lossy (``hcc-sentinel2-pyramid``): their values are then the block means
+    plus the serializer's error. ``lossless_derived_levels=True`` writes them
+    with the lossless counterpart instead (``hcc-sentinel2``, same scaling).
+    The group records the serializers of the derived levels in
+    ``derived_serializers``, and the method tag ends with ``-hcc`` (lossy) or
+    ``-hcc-lossless`` when they are healpix-compress serializers.
 
     Parameters
     ----------
@@ -733,18 +1050,29 @@ def create_multires_dataset(
         given, and raise an error when their group is explicitly requested.
     chunk_size : int, optional
         Number of cells per output chunk. Defaults to the chunk size of the
-        cell ids of the finest native level.
+        cell ids of the finest native level. Not used with dense chunks.
     overwrite_resampled : bool, optional
         If True, ignore the copies of a variable stored at a coarser level than
         its finest one, and derive those levels with ``method`` instead
         (default: False, the copies are kept).
+    dense_chunks : bool, optional
+        Write parent-aligned dense chunks (see above). By default (None), only
+        when the input uses a serializer other than the default bytes one.
+    lossless_derived_levels : bool, optional
+        With dense chunks, write the derived levels with the lossless
+        counterpart of a lossy serializer (``hcc-sentinel2`` for
+        ``hcc-sentinel2-pyramid``, same ``quantification_value`` and
+        ``add_offset``), so that their values are the block means rounded to
+        the digital-number lattice. Default: False, the serializer of the
+        finest level, as for the native levels.
     input_storage_options, output_storage_options : dict, optional
         Storage options passed to Zarr (useful for, e.g., S3 object stores).
 
     Returns
     -------
     str
-        The method tag, e.g. ``"mean-l20-l12"``.
+        The method tag, e.g. ``"mean-l20-l12"``, or ``"mean-l20-l12-hcc"``
+        when the derived levels use a lossy healpix-compress serializer.
 
     """
     if method != "mean":
@@ -756,10 +1084,16 @@ def create_multires_dataset(
     group_paths = _resolve_groups(in_root, groups)
     if not group_paths:
         raise ValueError(f"no group with HEALPix level child groups in {input_path!r}")
-    skip = _check_inputs(
-        in_root, group_paths, min_level=min_level, explicit=groups is not None
+    skip, dense = _check_inputs(
+        in_root,
+        group_paths,
+        min_level=min_level,
+        explicit=groups is not None,
+        dense_chunks=dense_chunks,
     )
     group_paths = list(skip)
+    if chunk_size is not None and any(dense.values()):
+        raise ValueError("chunk_size cannot be set with dense chunks")
 
     out_root = zarr.open_group(
         output_path, mode="w-", zarr_format=3, storage_options=output_storage_options
@@ -784,8 +1118,15 @@ def create_multires_dataset(
             chunk_size=chunk_size,
             overwrite_resampled=overwrite_resampled,
             skip=skip[path],
+            dense=dense[path],
+            lossless_derived_levels=lossless_derived_levels,
         )
         tags.add(result["tag"])
+    if len(tags) > 1:
+        raise ValueError(
+            f"the processed groups give different method tags ({sorted(tags)}); "
+            "process them into separate datasets"
+        )
     (tag,) = tags
 
     root_attrs = copy.deepcopy(dict(in_root.attrs))
