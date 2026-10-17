@@ -12,16 +12,29 @@ import shapely
 import xarray as xr
 
 
-def open_datatrees(paths: list[str], chunks: dict | None = None) -> list[xr.DataTree]:
-    """Open input Zarr datasets as "raw" xarray.DataTree objects.
+def open_datatrees(
+    paths: list[Any],
+    chunks: dict | None = None,
+    storage_options: dict[str, Any] | None = None,
+    consolidated: bool | None = None,
+) -> list[xr.DataTree]:
+    """Open Zarr datasets, given as paths or stores, as "raw" xarray.DataTree
+    objects.
 
     Fast-version (disable most decoding and index creation).
+
+    ``consolidated`` is passed to Zarr: by default the consolidated metadata of
+    the dataset is read if it has any. Pass False for a dataset that is being
+    written, whose consolidated metadata (if any) is not up to date yet.
+
     """
     return [
         xr.open_datatree(
             path,
             engine="zarr",
             chunks=chunks,
+            storage_options=storage_options,
+            consolidated=consolidated,
             decode_cf=True,
             decode_times=False,
             decode_timedelta=False,

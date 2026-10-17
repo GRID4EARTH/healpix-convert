@@ -65,6 +65,11 @@ def _collect_keys(mappings: Iterable[StacItem]):
     )
 
 
+def format_stac_item_id(output_path: str) -> str:
+    """Build the STAC item id of an output dataset from its path."""
+    return re.sub("[^a-zA-Z0-9-]", "_", PurePath(output_path).stem)
+
+
 def merge_stac_items(
     items: dict[str, StacItem],
     spatial_info: OutputSpatialInfo,
@@ -73,7 +78,7 @@ def merge_stac_items(
     if len(items) == 0:
         raise ValueError("no STAC metadata found")
 
-    item_id = re.sub("[^a-zA-Z0-9-]", "_", PurePath(output_path).stem)
+    item_id = format_stac_item_id(output_path)
 
     # special-case properties, links, assets
     merge_strategies = {

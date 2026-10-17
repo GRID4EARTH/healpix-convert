@@ -55,6 +55,30 @@ Chunk buffer
   Width added around a chunk cell when selecting the input data points to
   resample onto the cells of that chunk.
 
+Multiscale group
+  A group of the input Zarr dataset(s) holding several children "scale" groups,
+  each converted at its own HEALPix refinement level (see
+  `multiscale_settings` in {doc}`user-guide/settings`).
+
+Pyramid multiscale group
+  A group of the output Zarr dataset holding the levels converted from the
+  input data (native levels) and the coarser levels generated from them
+  (pyramid levels). It is the converted multiscale group itself, or a sibling
+  of it. See {py:func}`~healpix_convert.generate_pyramids`.
+
+Pyramid level group
+  A group of a pyramid multiscale group holding one generated level, named
+  after its refinement level, sibling of the native level groups.
+
+Native level
+  A refinement level of a multiscale group that is converted from the input
+  data, as opposed to the coarser levels generated from it.
+
+Parent cell
+  The HEALPix cell of a coarser refinement level that contains a given cell
+  (its ancestor in the *nested* scheme). Each cell of a generated level of a
+  pyramid aggregates all the converted cells it is the ancestor of.
+
 Resampler
   The method that computes the values of the output HEALPix cells from the
   input data points (nearest, bilinear, k-nearest neighbors, PSF, cell-point),

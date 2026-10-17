@@ -29,6 +29,7 @@ from healpix_convert.healpix_converters import (
     HealpixGroupConverter,
     init_converter,
 )
+from healpix_convert.pyramid import create_pyramid_groups, write_pyramid_levels
 from healpix_convert.settings.common import (
     ConvertSettings,
     validate_convert_settings,
@@ -197,6 +198,19 @@ def _create_and_process_output(
                 "(not yet supported)"
             )
 
+    # --- pyramid groups (the coarser levels of the multiscale groups)
+    if settings.multiscale_settings.pyramid_groups:
+        log.info("••• creating pyramid groups...")
+        create_pyramid_groups(output_store, cache, settings)
+
+        if convert_data:
+            write_pyramid_levels(
+                output_store,
+                cache,
+                settings,
+                output_storage_options=output_storage_options,
+            )
+
     # --- consolidate Zarr metadata
     log.info("••• consolidating output Zarr metadata...")
     zarr.consolidate_metadata(output_store)
@@ -230,6 +244,10 @@ def prepare_healpix_dataset(
     All output groups and arrays are created along with their metadata. Arrays
     having a HEALPix cell dimension are still empty.
 
+    The groups of the generated levels of the pyramids and the multiscales
+    metadata describing them are created as well; their arrays are written by
+    :py:func:`generate_pyramids`.
+
     Useful for multi-stage conversion workflows:
 
     - Use :py:func:`create_staging_cache` first to create the conversion
@@ -237,6 +255,8 @@ def prepare_healpix_dataset(
     - Use :py:func:`convert_group_to_healpix` later (maybe multiple times)
       to resample data on HEALPix and write it to the output dataset
       (fill arrays with data values).
+    - Use :py:func:`generate_pyramids` last to aggregate the converted data
+      onto the coarser levels of the pyramids.
 
     Parameters
     ----------
@@ -345,6 +365,79 @@ def convert_group_to_healpix(
         chunk_indices=chunk_indices,
         resources=resources,
         load_input_data=load_input_data,
+    )
+
+
+def generate_pyramids(
+    cache: ConvertStagingCache,
+    settings: dict | ConvertSettings,
+    output_path: str,
+    *,
+    output_storage_options: dict[str, Any] | None = None,
+) -> xr.DataTree:
+    """Aggregate the converted data onto the coarser HEALPix refinement levels
+    of the pyramids.
+
+    Run it once the data has been converted. It writes the arrays of the
+    pyramid groups that :py:func:`prepare_healpix_dataset` has created, one
+    group per generated refinement level of each multiscale group with pyramid
+    settings (``pyramid_groups``, see
+    :py:attr:`~healpix_convert.ConvertSettings.multiscale_settings`). It does
+    nothing if no group has pyramid settings.
+
+    Parameters
+    ----------
+    cache : :py:class:`ConvertStagingCache`
+        A data cache containing information extracted from the input dataset(s)
+        and/or pre-computed for the output dataset, as returned by
+        :py:func:`create_staging_cache` for the same ``settings``.
+    settings : dict or object
+        Healpix conversion settings.
+    output_path : str
+        Path to the converted HEALPix output Zarr dataset, updated in place.
+    output_storage_options : dict, optional
+        Storage options passed to Zarr for reading the converted dataset and
+        writing the pyramids (useful for, e.g., writing on S3 object store).
+
+    Returns
+    -------
+    :py:class:`xarray.DataTree`
+        The output Zarr dataset with the pyramids, returned as an Xarray
+        DataTree object.
+
+    See Also
+    --------
+    create_staging_cache
+    prepare_healpix_dataset
+    convert_group_to_healpix
+
+    """
+    log.info("••• reading conversion settings...")
+    settings = validate_convert_settings(settings)
+
+    if not settings.multiscale_settings.pyramid_groups:
+        log.info("••• no group with pyramid settings: nothing to generate.")
+    else:
+        root_group = zarr.open_group(
+            output_path, mode="a", storage_options=output_storage_options
+        )
+        write_pyramid_levels(
+            root_group.store,
+            cache,
+            settings,
+            output_storage_options=output_storage_options,
+        )
+
+        log.info("••• consolidating output Zarr metadata...")
+        zarr.consolidate_metadata(root_group.store)
+
+        log.info("••• done!")
+
+    return xr.open_datatree(
+        output_path,
+        storage_options=output_storage_options,
+        engine="zarr",
+        chunks="auto",
     )
 
 
