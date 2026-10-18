@@ -78,7 +78,8 @@ HEALPix grid mapping):
 
 The attributes of the input variables (`units`, `long_name`, etc.) are copied
 to the resampled variables, except the ones matching the `exclude_attrs`
-patterns of the group's `metadata` settings (see {doc}`settings`).
+patterns of the group's `metadata` settings, and the ones set by its
+`override_attrs` patterns (see {doc}`settings`).
 
 ## STAC metadata
 

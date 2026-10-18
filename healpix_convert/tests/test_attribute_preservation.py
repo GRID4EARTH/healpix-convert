@@ -58,14 +58,22 @@ def _input(tmp_path, *, packed: bool, extra_attrs: dict | None = None):
     return str(path)
 
 
-def _settings(exclude_attrs: list[str] | None = None):
+def _settings(
+    exclude_attrs: list[str] | None = None,
+    override_attrs: dict[str, dict] | None = None,
+):
     group_settings: dict = {
         "healpix": {"refinement_level": 4, "indexing_scheme": "nested"},
         "chunk": {"method": "no_chunk"},
         "resampler": {"name": "nearest"},
     }
+    metadata: dict = {}
     if exclude_attrs is not None:
-        group_settings["metadata"] = {"exclude_attrs": exclude_attrs}
+        metadata["exclude_attrs"] = exclude_attrs
+    if override_attrs is not None:
+        metadata["override_attrs"] = override_attrs
+    if metadata:
+        group_settings["metadata"] = metadata
 
     return ConvertSettings.model_validate(
         {"group_settings": {"measurements": group_settings}}
@@ -162,3 +170,62 @@ def test_excluded_attributes_do_not_drop_our_own(tmp_path) -> None:
 
     assert attrs["grid_mapping"] == "crs"
     assert "long_name" not in attrs
+
+
+def test_overridden_attributes_are_written(tmp_path) -> None:
+    # the input units describe the packed values, not the unpacked output
+    settings = _settings(override_attrs={"radiance": {"units": "1"}})
+
+    attrs = _convert(tmp_path, settings, packed=True)["radiance"].attrs
+
+    assert attrs["units"] == "1"
+    # the rest of the input description is untouched
+    assert attrs["standard_name"] == BAND_ATTRS["standard_name"]
+    assert attrs["long_name"] == BAND_ATTRS["long_name"]
+
+
+def test_overridden_attributes_accept_patterns(tmp_path) -> None:
+    settings = _settings(override_attrs={"radi.*": {"units": "1"}})
+
+    attrs = _convert(tmp_path, settings, packed=False)["radiance"].attrs
+
+    assert attrs["units"] == "1"
+
+
+def test_overridden_attributes_add_new_ones(tmp_path) -> None:
+    # an override may also write an attribute the input does not have
+    settings = _settings(override_attrs={"radiance": {"comment": "resampled"}})
+
+    attrs = _convert(tmp_path, settings, packed=False)["radiance"].attrs
+
+    assert attrs["comment"] == "resampled"
+    for key, value in BAND_ATTRS.items():
+        assert attrs[key] == value
+
+
+def test_overridden_attributes_beat_exclusion(tmp_path) -> None:
+    # excluding leaves the variable without units: the preset needs a value
+    settings = _settings(
+        exclude_attrs=["units"], override_attrs={"radiance": {"units": "1"}}
+    )
+
+    attrs = _convert(tmp_path, settings, packed=False)["radiance"].attrs
+
+    assert attrs["units"] == "1"
+
+
+def test_overridden_attributes_do_not_beat_our_own(tmp_path) -> None:
+    # the CF attributes describing the HEALPix output keep precedence
+    settings = _settings(override_attrs={"radiance": {"grid_mapping": "nonsense"}})
+
+    attrs = _convert(tmp_path, settings, packed=False)["radiance"].attrs
+
+    assert attrs["grid_mapping"] == "crs"
+
+
+def test_overridden_attributes_only_match_their_variable(tmp_path) -> None:
+    settings = _settings(override_attrs={"reflectance": {"units": "1"}})
+
+    attrs = _convert(tmp_path, settings, packed=False)["radiance"].attrs
+
+    assert attrs["units"] == BAND_ATTRS["units"]

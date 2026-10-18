@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The attributes of the output variables can be set from the group settings
+  (`metadata.override_attrs`), and not only excluded ({issue}`36`).
 - The CAMS converter's nearest-neighbour method now assigns the input points
   to cells with healpix-geo on the WGS84 ellipsoid that the output declares,
   instead of healpy on the sphere. Some points move to a neighbouring cell,
