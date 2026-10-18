@@ -1,0 +1,637 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/GRID4EARTH/healpix-convert/main/convert-settings.schema.json",
+  "$defs": {
+    "BilinearResamplerSettings": {
+      "description": "Settings for resampling data onto HEALPix using bilinear (k=4) interpolation.",
+      "properties": {
+        "init_params": {
+          "additionalProperties": true,
+          "description": "Parameters passed to the resampler constructor.",
+          "title": "Init Params",
+          "type": "object"
+        },
+        "resample_params": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {}
+            ]
+          },
+          "description": "Parameters passed to the resampler's `resample()` method.\n\nParameter values may be given either like:\n- a common value used for all arrays (data variables) in the group\n- a value for each array in the group (dictionary where keys are\n  variable names)",
+          "title": "Resample Params",
+          "type": "object"
+        },
+        "name": {
+          "const": "bilinear",
+          "default": "bilinear",
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "title": "BilinearResamplerSettings",
+      "type": "object"
+    },
+    "CFConfiguration": {
+      "additionalProperties": false,
+      "description": "Configuration of the CF conventions.",
+      "properties": {
+        "healpix_grid_mapping": {
+          "default": true,
+          "description": "If True, emit the CF HEALPix grid mapping (CF 1.13+) in each HEALPix group.",
+          "title": "Healpix Grid Mapping",
+          "type": "boolean"
+        }
+      },
+      "title": "CFConfiguration",
+      "type": "object"
+    },
+    "CFConventionSelector": {
+      "additionalProperties": false,
+      "description": "Select the CF conventions.\n\nSee https://cfconventions.org",
+      "properties": {
+        "name": {
+          "const": "cf",
+          "default": "cf",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "default": "1.13",
+          "description": "Version of the CF conventions followed by the output dataset.\n\nMust be :py:obj:`CF_MIN_VERSION` or newer (the default).",
+          "title": "Version",
+          "type": "string"
+        },
+        "configuration": {
+          "$ref": "#/$defs/CFConfiguration"
+        }
+      },
+      "title": "CFConventionSelector",
+      "type": "object"
+    },
+    "CellPointResamplerSettings": {
+      "description": "Settings for resampling data as HEALPix \"cell-points\" (i.e., cells with maximum\nrefinement level 29).",
+      "properties": {
+        "init_params": {
+          "additionalProperties": true,
+          "description": "Parameters passed to the resampler constructor.",
+          "title": "Init Params",
+          "type": "object"
+        },
+        "resample_params": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {}
+            ]
+          },
+          "description": "Parameters passed to the resampler's `resample()` method.\n\nParameter values may be given either like:\n- a common value used for all arrays (data variables) in the group\n- a value for each array in the group (dictionary where keys are\n  variable names)",
+          "title": "Resample Params",
+          "type": "object"
+        },
+        "name": {
+          "const": "cell-point",
+          "default": "cell-point",
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "title": "CellPointResamplerSettings",
+      "type": "object"
+    },
+    "CodecSettings": {
+      "description": "Settings for a single Zarr codec.\n\nThis class follows Zarr's codec (extension) metadata model.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "configuration": {
+          "additionalProperties": true,
+          "title": "Configuration",
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "configuration"
+      ],
+      "title": "CodecSettings",
+      "type": "object"
+    },
+    "ConventionConfiguration": {
+      "additionalProperties": false,
+      "description": "Base class for the configuration (options) of a convention.\n\nConventions that define no option are configured by this class, which\naccepts none.",
+      "properties": {},
+      "title": "ConventionConfiguration",
+      "type": "object"
+    },
+    "DGGSConventionSelector": {
+      "additionalProperties": false,
+      "description": "Select the DGGS Zarr convention.\n\nSee https://github.com/zarr-conventions/dggs",
+      "properties": {
+        "name": {
+          "const": "dggs",
+          "default": "dggs",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "description": "Version of the convention followed by the output dataset.",
+          "title": "Version",
+          "type": "string"
+        },
+        "configuration": {
+          "$ref": "#/$defs/ConventionConfiguration",
+          "description": "Options of the convention."
+        }
+      },
+      "title": "DGGSConventionSelector",
+      "type": "object"
+    },
+    "Healpix": {
+      "description": "HEALPix grid.\n\nCompliant with the DGGS Zarr convention.",
+      "properties": {
+        "name": {
+          "const": "healpix",
+          "default": "healpix",
+          "title": "Name",
+          "type": "string"
+        },
+        "refinement_level": {
+          "anyOf": [
+            {
+              "maximum": 29,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "HEALPix refinement level (must be defined for \"nested\" and \"ring\" indexing schemes).",
+          "title": "Refinement Level"
+        },
+        "indexing_scheme": {
+          "default": "nested",
+          "description": "HEALPix indexing scheme.",
+          "enum": [
+            "nested",
+            "ring",
+            "zuniq"
+          ],
+          "title": "Indexing Scheme",
+          "type": "string"
+        },
+        "ellipsoid": {
+          "$ref": "#/$defs/WGS84Ellipsoid",
+          "description": "Reference system of the DGGS (if not given, a sphere is assumed)."
+        },
+        "spatial_dimension": {
+          "default": "cells",
+          "description": "Name of the spatial dimension",
+          "title": "Spatial Dimension",
+          "type": "string"
+        },
+        "coordinate": {
+          "default": "cell_ids",
+          "description": "Points to the array containing the cell ids (optional for homogeneous full-earth coverage).",
+          "title": "Coordinate",
+          "type": "string"
+        },
+        "compression": {
+          "default": "none",
+          "description": "Cell id compression method.",
+          "enum": [
+            "none",
+            "compacted",
+            "ranges"
+          ],
+          "title": "Compression",
+          "type": "string"
+        }
+      },
+      "required": [
+        "refinement_level"
+      ],
+      "title": "Healpix",
+      "type": "object"
+    },
+    "HealpixDenseChunkSettings": {
+      "description": "Chunk output data along the HEALPix cell dimension according to\nHEALPix cells given at a parent, \"coarse\" refinement level (dense version).\n\nEach of those \"chunk\" cells are densely populated with adjacent children\nHEALPix cells all at the same \"fine\" refinement level.\n\nChunk size is thus fixed and is given by the following formula:\n\n.. math:: 4^{(\\Delta - \\delta)}\n\nwhere :math:`\\Delta` is the parent level (output chunks) and :math:`\\delta` is\nthe child level (output data values).\n\nThis chunking strategy works only with the \"nested\" HEALPIX cell indexing scheme.",
+      "properties": {
+        "method": {
+          "const": "healpix_cell_dense",
+          "default": "healpix_cell_dense",
+          "title": "Method",
+          "type": "string"
+        },
+        "healpix": {
+          "$ref": "#/$defs/Healpix"
+        },
+        "chunk_buffer_width": {
+          "default": 60.0,
+          "title": "Chunk Buffer Width",
+          "type": "number"
+        }
+      },
+      "required": [
+        "healpix"
+      ],
+      "title": "HealpixDenseChunkSettings",
+      "type": "object"
+    },
+    "HealpixGroupSettings": {
+      "description": "Settings for converting a single Zarr group onto HEALPix.",
+      "properties": {
+        "healpix": {
+          "$ref": "#/$defs/Healpix",
+          "description": "Output HEALPix grid settings."
+        },
+        "chunk": {
+          "description": "Settings for chunking data along the HEALPix cell dimension.",
+          "discriminator": {
+            "mapping": {
+              "healpix_cell_dense": "#/$defs/HealpixDenseChunkSettings",
+              "healpix_cell_sparse": "#/$defs/HealpixSparseChunkSettings",
+              "no_chunk": "#/$defs/NoChunkSettings"
+            },
+            "propertyName": "method"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/NoChunkSettings"
+            },
+            {
+              "$ref": "#/$defs/HealpixDenseChunkSettings"
+            },
+            {
+              "$ref": "#/$defs/HealpixSparseChunkSettings"
+            }
+          ],
+          "title": "Chunk"
+        },
+        "resampler": {
+          "description": "Resampling method name and settings.",
+          "discriminator": {
+            "mapping": {
+              "bilinear": "#/$defs/BilinearResamplerSettings",
+              "cell-point": "#/$defs/CellPointResamplerSettings",
+              "k-nearest": "#/$defs/KNearestNeighborsResamplerSettings",
+              "nearest": "#/$defs/NearestResamplerSettings",
+              "psf": "#/$defs/PSFResamplerSettings"
+            },
+            "propertyName": "name"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/KNearestNeighborsResamplerSettings"
+            },
+            {
+              "$ref": "#/$defs/NearestResamplerSettings"
+            },
+            {
+              "$ref": "#/$defs/BilinearResamplerSettings"
+            },
+            {
+              "$ref": "#/$defs/PSFResamplerSettings"
+            },
+            {
+              "$ref": "#/$defs/CellPointResamplerSettings"
+            }
+          ],
+          "title": "Resampler"
+        },
+        "metadata": {
+          "$ref": "#/$defs/InputMetadataSettings",
+          "description": "Settings for the metadata read from the input dataset(s) and propagated\nto the output group."
+        },
+        "healpix_coordinate_codecs": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodecSettings"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Zarr codecs of the HEALPix cell ids coordinate (zarr's defaults if None).\n\nThe cell ids of a chunk are sorted, and one contiguous range with\n``healpix_cell_dense`` chunks, which zstd alone keeps at about one byte per\ncell. A delta filter before the compressor brings them to almost nothing,\ne.g. ``[{\"name\": \"numcodecs.delta\", \"configuration\": {\"dtype\": \"<u8\"}},\n{\"name\": \"bytes\"}, {\"name\": \"zstd\"}]``; readers then need an implementation\nof that codec. The delta filter is meant for plain cell ids: with\n``healpix.compression`` set to ``\"compacted\"`` or ``\"ranges\"`` the ids are\nalready compressed and it brings no further gain.",
+          "title": "Healpix Coordinate Codecs"
+        },
+        "codecs": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodecSettings"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Zarr codecs of the group's resampled data variables (other arrays use\nzarr's defaults).\n\nEach codec is looked up by name in zarr's codec registry, so the package\nthat provides it must be installed where the settings are created, e.g.\n``healpix-compress`` for ``hcc-sentinel2-pyramid``.",
+          "title": "Codecs"
+        }
+      },
+      "required": [
+        "healpix",
+        "chunk",
+        "resampler"
+      ],
+      "title": "HealpixGroupSettings",
+      "type": "object"
+    },
+    "HealpixSparseChunkSettings": {
+      "description": "Chunk output data along the HEALPix cell dimension according to\nHEALPix cells given at a parent, \"coarse\" refinement level (sparse version).\n\nEach of those \"chunk\" cells are populated with sparsely distributed children\nHEALPix cells given at a \"fine\" refinement level.\n\nChunk size is user defined. There's no strict constraint on the minimum\nsize, which should be large enough such that a parent \"chunk\" cell can\ncontain all output data values (children cells). If all children cells are\nat the same refinement level, the maximum size is given by the following\nformula:\n\n.. math:: 4^{(\\Delta - \\delta)}\n\nwhere :math:`\\Delta` is the parent level (output chunks) and :math:`\\delta` is\nthe child level (output data values).\n\nThis chunking strategy works only with the \"nested\" HEALPIX cell indexing scheme.",
+      "properties": {
+        "method": {
+          "const": "healpix_cell_sparse",
+          "default": "healpix_cell_sparse",
+          "title": "Method",
+          "type": "string"
+        },
+        "healpix": {
+          "$ref": "#/$defs/Healpix"
+        },
+        "chunk_size": {
+          "title": "Chunk Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "healpix",
+        "chunk_size"
+      ],
+      "title": "HealpixSparseChunkSettings",
+      "type": "object"
+    },
+    "InputMetadataSettings": {
+      "additionalProperties": false,
+      "description": "Settings for the metadata read from the input dataset(s).",
+      "properties": {
+        "exclude_attrs": {
+          "description": "Names of the input dataset attributes that must not be propagated to the output.\n\nEach item is either the exact name of an attribute or a regular expression\nmatched against the whole attribute name (e.g., ``\"history.*\"`` excludes both\n``\"history\"`` and ``\"history_of_appended_files\"``).",
+          "items": {
+            "type": "string"
+          },
+          "title": "Exclude Attrs",
+          "type": "array"
+        }
+      },
+      "title": "InputMetadataSettings",
+      "type": "object"
+    },
+    "KNearestNeighborsResamplerSettings": {
+      "description": "Settings for resampling data onto HEALPix using k-nearest neighbor interpolation.",
+      "properties": {
+        "init_params": {
+          "additionalProperties": true,
+          "description": "Parameters passed to the resampler constructor.",
+          "title": "Init Params",
+          "type": "object"
+        },
+        "resample_params": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {}
+            ]
+          },
+          "description": "Parameters passed to the resampler's `resample()` method.\n\nParameter values may be given either like:\n- a common value used for all arrays (data variables) in the group\n- a value for each array in the group (dictionary where keys are\n  variable names)",
+          "title": "Resample Params",
+          "type": "object"
+        },
+        "name": {
+          "const": "k-nearest",
+          "default": "k-nearest",
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "title": "KNearestNeighborsResamplerSettings",
+      "type": "object"
+    },
+    "MetadataSettings": {
+      "additionalProperties": false,
+      "description": "Settings for the metadata written in the output Zarr dataset.",
+      "properties": {
+        "zarr_conventions": {
+          "description": "Conventions followed by the output Zarr dataset.\n\nEach item is either a convention name (e.g., ``\"dggs\"``) or a mapping with\na ``name`` and, optionally, a ``version`` and a ``configuration``\n(see :py:obj:`ConventionSelector`).",
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "cf": "#/$defs/CFConventionSelector",
+                "dggs": "#/$defs/DGGSConventionSelector",
+                "multiscales": "#/$defs/MultiscalesConventionSelector"
+              },
+              "propertyName": "name"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/DGGSConventionSelector"
+              },
+              {
+                "$ref": "#/$defs/MultiscalesConventionSelector"
+              },
+              {
+                "$ref": "#/$defs/CFConventionSelector"
+              }
+            ]
+          },
+          "title": "Zarr Conventions",
+          "type": "array"
+        }
+      },
+      "title": "MetadataSettings",
+      "type": "object"
+    },
+    "MultiscaleSettings": {
+      "description": "Settings for a multiscale Zarr groups.",
+      "properties": {
+        "groups": {
+          "description": "List of all multiscale groups in input dataset(s).\n\nEach Zarr group must contain children groups with defined\nHEALPix conversion settings.\n\nThe metadata that will be added to the corresponding ouput group\nis compliant with the \"multiscales\" Zarr convention.",
+          "items": {
+            "format": "path",
+            "type": "string"
+          },
+          "title": "Groups",
+          "type": "array"
+        },
+        "add_healpix_positioning": {
+          "default": true,
+          "description": "If True, add HEALPix grid settings as absolute positioning\ninformation in each multiscale layout entry.",
+          "title": "Add Healpix Positioning",
+          "type": "boolean"
+        }
+      },
+      "title": "MultiscaleSettings",
+      "type": "object"
+    },
+    "MultiscalesConventionSelector": {
+      "additionalProperties": false,
+      "description": "Select the Multiscales Zarr convention.\n\nSee https://github.com/zarr-conventions/multiscales",
+      "properties": {
+        "name": {
+          "const": "multiscales",
+          "default": "multiscales",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "description": "Version of the convention followed by the output dataset.",
+          "title": "Version",
+          "type": "string"
+        },
+        "configuration": {
+          "$ref": "#/$defs/ConventionConfiguration",
+          "description": "Options of the convention."
+        }
+      },
+      "title": "MultiscalesConventionSelector",
+      "type": "object"
+    },
+    "NearestResamplerSettings": {
+      "description": "Settings for resampling data onto HEALPix using nearest neighbor (k=1) interpolation.",
+      "properties": {
+        "init_params": {
+          "additionalProperties": true,
+          "description": "Parameters passed to the resampler constructor.",
+          "title": "Init Params",
+          "type": "object"
+        },
+        "resample_params": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {}
+            ]
+          },
+          "description": "Parameters passed to the resampler's `resample()` method.\n\nParameter values may be given either like:\n- a common value used for all arrays (data variables) in the group\n- a value for each array in the group (dictionary where keys are\n  variable names)",
+          "title": "Resample Params",
+          "type": "object"
+        },
+        "name": {
+          "const": "nearest",
+          "default": "nearest",
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "title": "NearestResamplerSettings",
+      "type": "object"
+    },
+    "NoChunkSettings": {
+      "description": "Do not chunk output data along the HEALPix cell dimension.",
+      "properties": {
+        "method": {
+          "const": "no_chunk",
+          "default": "no_chunk",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "title": "NoChunkSettings",
+      "type": "object"
+    },
+    "PSFResamplerSettings": {
+      "description": "Settings for resampling data onto HEALPix using PSF interpolation.",
+      "properties": {
+        "init_params": {
+          "additionalProperties": true,
+          "description": "Parameters passed to the resampler constructor.",
+          "title": "Init Params",
+          "type": "object"
+        },
+        "resample_params": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {}
+            ]
+          },
+          "description": "Parameters passed to the resampler's `resample()` method.\n\nParameter values may be given either like:\n- a common value used for all arrays (data variables) in the group\n- a value for each array in the group (dictionary where keys are\n  variable names)",
+          "title": "Resample Params",
+          "type": "object"
+        },
+        "name": {
+          "const": "psf",
+          "default": "psf",
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "title": "PSFResamplerSettings",
+      "type": "object"
+    },
+    "WGS84Ellipsoid": {
+      "description": "Singleton model defining the WGS84 ellipsoid.\n\nCompliant with the DGGS Zarr convention.",
+      "properties": {
+        "name": {
+          "const": "WGS84",
+          "default": "WGS84",
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "title": "WGS84Ellipsoid",
+      "type": "object"
+    }
+  },
+  "description": "General settings for converting input Zarr dataset(s) onto HEALPix.",
+  "properties": {
+    "exclude_groups": {
+      "description": "Groups to exclude from the conversion (won't be included in output).",
+      "items": {
+        "format": "path",
+        "type": "string"
+      },
+      "title": "Exclude Groups",
+      "type": "array"
+    },
+    "metadata": {
+      "$ref": "#/$defs/MetadataSettings",
+      "description": "Settings for the metadata (conventions) written in the output dataset."
+    },
+    "multiscale_settings": {
+      "$ref": "#/$defs/MultiscaleSettings",
+      "description": "Settings for multiscale Zarr groups."
+    },
+    "group_settings": {
+      "additionalProperties": {
+        "$ref": "#/$defs/HealpixGroupSettings"
+      },
+      "description": "Conversion settings per group in the input Zarr dataset(s).",
+      "propertyNames": {
+        "format": "path"
+      },
+      "title": "Group Settings",
+      "type": "object"
+    }
+  },
+  "required": [
+    "group_settings"
+  ],
+  "title": "ConvertSettings",
+  "type": "object"
+}

@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from healpix_convert.core.json_schema import convert_settings_schema_url
+
 if TYPE_CHECKING:
     # only for the annotation: `core` must not depend on `settings` at runtime
     from healpix_convert.settings.common import ConvertSettings
@@ -59,9 +61,6 @@ STAC_PROCESSING_SCHEMA_URL = (
 #: Libraries whose versions are worth recording: the converter itself and the
 #: resampling engine that decides the actual data values.
 PROVENANCE_PACKAGES = ("healpix-convert", "healpix-resample")
-
-#: `format` of the processing:expression object holding the conversion settings.
-SETTINGS_EXPRESSION_FORMAT = "healpix-convert/convert-settings"
 
 
 def _package_versions() -> dict[str, str]:
@@ -120,13 +119,17 @@ def format_stac_processing(
     if processing_datetime is None:
         processing_datetime = datetime.now(UTC)
 
+    versions = _package_versions()
+
     properties: dict[str, Any] = {
         "processing:datetime": processing_datetime.isoformat(),
-        "processing:software": _package_versions(),
+        "processing:software": versions,
         # the settings are what make two outputs of one input differ, so they
         # are recorded rather than summarised
         "processing:expression": {
-            "format": SETTINGS_EXPRESSION_FORMAT,
+            # the schema of the recorded version, not the latest one: the
+            # settings may not validate against the schema of a later version
+            "format": convert_settings_schema_url(versions.get("healpix-convert")),
             "expression": settings.to_dict(),
         },
     }
