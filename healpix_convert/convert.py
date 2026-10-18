@@ -135,6 +135,16 @@ def _create_and_process_output(
         stac_metadata, cache.output_spatial, output_path
     )
 
+    # applied on the propagated metadata only: what is written below describes
+    # the conversion itself and must survive the settings
+    stac_settings = settings.metadata.stac
+    merged_stac_metadata.properties = stac_settings.filter_props(
+        merged_stac_metadata.properties
+    )
+    merged_stac_metadata.stac_extensions = stac_settings.filter_extensions(
+        merged_stac_metadata.stac_extensions
+    )
+
     # record how this output was produced: without the settings, two outputs
     # resampled from the same input by different methods are indistinguishable
     input_paths = sorted(str(path) for path in cache.input_datatrees)
@@ -143,6 +153,7 @@ def _create_and_process_output(
             settings,
             input_ids=sorted(item.id for item in stac_metadata.values()),
             input_paths=input_paths,
+            include_conversion_settings=stac_settings.include_conversion_settings,
         )
     )
     merged_stac_metadata.links.extend(format_stac_derived_links(input_paths))

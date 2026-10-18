@@ -464,6 +464,10 @@
           },
           "title": "Zarr Conventions",
           "type": "array"
+        },
+        "stac": {
+          "$ref": "#/$defs/STACSettings",
+          "description": "Settings for the STAC metadata written in the root group of the output\ndataset (see :py:class:`~healpix_convert.settings.stac.STACSettings`)."
         }
       },
       "title": "MetadataSettings",
@@ -591,6 +595,50 @@
         }
       },
       "title": "PSFResamplerSettings",
+      "type": "object"
+    },
+    "STACSettings": {
+      "additionalProperties": false,
+      "description": "Settings for the STAC metadata (``stac_discovery``) written in the root\ngroup of the output dataset.",
+      "properties": {
+        "include_conversion_settings": {
+          "default": true,
+          "description": "If True (the default), the conversion settings are recorded in the output\nas the ``processing:expression`` STAC property.\n\nSet it to False to leave them out, e.g., because they are large or because\nthey name internal paths that should not be published. The rest of the\nprovenance (``processing:datetime``, ``processing:software``,\n``processing:lineage``) is written either way.",
+          "title": "Include Conversion Settings",
+          "type": "boolean"
+        },
+        "exclude_props": {
+          "description": "Names of the input STAC properties that must not be propagated to the output.\n\nEach item is either the exact name of a property or a regular expression\nmatched against the whole property name (e.g., ``\"internal:.*\"`` excludes\nevery property of an ``internal`` namespace).\n\nThe properties written by healpix-convert itself (``processing:*``) keep\nprecedence.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Exclude Props",
+          "type": "array"
+        },
+        "override_props": {
+          "additionalProperties": true,
+          "description": "STAC properties set in the output, overriding the propagated ones.\n\nAn override wins over ``exclude_props``. The properties written by\nhealpix-convert itself (``processing:*``) keep precedence.",
+          "title": "Override Props",
+          "type": "object"
+        },
+        "exclude_extensions": {
+          "description": "Input STAC extensions that must not be listed in the output.\n\nEach item is either the exact URL of an extension schema or a regular\nexpression matched against the whole URL (e.g.,\n``\"https://stac-extensions.github.io/projection/.*\"`` excludes any version\nof the projection extension).\n\nThe STAC processing extension, listed by healpix-convert itself, keeps\nprecedence.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Exclude Extensions",
+          "type": "array"
+        },
+        "override_extensions": {
+          "description": "URLs of the STAC extension schemas listed in the output, in addition to\nthe propagated ones.\n\nAn override wins over ``exclude_extensions``.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Override Extensions",
+          "type": "array"
+        }
+      },
+      "title": "STACSettings",
       "type": "object"
     },
     "WGS84Ellipsoid": {

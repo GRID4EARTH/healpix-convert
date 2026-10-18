@@ -98,6 +98,7 @@ def format_stac_processing(
     input_ids: Iterable[str] = (),
     input_paths: Iterable[str] = (),
     processing_datetime: datetime | None = None,
+    include_conversion_settings: bool = True,
 ) -> dict[str, Any]:
     """Provenance properties for the converted dataset, following the STAC
     processing extension.
@@ -114,6 +115,8 @@ def format_stac_processing(
         STAC ids of the input items the output was derived from.
     processing_datetime : :py:class:`datetime.datetime`, optional
         Defaults to the current UTC time.
+    include_conversion_settings : bool, optional
+        If True (the default), record the settings as ``processing:expression``.
 
     """
     if processing_datetime is None:
@@ -124,15 +127,17 @@ def format_stac_processing(
     properties: dict[str, Any] = {
         "processing:datetime": processing_datetime.isoformat(),
         "processing:software": versions,
+    }
+
+    if include_conversion_settings:
         # the settings are what make two outputs of one input differ, so they
         # are recorded rather than summarised
-        "processing:expression": {
+        properties["processing:expression"] = {
             # the schema of the recorded version, not the latest one: the
             # settings may not validate against the schema of a later version
             "format": convert_settings_schema_url(versions.get("healpix-convert")),
             "expression": settings.to_dict(),
-        },
-    }
+        }
 
     # name both what the inputs *are* (STAC ids) and where they were read
     # from, so the output can be traced back to the actual data

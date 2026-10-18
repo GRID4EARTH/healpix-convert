@@ -96,3 +96,40 @@ item merged from the `stac_discovery` attributes of the input datasets, with
   conversion settings (`processing:expression`, whose `format` is the URL of
   the settings JSON schema of the recorded `healpix-convert` version) and the
   inputs (`processing:lineage`).
+
+Set `metadata.stac.include_conversion_settings` to `False` to leave
+`processing:expression` out (not recommended).
+
+### Excluding and setting STAC properties and extensions
+
+`metadata.stac` drops and sets the properties and extensions propagated from
+the input items:
+
+```python
+"metadata": {
+    "stac": {
+        "exclude_props": ["internal:.*"],
+        "override_props": {"license": "CC-BY-4.0"},
+        "exclude_extensions": ["https://stac-extensions.github.io/projection/.*"],
+        "override_extensions": ["https://example.org/ext/v1.0.0/schema.json"],
+    }
+}
+```
+
+`exclude_props` and `exclude_extensions` list exact names (property names,
+extension schema URLs) or regular expressions matched against the whole name.
+`override_props` sets properties and `override_extensions` lists extensions in
+addition to the propagated ones. An override wins over an exclusion.
+
+These settings apply to the propagated metadata only. The STAC metadata written
+by `healpix-convert` itself keeps precedence: the `processing:*` properties and
+the processing extension above are written after the settings are applied, so
+the output stays traceable whatever they say. The one exception is
+`include_conversion_settings`, which decides whether the settings themselves
+are recorded.
+
+:::{note}
+The output item is not validated against the extensions it lists: keeping the
+properties and the extensions consistent with each other is left to the data
+provider.
+:::

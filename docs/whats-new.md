@@ -4,6 +4,11 @@
 
 - The attributes of the output variables can be set from the group settings
   (`metadata.override_attrs`), and not only excluded ({issue}`36`).
+- The STAC properties and extensions propagated to the output dataset can be
+  excluded and set from the conversion settings (`metadata.stac`). The STAC
+  metadata written by `healpix-convert` itself keeps precedence, except for the
+  recorded conversion settings, which `metadata.stac.include_conversion_settings`
+  leaves out of the output.
 - The JSON schema of the conversion settings is generated from
   {py:class}`~healpix_convert.ConvertSettings` and published as
   `convert-settings.schema.json` in the root of the repository. The STAC

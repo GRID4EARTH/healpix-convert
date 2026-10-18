@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from pathlib import PurePath
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -25,6 +25,7 @@ from pydantic import (
 from typing_extensions import TypedDict
 
 from healpix_convert.core.healpix_conventions import Healpix
+from healpix_convert.core.utils import check_patterns, matches_any
 from healpix_convert.settings.cams import CAMS_CONVERT_SETTINGS
 from healpix_convert.settings.climatedt import CDT_SFC_CONVERT_SETTINGS
 from healpix_convert.settings.conventions import MetadataSettings
@@ -261,15 +262,6 @@ class CodecSettings(TypedDict):
     configuration: dict[str, Any]
 
 
-def _check_patterns(patterns: Iterable[str]) -> None:
-    """Raise a ValueError if any of the given regular expressions is invalid."""
-    for pattern in patterns:
-        try:
-            re.compile(pattern)
-        except re.error as err:
-            raise ValueError(f"invalid regular expression {pattern!r}: {err}") from None
-
-
 class InputMetadataSettings(BaseModel):
     """Settings for the metadata read from the input dataset(s)."""
 
@@ -300,7 +292,7 @@ class InputMetadataSettings(BaseModel):
     @field_validator("exclude_attrs")
     @classmethod
     def validate_patterns(cls, value: list[str]) -> list[str]:
-        _check_patterns(value)
+        check_patterns(value)
 
         return value
 
@@ -309,7 +301,7 @@ class InputMetadataSettings(BaseModel):
     def validate_override_patterns(
         cls, value: dict[str, dict[str, Any]]
     ) -> dict[str, dict[str, Any]]:
-        _check_patterns(value)
+        check_patterns(value)
 
         return value
 
@@ -317,7 +309,7 @@ class InputMetadataSettings(BaseModel):
         """Returns True if the input attribute with the given name must not be
         propagated to the output.
         """
-        return any(re.fullmatch(pattern, name) for pattern in self.exclude_attrs)
+        return matches_any(name, self.exclude_attrs)
 
     def filter_attrs(self, attrs: Mapping[str, Any]) -> dict[str, Any]:
         """Return a copy of the given input attributes without the excluded ones."""

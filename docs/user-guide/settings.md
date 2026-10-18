@@ -39,8 +39,8 @@ generated from the model, e.g., to get completion and validation in an editor.
   and written as `<group>/<refinement level>` in the output, with metadata
   following the Multiscales Zarr convention. `add_healpix_positioning`
   (default `True`) adds the HEALPix grid of each level to that metadata.
-- `metadata`: the conventions followed by the output dataset (see
-  {doc}`metadata`).
+- `metadata`: the conventions followed by the output dataset and the STAC
+  metadata written in its root group (see {doc}`metadata`).
 
 ## Group settings
 

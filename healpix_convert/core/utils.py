@@ -1,6 +1,8 @@
 """Utility methods used internally for converting datasets onto HEALPix."""
 
+import re
 from collections import Counter
+from collections.abc import Iterable
 from typing import Any, Literal, cast
 
 import affine
@@ -10,6 +12,22 @@ import pyproj
 import rasterix
 import shapely
 import xarray as xr
+
+
+def check_patterns(patterns: Iterable[str]) -> None:
+    """Raise a ValueError if any of the given regular expressions is invalid."""
+    for pattern in patterns:
+        try:
+            re.compile(pattern)
+        except re.error as err:
+            raise ValueError(f"invalid regular expression {pattern!r}: {err}") from None
+
+
+def matches_any(name: str, patterns: Iterable[str]) -> bool:
+    """Returns True if the given name matches any of the given regular
+    expressions (matched against the whole name).
+    """
+    return any(re.fullmatch(pattern, name) for pattern in patterns)
 
 
 def open_datatrees(paths: list[str], chunks: dict | None = None) -> list[xr.DataTree]:
