@@ -152,6 +152,6 @@ def test_nearest_level15_preserves_classes_and_metadata(monkeypatch):
     nearest = ((target[:, None] - xyz[None, :]) ** 2).sum(axis=-1).argmin(axis=1)
     np.testing.assert_array_equal(actual, ds.class_id.values.ravel()[nearest])
     metadata = converter.output_group.attrs["dggs"]
-    assert metadata["ellipsoid"]["name"] == "wgs84"
+    assert metadata["ellipsoid"]["name"] == "WGS84"
     assert metadata["indexing_scheme"] == "nested"
     assert metadata["refinement_level"] == 15

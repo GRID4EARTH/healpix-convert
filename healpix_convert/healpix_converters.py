@@ -550,7 +550,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
                     ds[lon_name].values,
                     ds[lat_name].values,
                     level,
-                    self.chunk_healpix.ellipsoid.name.upper(),
+                    self.chunk_healpix.ellipsoid.name,
                 )
             )
 
@@ -660,7 +660,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         lon, lat = healpix_geo.nested.vertices(
             chunk_cell_id,
             self.chunk_healpix.refinement_level,
-            ellipsoid=self.chunk_healpix.ellipsoid.name.upper(),
+            ellipsoid=self.chunk_healpix.ellipsoid.name,
         )
         lon, lat = np.asarray(lon).ravel(), np.asarray(lat).ravel()
         # A lower bound on terrestrial curvature radii gives a conservative
@@ -674,7 +674,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         centre_lon, _ = healpix_geo.nested.healpix_to_lonlat(
             chunk_cell_id,
             self.chunk_healpix.refinement_level,
-            ellipsoid=self.chunk_healpix.ellipsoid.name.upper(),
+            ellipsoid=self.chunk_healpix.ellipsoid.name,
         )
         centre_lon = float(np.asarray(centre_lon).ravel()[0])
         relative_lon = (lon - centre_lon + 180.0) % 360.0 - 180.0
@@ -737,7 +737,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         lon, lat = healpix_geo.nested.vertices(
             chunk_cell_id,
             self.chunk_healpix.refinement_level,
-            ellipsoid=self.chunk_healpix.ellipsoid.name.upper(),
+            ellipsoid=self.chunk_healpix.ellipsoid.name,
         )
         chunk_poly_latlon = shapely.Polygon(list(zip(lon[0], lat[0])))
 
@@ -889,7 +889,7 @@ class DenseChunkConverter(UniformChunkConverter):
             verbose=False,
             out_cell_ids=out_cell_ids,
             nest=self.healpix.indexing_scheme == "nested",
-            ellipsoid=self.healpix.ellipsoid.name.upper(),
+            ellipsoid=self.healpix.ellipsoid.name,
             **dict(resampler_settings.init_params),
         )
         # resample arrays (data variables)
@@ -977,7 +977,7 @@ class SparseChunkConverter(UniformChunkConverter):
             # level=self.healpix.refinement_level,  # assumes cell-point (level=29)
             verbose=False,
             nest=self.healpix.indexing_scheme == "nested",
-            ellipsoid=self.healpix.ellipsoid.name.upper(),
+            ellipsoid=self.healpix.ellipsoid.name,
             **dict(resampler_settings.init_params),
         )
 
@@ -1036,7 +1036,7 @@ class NoChunkConverter(HealpixGroupConverter):
         assert self.healpix.indexing_scheme == "nested"
 
         if isinstance(self.healpix.ellipsoid, WGS84Ellipsoid):
-            self.ellipsoid = self.healpix.ellipsoid.name.upper()
+            self.ellipsoid = self.healpix.ellipsoid.name
         else:
             # TODO: is sphere really used here? If yes, need a fix below
             # in `query_input_points` where input x/y coordinates are converted

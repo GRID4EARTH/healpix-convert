@@ -25,7 +25,7 @@ def test_dggs_zarr_convention_values() -> None:
 def test_wgs84_ellipsoid_values() -> None:
     e = WGS84Ellipsoid()
 
-    assert e.name == "wgs84"
+    assert e.name == "WGS84"
     assert e.semi_major_axis == 6378137.0
     assert e.inverse_flattening == 298.257223563
 
@@ -42,7 +42,7 @@ def test_healpix_default_values() -> None:
 
 
 def test_healpix_ellipsoid_dscriminator() -> None:
-    fields = {"refinement_level": 10, "ellipsoid": {"name": "wgs84"}}
+    fields = {"refinement_level": 10, "ellipsoid": {"name": "WGS84"}}
 
     h = Healpix.model_validate(fields)
 

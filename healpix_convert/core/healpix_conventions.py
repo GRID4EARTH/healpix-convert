@@ -6,7 +6,14 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 from pydantic.experimental.missing_sentinel import MISSING
 
 _UUID: str = "7b255807-140c-42ca-97f6-7a1cfecdbc38"
@@ -45,7 +52,14 @@ class WGS84Ellipsoid(BaseModel):
 
     """
 
-    name: Literal["wgs84"] = "wgs84"
+    name: Literal["WGS84"] = "WGS84"
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.upper()
+        return value
 
     @computed_field
     @property
@@ -77,9 +91,7 @@ class Healpix(BaseModel):
     indexing_scheme: Literal["nested", "ring", "zuniq"] = "nested"
     """HEALPix indexing scheme."""
 
-    ellipsoid: Annotated[WGS84Ellipsoid, Field(discriminator="name")] | MISSING = (
-        MISSING
-    )
+    ellipsoid: WGS84Ellipsoid | MISSING = MISSING
     """Reference system of the DGGS (if not given, a sphere is assumed)."""
 
     spatial_dimension: str = "cells"
@@ -152,7 +164,7 @@ class CFHealpixGridMapping(BaseModel):
         }
         ellipsoid = hp.ellipsoid
         if ellipsoid is not MISSING:
-            kwargs["reference_ellipsoid_name"] = ellipsoid.name.upper()
+            kwargs["reference_ellipsoid_name"] = ellipsoid.name
             kwargs["semi_major_axis"] = ellipsoid.semi_major_axis
             kwargs["inverse_flattening"] = ellipsoid.inverse_flattening
 
