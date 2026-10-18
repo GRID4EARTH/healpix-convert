@@ -11,7 +11,7 @@ import pytest
 import xarray as xr
 
 from healpix_convert import create_healpix_dataset
-from healpix_convert.core.stac import SETTINGS_EXPRESSION_FORMAT
+from healpix_convert.core.json_schema import convert_settings_schema_url
 from healpix_convert.settings.common import ConvertSettings
 
 STAC_ITEM = {
@@ -108,7 +108,9 @@ def test_provenance_records_the_settings(converted, settings) -> None:
     tree = xr.open_datatree(converted, engine="zarr")
     properties = tree.attrs["stac_discovery"]["properties"]
 
-    assert properties["processing:expression"]["format"] == SETTINGS_EXPRESSION_FORMAT
+    assert (
+        properties["processing:expression"]["format"] == convert_settings_schema_url()
+    )
     assert properties["processing:expression"]["expression"] == settings.to_dict()
     assert "healpix-convert" in properties["processing:software"]
     assert "synthetic-input" in properties["processing:lineage"] or "input.zarr" in properties["processing:lineage"]

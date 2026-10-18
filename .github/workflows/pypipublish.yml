@@ -18,6 +18,21 @@ jobs:
         with:
           fetch-depth: 0
 
+      # converted datasets record the settings JSON schema of the version that
+      # produced them, at https://raw.githubusercontent.com/.../refs/tags/v<version>/
+      # (see healpix_convert/core/json_schema.py). Python normalises the version
+      # read from the tag ("v2026.09.0" becomes 2026.9.0), so a tag that is not
+      # exactly "v" + the version would make that URL point nowhere.
+      - name: check the release tag matches the package version
+        if: github.event_name == 'release'
+        run: |
+          python -m pip install --quiet setuptools-scm
+          version="$(python -m setuptools_scm)"
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "::error::release tag ${GITHUB_REF_NAME} should be v${version}"
+            exit 1
+          fi
+
       - uses: hynek/build-and-inspect-python-package@v2
 
   publish:

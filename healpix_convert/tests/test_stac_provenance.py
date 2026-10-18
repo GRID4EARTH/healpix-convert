@@ -1,8 +1,8 @@
 from datetime import UTC, datetime
 
+from healpix_convert.core.json_schema import convert_settings_schema_url
 from healpix_convert.core.stac import (
     STAC_PROCESSING_SCHEMA_URL,
-    SETTINGS_EXPRESSION_FORMAT,
     format_stac_derived_links,
     format_stac_processing,
 )
@@ -14,7 +14,7 @@ def test_settings_are_recorded_verbatim() -> None:
     properties = format_stac_processing(settings)
 
     expression = properties["processing:expression"]
-    assert expression["format"] == SETTINGS_EXPRESSION_FORMAT
+    assert expression["format"] == convert_settings_schema_url()
     assert expression["expression"] == settings.to_dict()
 
 
