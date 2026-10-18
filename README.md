@@ -10,6 +10,8 @@ new Zarr dataset compliant with the DGGS Zarr and CF-Healpix conventions.
 
 **Note: this repository is currently under heavy development. API is not stable yet.**
 
+Documentation: <https://grid4earth.eu/healpix-convert/>
+
 ## Supported data products
 
 - ERA5
@@ -27,9 +29,32 @@ new Zarr dataset compliant with the DGGS Zarr and CF-Healpix conventions.
 
 ## Installation
 
-### From PyPI or conda-forge
+### From PyPI
 
-There's no package published on PyPI and/or conda-forge yet.
+```sh
+$ python -m pip install healpix-convert
+```
+
+The ERA5, CAMS and ClimateDT converters need extra packages to download and
+read their input data. Install them with the matching extra:
+
+```sh
+$ python -m pip install "healpix-convert[era5]"       # cdsapi, cfgrib
+$ python -m pip install "healpix-convert[cams]"       # requests
+$ python -m pip install "healpix-convert[climatedt]"  # cfgrib, polytope-client, destinelab
+```
+
+healpix-convert depends on PyTorch (through healpix-resample). On x86-64 Linux,
+pip installs the CUDA build of PyTorch: with its NVIDIA libraries, that is
+about 3 GB to download. For a CPU-only environment, install PyTorch from its
+CPU index first:
+
+```sh
+$ python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+$ python -m pip install healpix-convert
+```
+
+There is no conda-forge package yet.
 
 ### From source (development)
 
@@ -57,4 +82,5 @@ $ pixi install -e dev
 
 ## Basic usage
 
-See examples in the ``notebooks`` folder.
+See the [quickstart](https://grid4earth.eu/healpix-convert/tutorials/quickstart.html)
+in the documentation, and the examples in the `notebooks` folder.

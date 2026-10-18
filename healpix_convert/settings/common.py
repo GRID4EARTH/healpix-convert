@@ -319,7 +319,49 @@ class HealpixGroupSettings(BaseModel):
     to the output group.
     """
 
+    healpix_coordinate_codecs: list[CodecSettings] | None = Field(default=None)
+    """Zarr codecs of the HEALPix cell ids coordinate (zarr's defaults if None).
+
+    The cell ids of a chunk are sorted, and one contiguous range with
+    ``healpix_cell_dense`` chunks, which zstd alone keeps at about one byte per
+    cell. A delta filter before the compressor brings them to almost nothing,
+    e.g. ``[{"name": "numcodecs.delta", "configuration": {"dtype": "<u8"}},
+    {"name": "bytes"}, {"name": "zstd"}]``; readers then need an implementation
+    of that codec. The delta filter is meant for plain cell ids: with
+    ``healpix.compression`` set to ``"compacted"`` or ``"ranges"`` the ids are
+    already compressed and it brings no further gain.
+    """
+
     codecs: list[CodecSettings] | None = Field(default=None)
+    """Zarr codecs of the group's resampled data variables (other arrays use
+    zarr's defaults).
+
+    Each codec is looked up by name in zarr's codec registry, so the package
+    that provides it must be installed where the settings are created, e.g.
+    ``healpix-compress`` for ``hcc-sentinel2-pyramid``.
+    """
+
+    @field_validator("codecs")
+    @classmethod
+    def validate_codecs(
+        cls, value: list[CodecSettings] | None
+    ) -> list[CodecSettings] | None:
+        if value is None:
+            return value
+
+        from zarr.registry import get_codec_class
+
+        for codec in value:
+            try:
+                get_codec_class(codec["name"])
+            except (KeyError, ValueError):
+                # zarr raises KeyError (zarr < 3.2) or UnknownCodecError, a ValueError
+                raise ValueError(
+                    f"zarr codec {codec['name']!r} is not available: install the package "
+                    "that registers it with zarr"
+                ) from None
+
+        return value
 
     @model_validator(mode="after")
     def validate_cell_point_resampler_level(self) -> HealpixGroupSettings:

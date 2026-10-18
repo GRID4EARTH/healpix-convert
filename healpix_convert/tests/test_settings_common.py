@@ -134,3 +134,27 @@ def test_convert_settings_metadata_roundtrip() -> None:
 
     group_settings = roundtripped.group_settings[PurePath("/root/group")]
     assert group_settings.metadata.exclude_attrs == ["_.*"]
+
+
+def _group_settings(codecs):
+    return {
+        "healpix": {"refinement_level": 10},
+        "chunk": {"method": "no_chunk"},
+        "resampler": {"name": "nearest"},
+        "codecs": codecs,
+    }
+
+
+def test_convert_group_settings_codecs() -> None:
+    codecs = [{"name": "bytes", "configuration": {}}]
+
+    actual = HealpixGroupSettings.model_validate(_group_settings(codecs))
+
+    assert actual.codecs == codecs
+
+
+def test_convert_group_settings_unknown_codec() -> None:
+    with pytest.raises(ValidationError, match="'no-such-codec' is not available"):
+        HealpixGroupSettings.model_validate(
+            _group_settings([{"name": "no-such-codec", "configuration": {}}])
+        )

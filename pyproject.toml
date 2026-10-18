@@ -1,7 +1,7 @@
 [project]
 name = "healpix-convert"
 requires-python = ">= 3.11"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 dynamic = ["version"]
 description = "Convert datasets into the HEALPix-based DGGS format"
 keywords = ["healpix"]
@@ -9,11 +9,23 @@ authors = [
   { name = "healpix-convert Developers" },
 ]
 readme = "README.md"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Scientific/Engineering :: Atmospheric Science",
+  "Topic :: Scientific/Engineering :: GIS",
+]
 dependencies = [
   "xarray>=2025.11.0",
   "numpy>=2",
   "healpix-geo>=0.0.11",
-  "healpix-resample>=0.1.5",
+  "healpix-resample>=2026.7.0",
   "dask>=2025.2.0",
   "distributed>=2025.2.0",
   "pyproj>=3.7.2",
@@ -26,6 +38,17 @@ dependencies = [
   "rasterix>=0.1",
   "s3fs>=2026.1.0",
 ]
+
+[project.optional-dependencies]
+cams = ["requests"]
+climatedt = ["cfgrib", "destinelab", "polytope-client"]
+era5 = ["cdsapi", "cfgrib"]
+
+[project.urls]
+Documentation = "https://grid4earth.eu/healpix-convert/"
+Repository = "https://github.com/GRID4EARTH/healpix-convert"
+Issues = "https://github.com/GRID4EARTH/healpix-convert/issues"
+Changelog = "https://github.com/GRID4EARTH/healpix-convert/releases"
 
 [dependency-groups]
 dev = [
@@ -40,11 +63,11 @@ dev = [
 ]
 
 [build-system]
-requires = ["setuptools>=64.0", "setuptools-scm"]
+requires = ["setuptools>=77.0", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["healpix_convert"]
+[tool.setuptools.packages.find]
+include = ["healpix_convert*"]
 
 [tool.setuptools_scm]
 fallback_version = "999"
@@ -89,5 +112,3 @@ known-third-party = []
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
-
-
