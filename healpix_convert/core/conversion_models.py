@@ -212,10 +212,10 @@ class OutputSpatialInfo(BaseModel):
 class PyramidMultiscaleGroupInfo(BaseModel):
     """Information about a pyramid multiscale group in the output Zarr dataset,
     i.e., a group holding the HEALPix levels converted from the input data
-    (native levels) and the coarser levels generated from them (pyramid
+    (native levels) and the coarser levels derived from them (derived
     levels).
 
-    The generated levels are groups of the multiscale group, next to the
+    The derived levels are groups of the multiscale group, next to the
     converted ones or under a child group of it (the ``name`` pyramid setting).
 
     """
@@ -227,12 +227,12 @@ class PyramidMultiscaleGroupInfo(BaseModel):
     (keys: paths of the converted groups in the output dataset).
     """
 
-    pyramid_levels: dict[PurePath, HealpixLevelInfo] = Field(default_factory=dict)
-    """HEALPix grid and chunk level of each generated level (keys: paths of the
-    pyramid level groups in the output dataset).
+    derived_levels: dict[PurePath, HealpixLevelInfo] = Field(default_factory=dict)
+    """HEALPix grid and chunk level of each derived level (keys: paths of the
+    derived level groups in the output dataset).
     """
 
-    @field_serializer("native_levels", "pyramid_levels")
+    @field_serializer("native_levels", "derived_levels")
     def serialize_levels(self, value):
         # always convert paths to strings (unix-style)
         return {k.as_posix(): v for k, v in value.items()}
@@ -247,7 +247,7 @@ class OutputGroupInfo(BaseModel):
     pyramid_multiscale_groups: dict[PurePath, PyramidMultiscaleGroupInfo] = Field(
         default_factory=dict
     )
-    """Multiscale groups holding a pyramid of generated HEALPix levels
+    """Multiscale groups holding a pyramid of derived HEALPix levels
     (keys: paths of those groups in the input dataset(s), like
     :py:attr:`multiscale_groups`, whose metadata describes their whole
     pyramid).

@@ -29,7 +29,7 @@ from healpix_convert.healpix_converters import (
     HealpixGroupConverter,
     init_converter,
 )
-from healpix_convert.pyramid import create_pyramid_groups, write_pyramid_levels
+from healpix_convert.pyramid import create_derived_level_groups, write_derived_levels
 from healpix_convert.settings.common import (
     ConvertSettings,
     validate_convert_settings,
@@ -198,13 +198,13 @@ def _create_and_process_output(
                 "(not yet supported)"
             )
 
-    # --- pyramid groups (the coarser levels of the multiscale groups)
+    # --- derived levels (the coarser levels of the pyramid multiscale groups)
     if settings.multiscale_settings.pyramid_groups:
-        log.info("••• creating pyramid groups...")
-        create_pyramid_groups(output_store, cache, settings)
+        log.info("••• creating the derived level groups...")
+        create_derived_level_groups(output_store, cache, settings)
 
         if convert_data:
-            write_pyramid_levels(
+            write_derived_levels(
                 output_store,
                 cache,
                 settings,
@@ -244,7 +244,7 @@ def prepare_healpix_dataset(
     All output groups and arrays are created along with their metadata. Arrays
     having a HEALPix cell dimension are still empty.
 
-    The groups of the generated levels of the pyramids and the multiscales
+    The groups of the derived levels of the pyramids and the multiscales
     metadata describing them are created as well; their arrays are written by
     :py:func:`generate_pyramids`.
 
@@ -379,9 +379,9 @@ def generate_pyramids(
     of the pyramids.
 
     Run it once the data has been converted. It writes the arrays of the
-    pyramid groups that :py:func:`prepare_healpix_dataset` has created, one
-    group per generated refinement level of each multiscale group with pyramid
-    settings (``pyramid_groups``, see
+    derived level groups that :py:func:`prepare_healpix_dataset` has created,
+    one group per derived refinement level of each multiscale group with
+    pyramid settings (``pyramid_groups``, see
     :py:attr:`~healpix_convert.ConvertSettings.multiscale_settings`). It does
     nothing if no group has pyramid settings.
 
@@ -421,7 +421,7 @@ def generate_pyramids(
         root_group = zarr.open_group(
             output_path, mode="a", storage_options=output_storage_options
         )
-        write_pyramid_levels(
+        write_derived_levels(
             root_group.store,
             cache,
             settings,

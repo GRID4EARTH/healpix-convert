@@ -109,7 +109,7 @@ def encode_like(ds: xr.Dataset, templates: Mapping[str, xr.Variable]) -> xr.Data
     rounded (instead of being truncated) and gets its fill value back where it
     has no value.
 
-    The codecs of the input are not reused: the generated levels have their own
+    The codecs of the input are not reused: the derived levels have their own
     cells and chunks, which codecs like the healpix-compress ones (dense chunks
     of one parent cell) could not encode.
 

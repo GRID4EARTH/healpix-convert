@@ -62,23 +62,27 @@ Multiscale group
 
 Pyramid multiscale group
   A multiscale group of the output Zarr dataset holding the levels converted
-  from the input data (native levels) and the coarser levels generated from
-  them (pyramid levels). Its multiscales metadata describes them all. See
+  from the input data (native levels) and the coarser levels derived from them
+  (derived levels). Its multiscales metadata describes them all. See
   {py:func}`~healpix_convert.generate_pyramids`.
 
-Pyramid level group
-  A group holding one generated level, named after its refinement level. It is
-  a child of the pyramid multiscale group, next to the native level groups, or
-  of a group of its own within it (the `name` pyramid setting).
+Derived level
+  A refinement level of a pyramid multiscale group that is aggregated from its
+  native levels, as opposed to being converted from the input data.
+
+Derived level group
+  A group holding one derived level, named after its refinement level. It is a
+  child of the pyramid multiscale group, next to the native level groups, or of
+  a group of its own within it (the `name` pyramid setting).
 
 Native level
   A refinement level of a multiscale group that is converted from the input
-  data, as opposed to the coarser levels generated from it.
+  data, as opposed to the coarser levels derived from it.
 
 Parent cell
   The HEALPix cell of a coarser refinement level that contains a given cell
-  (its ancestor in the *nested* scheme). Each cell of a generated level of a
-  pyramid aggregates all the converted cells it is the ancestor of.
+  (its ancestor in the *nested* scheme). Each cell of a derived level
+  aggregates all the converted cells it is the ancestor of.
 
 Resampler
   The method that computes the values of the output HEALPix cells from the

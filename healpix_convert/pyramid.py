@@ -1,16 +1,17 @@
 """Writing the pyramids of coarser HEALPix refinement levels.
 
 The last stage of the conversion aggregates the levels of the multiscale groups
-of the output dataset onto coarser HEALPix refinement levels, each written in a
-group of the multiscale group (the converted levels are never rewritten).
+of the output dataset onto coarser HEALPix refinement levels (the derived
+levels), each written in a group of the multiscale group (the converted levels
+are never rewritten).
 
-The structure of the pyramids — which levels are generated, in which groups,
+The structure of the pyramids — which levels are derived, in which groups,
 with which HEALPix grid and chunks, and the multiscales metadata describing
 them — is computed once when the conversion staging cache is created (see
 :py:class:`~healpix_convert.core.conversion_models.PyramidMultiscaleGroupInfo`).
-What is left here is writing it: :py:func:`create_pyramid_groups` writes the
-(empty) groups and their metadata when the output dataset is prepared, like the
-rest of its structure, and :py:func:`write_pyramid_levels` aggregates the
+What is left here is writing it: :py:func:`create_derived_level_groups` writes
+the (empty) groups and their metadata when the output dataset is prepared, like
+the rest of its structure, and :py:func:`write_derived_levels` aggregates the
 converted data onto them, which creates and fills their arrays.
 
 Only groups converted with the ``healpix_cell_dense`` chunk method are
@@ -51,15 +52,15 @@ from healpix_convert.settings.common import ConvertSettings, PyramidSettings
 log = structlog.get_logger()
 
 
-def create_pyramid_groups(
+def create_derived_level_groups(
     output_store: zarr.StoreLike,
     cache: ConvertStagingCache,
     settings: ConvertSettings,
 ) -> None:
-    """Create the (empty) Zarr groups of the generated pyramid levels.
+    """Create the (empty) Zarr groups of the derived levels.
 
     The arrays of those groups are created when the converted data is
-    aggregated onto them (see :py:func:`write_pyramid_levels`). The multiscales
+    aggregated onto them (see :py:func:`write_derived_levels`). The multiscales
     metadata describing a pyramid is written with the multiscale group that
     holds it, like the metadata of any other output group.
 
@@ -75,31 +76,31 @@ def create_pyramid_groups(
 
     """
     for path, info in cache.output_groups.pyramid_multiscale_groups.items():
-        for level_path, (healpix, _) in info.pyramid_levels.items():
+        for level_path, (healpix, _) in info.derived_levels.items():
             # the group named by the pyramid settings, if any, is created along
             # the way
             group = zarr.open_group(output_store, path=level_path.as_posix(), mode="a")
             group.attrs.update(get_healpix_group_attrs(healpix, settings.metadata))
 
         log.info(
-            f"••• created the pyramid groups of '{path.as_posix()}': "
-            f"levels {_levels(info.pyramid_levels)}"
+            f"••• created the derived level groups of '{path.as_posix()}': "
+            f"levels {_levels(info.derived_levels)}"
         )
 
 
-def write_pyramid_levels(
+def write_derived_levels(
     output_store: zarr.StoreLike,
     cache: ConvertStagingCache,
     settings: ConvertSettings,
     *,
     output_storage_options: dict[str, Any] | None = None,
 ) -> None:
-    """Aggregate the converted data onto the generated levels of the pyramids
+    """Aggregate the converted data onto the derived levels of the pyramids
     and write it in their groups, creating their arrays.
 
     The groups themselves and the multiscales metadata of the groups holding
-    them are written by :py:func:`create_pyramid_groups`. The converted levels
-    are not rewritten.
+    them are written by :py:func:`create_derived_level_groups`. The converted
+    levels are not rewritten.
 
     Parameters
     ----------
@@ -128,12 +129,14 @@ def write_pyramid_levels(
     for path, info in cache.output_groups.pyramid_multiscale_groups.items():
         pyramid = settings.multiscale_settings.pyramid_groups[path]
         log.info(
-            f"••• aggregating the pyramid levels of '{path.as_posix()}' "
+            f"••• aggregating the derived levels of '{path.as_posix()}' "
             f"({pyramid.reduce} of the converted levels "
-            f"{_levels(info.native_levels)}): levels {_levels(info.pyramid_levels)}"
+            f"{_levels(info.native_levels)}): levels {_levels(info.derived_levels)}"
         )
 
-        for level_path, ds in _build_pyramid(dt, info, pyramid, settings).items():
+        for level_path, ds in _build_derived_levels(
+            dt, info, pyramid, settings
+        ).items():
             writes.append(
                 ds.to_zarr(
                     output_store,
@@ -163,8 +166,8 @@ def _levels(levels: Mapping[PurePath, HealpixLevelInfo]) -> list[int]:
 def _native_datasets(
     dt: xr.DataTree, info: PyramidMultiscaleGroupInfo
 ) -> dict[int, xr.Dataset]:
-    """The converted groups of a pyramid, with lazy (Dask) arrays
-    (refinement level -> dataset).
+    """The converted groups of a pyramid multiscale group, with lazy (Dask)
+    arrays (refinement level -> dataset).
     """
     datasets = {}
 
@@ -180,7 +183,7 @@ def _native_datasets(
 def _variable_sources(
     datasets: Mapping[int, xr.Dataset], level: int, *, coarsen_from: str
 ) -> dict[int, list[str]]:
-    """Converted level each data variable of a generated level is aggregated
+    """Converted level each data variable of a derived level is aggregated
     from (converted level -> variable names).
 
     A variable is absent from the levels finer than its finest converted level
@@ -205,13 +208,13 @@ def _variable_sources(
     return sources
 
 
-def _build_pyramid(
+def _build_derived_levels(
     dt: xr.DataTree,
     info: PyramidMultiscaleGroupInfo,
     pyramid: PyramidSettings,
     settings: ConvertSettings,
 ) -> dict[PurePath, xr.Dataset]:
-    """Build the datasets of the generated levels of one pyramid
+    """Build the datasets of the derived levels of one pyramid multiscale group
     (group path -> dataset).
     """
     datasets = _native_datasets(dt, info)
@@ -226,12 +229,12 @@ def _build_pyramid(
         for name, var in datasets[level].variables.items():
             templates.setdefault(name, var)
 
-    generated = {}
+    derived = {}
 
-    for level_path, (healpix, chunk_level) in info.pyramid_levels.items():
+    for level_path, (healpix, chunk_level) in info.derived_levels.items():
         assert healpix.refinement_level is not None
 
-        ds = _build_level(
+        ds = _build_derived_level(
             datasets,
             healpix,
             native_healpix=native_healpix,
@@ -242,12 +245,12 @@ def _build_pyramid(
         )
         ds = _set_cf_grid_mapping(ds, healpix)
         ds.attrs = get_healpix_group_attrs(healpix, settings.metadata)
-        generated[level_path] = ds
+        derived[level_path] = ds
 
-    return generated
+    return derived
 
 
-def _build_level(
+def _build_derived_level(
     datasets: Mapping[int, xr.Dataset],
     healpix: Healpix,
     *,
@@ -256,8 +259,8 @@ def _build_level(
     templates: Mapping[str, xr.Variable],
     chunk_size: int,
 ) -> xr.Dataset:
-    """Build the dataset of one generated level of a pyramid, from the
-    converted levels of its multiscale group.
+    """Build the dataset of one derived level, from the converted levels of its
+    multiscale group.
     """
     level = healpix.refinement_level
     assert level is not None
@@ -292,7 +295,7 @@ def _build_level(
 
 
 def _set_cf_grid_mapping(ds: xr.Dataset, healpix: Healpix) -> xr.Dataset:
-    """Describe the HEALPix grid of a generated level in the CF grid mapping
+    """Describe the HEALPix grid of a derived level in the CF grid mapping
     variable of the converted group, if it has one.
 
     The grid mapping is propagated rather than selected in the metadata

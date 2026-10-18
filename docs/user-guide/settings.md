@@ -131,13 +131,13 @@ settings = settings.filter_and_replace(set_level)
 
 Each entry of `multiscale_settings.pyramid_groups` is the path of a multiscale
 group (it must also be listed in `multiscale_settings.groups`) and the settings
-of the pyramid generated for it by
+of the pyramid derived for it by
 {py:func}`~healpix_convert.generate_pyramids` (see {doc}`pyramids`).
 
 | Field            | Default     | Description                                                            |
 | ---------------- | ----------- | ---------------------------------------------------------------------- |
 | `derived_levels` | (required)  | Refinement levels of the pyramid to generate                           |
-| `name`           | `None`      | Name of a child group of the multiscale group for the generated levels |
+| `name`           | `None`      | Name of a child group of the multiscale group for the derived levels   |
 | `reduce`         | `"mean"`    | `"mean"`, `"min"`, `"max"` or `"sum"`                                  |
 | `coarsen_from`   | `"nearest"` | Native level a variable converted at several levels is aggregated from |
 
@@ -159,8 +159,8 @@ Each level of `derived_levels` must be coarser than the finest native level of
 the group and must not be one of its native levels, which are converted from
 the input data.
 
-Every child group of a pyramid group must be converted with the
+Every child group of a pyramid multiscale group must be converted with the
 `healpix_cell_dense` chunk method: the cells of such a chunk are all the
 children of one HEALPix cell, which is what the pyramid stage relies on. The
-chunks of the generated levels are HEALPix cells as well, sized by a heuristic
+chunks of the derived levels are HEALPix cells as well, sized by a heuristic
 (see {doc}`pyramids`).

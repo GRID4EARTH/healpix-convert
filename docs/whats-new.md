@@ -3,12 +3,12 @@
 ## Unreleased
 
 - New `generate_pyramids` conversion stage, which aggregates the converted
-  data onto the coarser HEALPix refinement levels given by the new
-  `pyramid_groups` multiscale settings. One
-  group per generated level, and the multiscales metadata describing the
-  pyramid, are created with the rest of the structure of the output dataset by
-  `prepare_healpix_dataset`; the arrays of those groups are written with the
-  aggregated data, and the converted levels are never rewritten. The groups must be converted with the
+  data onto the coarser HEALPix refinement levels (the derived levels) given by
+  the new `pyramid_groups` multiscale settings. One group per derived level,
+  and the multiscales metadata describing the pyramid, are created with the
+  rest of the structure of the output dataset by `prepare_healpix_dataset`; the
+  arrays of those groups are written with the aggregated data, and the
+  converted levels are never rewritten. The groups must be converted with the
   `healpix_cell_dense` chunk method: the cells of a coarser cell are then
   consecutive cells of the converted arrays, so the levels are aggregated by
   position without reading any cell id.

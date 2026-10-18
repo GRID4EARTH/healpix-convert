@@ -24,9 +24,9 @@ from healpix_convert.cache import (
     MIN_CHUNK_DEPTH,
     _chunk_cells,
     _coarsest_whole_level,
+    _derived_chunk_level,
     _multiscales_metadata,
-    _pyramid_chunk_level,
-    _set_pyramid_groups,
+    _set_pyramid_multiscale_groups,
 )
 from healpix_convert.core import utils
 from healpix_convert.core.conversion_models import OutputGroupInfo, OutputSpatialInfo
@@ -38,7 +38,7 @@ from healpix_convert.core.metadata import (
     get_multiscale_group_attrs,
 )
 from healpix_convert.core.multiscales_conventions import HealpixMultiscales
-from healpix_convert.pyramid import create_pyramid_groups
+from healpix_convert.pyramid import create_derived_level_groups
 from healpix_convert.settings.conventions import MetadataSettings
 from healpix_convert.tests.test_batch_resample import STAC_ITEM
 
@@ -156,7 +156,7 @@ def _cache_and_settings(
     for level in levels:
         io_path_map[PurePath(f"{GROUP}/l{level}")] = PurePath(f"{GROUP}/{level}")
 
-    pyramid_multiscale_groups = _set_pyramid_groups(
+    pyramid_multiscale_groups = _set_pyramid_multiscale_groups(
         settings, io_path_map, output_spatial
     )
     multiscale_groups = {PurePath(GROUP): _multiscales(levels)}
@@ -166,7 +166,7 @@ def _cache_and_settings(
         levels = {}
 
         for level_path, (level_healpix, _) in (
-            info.native_levels | info.pyramid_levels
+            info.native_levels | info.derived_levels
         ).items():
             levels[level_path] = level_healpix
 
@@ -235,7 +235,7 @@ def _generate_pyramids(cache, settings, path):
         )
         group.attrs.update(get_multiscale_group_attrs(multiscales, settings.metadata))
 
-    create_pyramid_groups(store, cache, settings)
+    create_derived_level_groups(store, cache, settings)
 
     return generate_pyramids(cache, settings, path)
 
@@ -285,13 +285,13 @@ def converted_multi_level(tmp_path):
     return path, cell_ids, data
 
 
-def test_pyramid_levels_and_metadata(converted):
+def test_derived_levels_and_metadata(converted):
     path, cell_ids, _, _ = converted
     cache, settings = _cache_and_settings([3], {"derived_levels": [2, 1]})
 
     dt = _generate_pyramids(cache, settings, path)
 
-    # the levels generated next to the level converted from the input data
+    # the levels derived next to the level converted from the input data
     assert set(dt[GROUP].children) == {"3", "2", "1"}
     assert dt[GROUP]["3"].sizes["cells"] == cell_ids.size
     assert dt[GROUP]["2"].sizes["cells"] == cell_ids.size // 4
@@ -311,7 +311,7 @@ def test_pyramid_levels_and_metadata(converted):
         "dggs",
     }
 
-    # each generated group describes its own HEALPix grid
+    # each derived group describes its own HEALPix grid
     for level in (2, 1):
         group = dt[GROUP][str(level)]
         assert group.attrs["dggs"] == _healpix(level).model_dump()
@@ -329,7 +329,7 @@ def test_consolidated_metadata_is_up_to_date(converted):
     _generate_pyramids(*_cache_and_settings([3], {"derived_levels": [2, 1]}), path)
 
     # the stage consolidates what it wrote: a reader that uses the consolidated
-    # metadata of the dataset sees the generated levels (the stage itself never
+    # metadata of the dataset sees the derived levels (the stage itself never
     # reads it, since it is not up to date while the dataset is written)
     dt = xr.open_datatree(path, engine="zarr", consolidated=True)
     assert set(dt[GROUP].children) == {"3", "2", "1"}
@@ -374,14 +374,14 @@ def test_native_levels_are_not_rewritten(tmp_path):
     assert rewritten.metadata.to_dict() == metadata
     assert rewritten.store.get_sync(f"{GROUP}/3/a/c/0") == chunk
 
-    # the generated level aggregates the values as they are stored
+    # the derived level aggregates the values as they are stored
     level2 = xr.open_zarr(path, group=f"{GROUP}/2")
     np.testing.assert_allclose(
         level2["a"].values, values.reshape(-1, 4).mean(axis=1), atol=0.01
     )
 
 
-def test_generated_levels_are_block_means(converted):
+def test_derived_levels_are_block_means(converted):
     path, cell_ids, temperature, counts = converted
 
     _generate_pyramids(*_cache_and_settings([3], {"derived_levels": [2, 1, 0]}), path)
@@ -436,7 +436,7 @@ def test_reduce_method(converted):
     np.testing.assert_allclose(level2["temperature"].values, expected)
 
 
-def test_generated_chunks_are_healpix_cells(converted):
+def test_derived_chunks_are_healpix_cells(converted):
     path, *_ = converted
     cache, settings = _cache_and_settings([3], {"derived_levels": [2, 1]})
 
@@ -444,23 +444,23 @@ def test_generated_chunks_are_healpix_cells(converted):
 
     # the chunks hold the cells of one HEALPix cell, as the staging cache says
     info = cache.output_groups.pyramid_multiscale_groups[PurePath(GROUP)]
-    for level_path, (healpix, chunk_level) in info.pyramid_levels.items():
+    for level_path, (healpix, chunk_level) in info.derived_levels.items():
         written = dt[level_path.as_posix()]["temperature"].encoding["chunks"]
         assert written == (4 ** (healpix.refinement_level - chunk_level),)
 
 
-def test_pyramid_chunk_level():
+def test_derived_chunk_level():
     # a level-20 conversion with dense chunks of one level-12 cell each: the
-    # chunks of a generated level hold as many cells as the converted ones
+    # chunks of a derived level hold as many cells as the converted ones
     # (4 ** 8 cells, the children of a cell 8 levels above)
-    assert _pyramid_chunk_level(19, 20, 12) == 11
-    assert _pyramid_chunk_level(13, 20, 12) == 5
+    assert _derived_chunk_level(19, 20, 12) == 11
+    assert _derived_chunk_level(13, 20, 12) == 5
     # ... until the chunk cells are the base cells
-    assert _pyramid_chunk_level(8, 20, 12) == 0
-    assert _pyramid_chunk_level(4, 20, 12) == 0
+    assert _derived_chunk_level(8, 20, 12) == 0
+    assert _derived_chunk_level(4, 20, 12) == 0
 
     # a conversion with small chunks still gets reasonably sized ones
-    assert _pyramid_chunk_level(18, 20, 19) == 18 - MIN_CHUNK_DEPTH
+    assert _derived_chunk_level(18, 20, 19) == 18 - MIN_CHUNK_DEPTH
 
 
 def test_pyramid_in_a_child_group(converted):
@@ -470,7 +470,7 @@ def test_pyramid_in_a_child_group(converted):
         *_cache_and_settings([3], {"derived_levels": [2], "name": "pyramids"}), path
     )
 
-    # the generated levels are written in a child group of the multiscale
+    # the derived levels are written in a child group of the multiscale
     # group, next to the levels converted from the input data
     assert set(dt[GROUP].children) == {"3", "pyramids"}
     assert set(dt[f"{GROUP}/pyramids"].children) == {"2"}
@@ -592,7 +592,7 @@ def _write_input(path):
 
 def _workflow_settings(derived_levels=(1, 0)) -> ConvertSettings:
     """Convert two input groups at the levels 3 and 2, with dense chunks of one
-    level-1 cell each, and a pyramid of the given levels.
+    level-1 cell each, and a pyramid with the given derived levels.
     """
     chunk = {
         "method": "healpix_cell_dense",
@@ -636,7 +636,7 @@ def prepared(tmp_path):
 
 @pytest.fixture
 def converted_workflow(prepared):
-    """... and its data converted (but no pyramid level aggregated yet)."""
+    """... and its data converted (but no derived level aggregated yet)."""
     cache, settings, output_path = prepared
 
     for group in (f"{GROUP}/fine", f"{GROUP}/coarse"):
@@ -647,11 +647,11 @@ def converted_workflow(prepared):
     return cache, settings, output_path
 
 
-def test_prepare_creates_the_pyramid_groups(prepared):
+def test_prepare_creates_the_derived_level_groups(prepared):
     cache, settings, output_path = prepared
     root = zarr.open_group(output_path, mode="r")
 
-    # the generated levels are groups of the output dataset, like the converted
+    # the derived levels are groups of the output dataset, like the converted
     # ones, and the multiscale group describes the whole pyramid
     assert sorted(root[GROUP].group_keys()) == ["0", "1", "2", "3"]
     assert _layout_assets(root[GROUP].attrs["multiscales"]) == ["3", "2", "1", "0"]
@@ -663,7 +663,7 @@ def test_prepare_creates_the_pyramid_groups(prepared):
         assert list(group.array_keys()) == []
 
 
-def test_prepare_dry_run_creates_the_pyramid_groups(tmp_path):
+def test_prepare_dry_run_creates_the_derived_level_groups(tmp_path):
     input_path = _write_input(tmp_path / "input.zarr")
     settings = _workflow_settings()
     cache = create_staging_cache([input_path], settings)
@@ -672,7 +672,8 @@ def test_prepare_dry_run_creates_the_pyramid_groups(tmp_path):
         cache, settings, str(tmp_path / "converted.zarr"), dry_run=True
     )
 
-    # the structure of the output dataset, pyramid groups included, without
+    # the structure of the output dataset, derived level groups included,
+    # without
     # writing anything
     assert set(dt[GROUP].children) == {"3", "2", "1", "0"}
     assert _layout_assets(dt[GROUP].attrs["multiscales"]) == ["3", "2", "1", "0"]
@@ -688,7 +689,7 @@ def test_create_healpix_dataset_fills_the_pyramids(tmp_path):
         [input_path], _workflow_settings(derived_levels=[1]), output_path
     )
 
-    # a conversion in one call aggregates the pyramid levels as well
+    # a conversion in one call aggregates the derived levels as well
     assert set(dt[GROUP].children) == {"3", "2", "1"}
     converted = dt[GROUP]["3"].to_dataset()
     parents = converted["cell_ids"].values >> np.uint64(4)
@@ -701,7 +702,7 @@ def test_conversion_workflow(converted_workflow):
 
     dt = generate_pyramids(cache, settings, output_path)
 
-    # the converted levels (3 and 2) and the generated ones (1 and 0)
+    # the converted levels (3 and 2) and the derived ones (1 and 0)
     assert set(dt[GROUP].children) == {"3", "2", "1", "0"}
     assert _layout_assets(dt[GROUP].attrs["multiscales"]) == ["3", "2", "1", "0"]
 
@@ -750,12 +751,12 @@ def test_pyramid_structure_comes_from_the_staging_cache(converted_workflow):
         # a full-earth extent covers whole HEALPix cells at every level
         assert _coarsest_whole_level(chunk_cells, CHUNK_LEVEL) == 0
 
-    # the generated levels, with the grid and the chunks they are written with
-    assert {path.as_posix() for path in info.pyramid_levels} == {
+    # the derived levels, with the grid and the chunks they are written with
+    assert {path.as_posix() for path in info.derived_levels} == {
         f"{GROUP}/1",
         f"{GROUP}/0",
     }
-    for level_path, (healpix, chunk_level) in info.pyramid_levels.items():
+    for level_path, (healpix, chunk_level) in info.derived_levels.items():
         assert level_path == PurePath(GROUP) / str(healpix.refinement_level)
         assert chunk_level == 0
 
