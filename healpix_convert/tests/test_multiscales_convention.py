@@ -8,10 +8,10 @@ def test_multiscales_convention_values() -> None:
     assert c.name == "multiscales"
     assert (
         c.schema_url
-        == "https://raw.githubusercontent.com/zarr-conventions/multiscales/refs/tags/v1/schema.json"
+        == "https://raw.githubusercontent.com/zarr-conventions/multiscales/refs/tags/v0.1/schema.json"
     )
     assert (
         c.spec_url
-        == "https://github.com/zarr-conventions/multiscales/blob/v1/README.md"
+        == "https://github.com/zarr-conventions/multiscales/blob/v0.1/README.md"
     )
     assert c.description == "Multiscale layout of zarr datasets"
