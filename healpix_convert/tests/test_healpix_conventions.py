@@ -42,7 +42,7 @@ def test_healpix_default_values() -> None:
 
 
 @pytest.mark.parametrize("name", ["WGS84", "wgs84", "Wgs84"])
-def test_healpix_ellipsoid_discriminator(name: str) -> None:
+def test_healpix_ellipsoid_name_case_insensitive(name: str) -> None:
     fields = {"refinement_level": 10, "ellipsoid": {"name": name}}
 
     h = Healpix.model_validate(fields)
