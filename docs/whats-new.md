@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The multiscales metadata describes each derived level of a pyramid: the
+  converted level it is aggregated from (`derived_from`), the transformation
+  from it (`transform`, whose `scale` is how much longer a cell is) and the
+  method its cells are aggregated with
+  (`resampling_method`, also given for the whole group).
 - New `generate_pyramids` conversion stage, which aggregates the converted
   data onto the coarser HEALPix refinement levels (the derived levels) given by
   the new `pyramid_groups` multiscale settings. One group per derived level,

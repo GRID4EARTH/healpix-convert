@@ -25,6 +25,7 @@ from healpix_convert.cache import (
     _chunk_cells,
     _coarsest_whole_level,
     _derived_chunk_level,
+    _derived_level_sources,
     _multiscales_metadata,
     _set_pyramid_multiscale_groups,
 )
@@ -99,6 +100,14 @@ def _layout_assets(multiscales) -> list[str]:
     return [item["asset"] for item in multiscales["layout"]]
 
 
+def _layout(multiscales, asset: str) -> dict:
+    """One item of a multiscales layout, given as metadata or as a model."""
+    if isinstance(multiscales, HealpixMultiscales):
+        multiscales = multiscales.model_dump()
+
+    return next(item for item in multiscales["layout"] if item["asset"] == asset)
+
+
 def _block_means(values, parents) -> list[float]:
     """Mean of the values of the cells of each parent cell, coarser cells in
     ascending (nested) order.
@@ -170,7 +179,14 @@ def _cache_and_settings(
         ).items():
             levels[level_path] = level_healpix
 
-        multiscale_groups[path] = _multiscales_metadata(io_path_map[path], levels, True)
+        pyramid_settings = settings.multiscale_settings.pyramid_groups[path]
+        multiscale_groups[path] = _multiscales_metadata(
+            io_path_map[path],
+            levels,
+            True,
+            derived_from=_derived_level_sources(info, pyramid_settings.coarsen_from),
+            resampling_method=pyramid_settings.reduce,
+        )
 
     cache = ConvertStagingCache(
         output_spatial=output_spatial,
@@ -765,3 +781,91 @@ def test_pyramid_structure_comes_from_the_staging_cache(converted_workflow):
     assert ConvertStagingCache.from_json(cache.to_json()).output_groups == (
         cache.output_groups
     )
+
+
+def test_derived_levels_declare_what_they_are_derived_from(converted):
+    path, *_ = converted
+
+    dt = _generate_pyramids(*_cache_and_settings([3], {"derived_levels": [2, 1]}), path)
+    multiscales = dt[GROUP].attrs["multiscales"]
+
+    # a reader can tell which levels hold converted data and which ones were
+    # aggregated from them, and how
+    assert "derived_from" not in _layout(multiscales, "3")
+    assert "transform" not in _layout(multiscales, "3")
+
+    for level, scale in ((2, 2.0), (1, 4.0)):
+        item = _layout(multiscales, str(level))
+        # every derived level is aggregated from the converted level itself,
+        # not from the derived level above it
+        assert item["derived_from"] == "3"
+        # a cell of the derived level is `scale` level-3 cells long, so it
+        # aggregates `scale ** 2` of them
+        assert item["transform"] == {"scale": [scale]}
+        assert item["resampling_method"] == "mean"
+
+
+def test_multiscales_declares_the_resampling_method(converted):
+    path, *_ = converted
+
+    dt = _generate_pyramids(
+        *_cache_and_settings([3], {"derived_levels": [2], "reduce": "max"}), path
+    )
+    multiscales = dt[GROUP].attrs["multiscales"]
+
+    # the same method aggregates every derived level of the pyramid, so it is
+    # also given once for the whole group
+    assert multiscales["resampling_method"] == "max"
+    assert _layout(multiscales, "2")["resampling_method"] == "max"
+
+
+def test_transform_scale_follows_the_source_level(converted_multi_level):
+    path, *_ = converted_multi_level
+
+    dt = _generate_pyramids(*_cache_and_settings([3, 2], {"derived_levels": [1]}), path)
+    item = _layout(dt[GROUP].attrs["multiscales"], "1")
+
+    # "nearest" (the default) aggregates from the level 2, one level away,
+    # and not from the level 3, two levels away
+    assert item["derived_from"] == "2"
+    assert item["transform"] == {"scale": [2.0]}
+
+
+def test_transform_scale_follows_coarsen_from_finest(converted_multi_level):
+    path, *_ = converted_multi_level
+
+    dt = _generate_pyramids(
+        *_cache_and_settings([3, 2], {"derived_levels": [1], "coarsen_from": "finest"}),
+        path,
+    )
+    item = _layout(dt[GROUP].attrs["multiscales"], "1")
+
+    assert item["derived_from"] == "3"
+    assert item["transform"] == {"scale": [4.0]}
+
+
+def test_derived_from_is_relative_to_the_multiscale_group(converted):
+    path, *_ = converted
+
+    dt = _generate_pyramids(
+        *_cache_and_settings([3], {"derived_levels": [2], "subgroup_name": "pyramids"}),
+        path,
+    )
+    item = _layout(dt[GROUP].attrs["multiscales"], "pyramids/2")
+
+    # like the assets, the source is a path within the multiscale group
+    assert item["derived_from"] == "3"
+    assert item["transform"] == {"scale": [2.0]}
+
+
+def test_multiscales_of_a_group_without_a_pyramid():
+    levels = {PurePath(f"{GROUP}/{level}"): _healpix(level) for level in (3, 2)}
+
+    multiscales = _multiscales_metadata(PurePath(GROUP), levels, True).model_dump()
+
+    # nothing is derived, so the convention fields describing it are absent
+    assert "resampling_method" not in multiscales
+    for asset in ("3", "2"):
+        assert "derived_from" not in _layout(multiscales, asset)
+        assert "transform" not in _layout(multiscales, asset)
+        assert "resampling_method" not in _layout(multiscales, asset)

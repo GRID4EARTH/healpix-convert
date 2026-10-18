@@ -152,6 +152,30 @@ def test_get_healpix_group_attrs(healpix) -> None:
     assert "multiscales" not in attrs
 
 
+def test_multiscales_layout_item_derived_level() -> None:
+    item = HealpixMultiscalesLayoutItem.model_validate(
+        {
+            "asset": "pyramids/4",
+            "derived_from": "5",
+            "transform": {"scale": [2.0]},
+            "resampling_method": "mean",
+        }
+    )
+
+    dumped = item.model_dump()
+    assert dumped["asset"] == "pyramids/4"
+    # paths are relative and unix-style, like the assets
+    assert dumped["derived_from"] == "5"
+    assert dumped["transform"] == {"scale": [2.0]}
+    assert dumped["resampling_method"] == "mean"
+
+
+def test_multiscales_layout_item_derived_from_needs_a_transform() -> None:
+    # the convention requires the transformation of a derived level
+    with pytest.raises(ValidationError, match=".*'transform' is required.*"):
+        HealpixMultiscalesLayoutItem.model_validate({"asset": "4", "derived_from": "5"})
+
+
 def test_get_multiscale_group_attrs(multiscales) -> None:
     attrs = get_multiscale_group_attrs(multiscales, MetadataSettings())
 

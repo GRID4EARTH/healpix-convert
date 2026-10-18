@@ -213,17 +213,54 @@ def _derived_chunk_level(level: int, native_level: int, native_chunk_level: int)
     return max(level - max(native_depth, MIN_CHUNK_DEPTH), 0)
 
 
+def _derived_level_sources(
+    info: PyramidMultiscaleGroupInfo, coarsen_from: str
+) -> dict[PurePath, PurePath]:
+    """Native level each derived level of a pyramid is aggregated from
+    (derived level path -> native level path).
+
+    Some variables of a derived level may come from another native level: one
+    converted at several levels is aggregated from the level that
+    ``coarsen_from`` selects among the ones it is converted at (see
+    :py:func:`~healpix_convert.pyramid._variable_sources`). The level named
+    here is the one selected for a variable converted at every native level.
+
+    """
+    native: dict[int, PurePath] = {}
+    for level_path, (healpix, _) in info.native_levels.items():
+        assert healpix.refinement_level is not None
+        native[healpix.refinement_level] = level_path
+
+    sources: dict[PurePath, PurePath] = {}
+
+    for level_path, (healpix, _) in info.derived_levels.items():
+        finer = [level for level in native if level >= healpix.refinement_level]
+        source = min(finer) if coarsen_from == "nearest" else max(finer)
+        sources[level_path] = native[source]
+
+    return sources
+
+
 def _multiscales_metadata(
     group_path: PurePath,
     levels: dict[PurePath, Healpix],
     add_dggs: bool,
+    *,
+    derived_from: dict[PurePath, PurePath] | None = None,
+    resampling_method: str | None = None,
 ) -> HealpixMultiscales:
     """Multiscales metadata of a multiscale group: its levels, finest first.
 
     The assets are the paths of the level groups relative to the group holding
     the metadata, as the Multiscales Zarr convention asks.
 
+    A level in ``derived_from`` is a derived level of a pyramid: it is
+    described by the native level it is aggregated from, the transformation
+    from that level (how much longer a cell is here) and the method its cells
+    are aggregated with.
+
     """
+    derived_from = derived_from or {}
     layout: list[dict] = []
 
     for level_path, level_healpix in sorted(
@@ -232,9 +269,27 @@ def _multiscales_metadata(
         item: dict = {"asset": level_path.relative_to(group_path)}
         if add_dggs:
             item["dggs"] = level_healpix
+
+        source_path = derived_from.get(level_path)
+        if source_path is not None:
+            depth = (
+                levels[source_path].refinement_level - level_healpix.refinement_level
+            )
+            item["derived_from"] = source_path.relative_to(group_path)
+            # one factor for the single (cell) dimension: a cell of this level
+            # is 2 ** depth source cells long, hence aggregates 4 ** depth of
+            # them over the two dimensions of the sphere
+            item["transform"] = {"scale": [float(2**depth)]}
+            item["resampling_method"] = resampling_method
+
         layout.append(item)
 
-    return HealpixMultiscales.model_validate({"layout": layout})
+    metadata: dict = {"layout": layout}
+    if resampling_method is not None:
+        # the same method aggregates every derived level of a pyramid
+        metadata["resampling_method"] = resampling_method
+
+    return HealpixMultiscales.model_validate(metadata)
 
 
 def _set_pyramid_multiscale_groups(
@@ -379,10 +434,13 @@ def _set_output_groups(
         ).items():
             all_levels[level_path] = level_healpix
 
+        pyramid = multiscales_settings.pyramid_groups[path]
         multiscale_groups[path] = _multiscales_metadata(
             io_path_map[path],
             all_levels,
             multiscales_settings.add_healpix_positioning,
+            derived_from=_derived_level_sources(info, pyramid.coarsen_from),
+            resampling_method=pyramid.reduce,
         )
 
     return OutputGroupInfo(
