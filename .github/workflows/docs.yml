@@ -39,6 +39,10 @@ jobs:
         uses: prefix-dev/setup-pixi@194d461b21b6c5717c722ffc597fa91ed2ff29fa # 0.9.1
         with:
           environments: docs
+          # install exactly what pixi.lock pins, without re-checking it
+          # against pixi.toml: the docs are then built on the locked versions
+          frozen: true
+          cache: true
 
       - name: Build docs
         run: pixi run -e docs build-docs
