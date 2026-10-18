@@ -6,7 +6,7 @@ import pytest
 import xarray as xr
 from pytest_structlog import StructuredLogCapture
 
-from healpix_convert import stac_operations
+from healpix_convert.core import stac
 from healpix_convert.core.stac import StacItem
 
 
@@ -49,7 +49,7 @@ def test_extract_stac_metadata(input_attrs: list[dict[str, Any]]) -> None:
         for index, attrs in enumerate(input_attrs)
     }
 
-    actual = stac_operations._extract_stac_metadata(input_datatrees)
+    actual = stac._extract_stac_metadata(input_datatrees)
     expected = {
         n: StacItem(**attrs) for n, attrs in zip(input_datatrees.keys(), input_attrs)
     }
@@ -68,7 +68,7 @@ def test_extract_stac_metadata_empty(log: StructuredLogCapture) -> None:
     }
     group_name = list(input_datatrees)[1]
 
-    actual = stac_operations._extract_stac_metadata(input_datatrees)
+    actual = stac._extract_stac_metadata(input_datatrees)
     expected = {
         n: StacItem(**attrs)
         for n, attrs in zip(input_datatrees.keys(), input_attrs)
@@ -97,8 +97,8 @@ def test_merge_no_conflicts(values):
             else "empty set of attributes"
         )
         with pytest.raises(ValueError, match=message):
-            stac_operations._merge_no_conflicts(values)
+            stac._merge_no_conflicts(values)
         return
 
-    actual = stac_operations._merge_no_conflicts(values)
+    actual = stac._merge_no_conflicts(values)
     assert actual == values[0]

@@ -1,20 +1,32 @@
 """
-Pydantic model classes for stac discovery metadata
+The STAC discovery metadata of the input and output datasets: the item model,
+the merging of the input items into the output one, and the provenance of the
+conversion.
 """
 
 from __future__ import annotations
 
+import itertools
+import json
+import re
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from pathlib import PurePath
 from typing import TYPE_CHECKING, Any, Literal
 
+import shapely
+import structlog
+import xarray as xr
 from pydantic import BaseModel, ConfigDict
 
+from healpix_convert.core.conversion_models import OutputSpatialInfo
 from healpix_convert.core.json_schema import convert_settings_schema_url
 
 if TYPE_CHECKING:
     # only for the annotation: `core` must not depend on `settings` at runtime
     from healpix_convert.settings.common import ConvertSettings
+
+log = structlog.get_logger()
 
 
 class StacItem(BaseModel):
@@ -148,3 +160,87 @@ def format_stac_processing(
         )
 
     return properties
+
+
+def _extract_stac_metadata(
+    input_datatrees: dict[str, xr.DataTree],
+) -> dict[str, StacItem]:
+    collected_metadata = {}
+    for name, datatree in input_datatrees.items():
+        metadata = datatree.attrs.get("stac_discovery")
+        if metadata is None:
+            # FIXME: maybe raise an error instead?
+            log.warning("failed to extract STAC metadata from dataset", dataset=name)
+            continue
+        collected_metadata[name] = StacItem(**metadata)
+
+    return collected_metadata
+
+
+def _merge_no_conflicts(values: list[Any]) -> Any:
+    if len(values) == 0:
+        raise ValueError("empty set of attributes")
+
+    initial = values[0]
+    if any(initial != value for value in values[1:]):
+        raise ValueError("unexpectedly mismatching attributes")
+
+    return values[0]
+
+
+def _merge_properties(values: list[dict[str, Any]]) -> dict[str, Any]:
+    return values[0]
+
+
+def _merge_links(values: list[dict[str, Any]]) -> dict[str, Any]:
+    return values[0]
+
+
+def _merge_assets(values: list[dict[str, Any]]) -> dict[str, Any]:
+    return values[0]
+
+
+def _collect_keys(mappings: Iterable[StacItem]):
+    return list(
+        dict.fromkeys(
+            itertools.chain.from_iterable(
+                mapping.model_dump().keys() for mapping in mappings
+            )
+        )
+    )
+
+
+def merge_stac_items(
+    items: dict[str, StacItem],
+    spatial_info: OutputSpatialInfo,
+    output_path: str,
+) -> StacItem:
+    if len(items) == 0:
+        raise ValueError("no STAC metadata found")
+
+    item_id = re.sub("[^a-zA-Z0-9-]", "_", PurePath(output_path).stem)
+
+    # special-case properties, links, assets
+    merge_strategies = {
+        "properties": _merge_properties,
+        "links": _merge_links,
+        "assets": _merge_assets,
+        "geometry": lambda _: json.loads(
+            shapely.to_geojson(spatial_info.geometry_latlon)
+        ),
+        "bbox": lambda _: spatial_info.bbox,
+        "id": lambda _: item_id,
+    }
+
+    merged_item = {}
+    for name in _collect_keys(items.values()):
+        merge_strategy = merge_strategies.get(name, _merge_no_conflicts)
+        try:
+            merged_item[name] = merge_strategy(
+                [getattr(item, name) for item in items.values()]
+            )
+        except ValueError as e:
+            log.error("attribute merging failed", name=name, error=str(e))
+            raise
+
+    return StacItem(**merged_item)

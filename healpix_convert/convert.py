@@ -22,8 +22,10 @@ from healpix_convert.core.metadata import (
 )
 from healpix_convert.core.stac import (
     STAC_PROCESSING_SCHEMA_URL,
+    _extract_stac_metadata,
     format_stac_derived_links,
     format_stac_processing,
+    merge_stac_items,
 )
 from healpix_convert.healpix_converters import (
     HealpixGroupConverter,
@@ -33,7 +35,6 @@ from healpix_convert.settings.common import (
     ConvertSettings,
     validate_convert_settings,
 )
-from healpix_convert.stac_operations import _extract_stac_metadata, merge_stac_items
 
 log = structlog.get_logger()
 
