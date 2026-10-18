@@ -1,12 +1,12 @@
 import pytest
 from pydantic import ValidationError
-from pydantic.experimental.missing_sentinel import MISSING
 
 from healpix_convert.core.healpix_conventions import (
     DGGSZarrConvention,
     Healpix,
     WGS84Ellipsoid,
 )
+from healpix_convert.core.pydantic_compat import MISSING
 
 
 def test_dggs_zarr_convention_values() -> None:

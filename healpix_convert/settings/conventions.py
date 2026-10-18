@@ -32,7 +32,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from pydantic.experimental.missing_sentinel import MISSING
+
+from healpix_convert.core.pydantic_compat import MISSING
 
 #: Oldest version of the CF conventions this package knows how to write, and the
 #: one selected by default.

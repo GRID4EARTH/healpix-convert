@@ -22,6 +22,10 @@ settings = hc.get_settings("era5")  # or "cams-eac4", "climatedt-sfc"
 pass them to other jobs. The settings are also recorded in the metadata of the
 output dataset (see {doc}`metadata`).
 
+Settings written as JSON can be checked against the
+[JSON schema](https://raw.githubusercontent.com/GRID4EARTH/healpix-convert/main/convert-settings.schema.json)
+generated from the model, e.g., to get completion and validation in an editor.
+
 ## Top-level settings
 
 - `group_settings`: the conversion settings of each group to convert, keyed by

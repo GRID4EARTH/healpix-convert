@@ -8,13 +8,13 @@ from pathlib import PurePath
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, field_serializer
-from pydantic.experimental.missing_sentinel import MISSING
 
 from healpix_convert.core.healpix_conventions import Healpix
+from healpix_convert.core.pydantic_compat import MISSING
 
 _UUID: str = "d35379db-88df-4056-af3a-620245f8e347"
-_SCHEMA_URL = "https://raw.githubusercontent.com/zarr-conventions/multiscales/refs/tags/v1/schema.json"
-_SPEC_URL = "https://github.com/zarr-conventions/multiscales/blob/v1/README.md"
+_SCHEMA_URL = "https://raw.githubusercontent.com/zarr-conventions/multiscales/refs/tags/v0.1/schema.json"
+_SPEC_URL = "https://github.com/zarr-conventions/multiscales/blob/v0.1/README.md"
 _DESCR = "Multiscale layout of zarr datasets"
 
 
@@ -31,10 +31,10 @@ class MultiscalesZarrConvention(BaseModel):
     uuid: Literal["d35379db-88df-4056-af3a-620245f8e347"] = _UUID
     name: Literal["multiscales"] = "multiscales"
     schema_url: Literal[
-        "https://raw.githubusercontent.com/zarr-conventions/multiscales/refs/tags/v1/schema.json"
+        "https://raw.githubusercontent.com/zarr-conventions/multiscales/refs/tags/v0.1/schema.json"
     ] = _SCHEMA_URL
     spec_url: Literal[
-        "https://github.com/zarr-conventions/multiscales/blob/v1/README.md"
+        "https://github.com/zarr-conventions/multiscales/blob/v0.1/README.md"
     ] = _SPEC_URL
     description: Literal["Multiscale layout of zarr datasets"] = _DESCR
 

@@ -93,5 +93,6 @@ item merged from the `stac_discovery` attributes of the input datasets, with
   [STAC processing extension](https://github.com/stac-extensions/processing):
   the date of the conversion (`processing:datetime`), the versions of
   `healpix-convert` and `healpix-resample` (`processing:software`), the
-  conversion settings (`processing:expression`) and the inputs
-  (`processing:lineage`).
+  conversion settings (`processing:expression`, whose `format` is the URL of
+  the settings JSON schema of the recorded `healpix-convert` version) and the
+  inputs (`processing:lineage`).
