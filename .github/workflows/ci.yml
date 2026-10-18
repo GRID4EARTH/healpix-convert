@@ -73,10 +73,6 @@ jobs:
         uses: prefix-dev/setup-pixi@194d461b21b6c5717c722ffc597fa91ed2ff29fa # 0.9.1
         with:
           environments: "${{ matrix.env }}"
-          # install exactly what pixi.lock pins, without re-checking it
-          # against pixi.toml: the tests then run on the locked versions
-          frozen: true
-          cache: true
 
       # the credential is only needed to build the environment; drop it before
       # running anything else, so it is not live during the test run.
