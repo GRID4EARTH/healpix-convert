@@ -195,8 +195,7 @@ def test_stac_settings_from_convert_settings() -> None:
     assert settings.metadata.stac.exclude_properties == ["internal:.*"]
 
 
-@pytest.fixture
-def input_path(tmp_path):
+def _write_input(tmp_path, name: str, item: dict) -> str:
     ds = xr.Dataset(
         {"t2m": (("lat", "lon"), np.arange(64, dtype="float32").reshape(8, 8))},
         coords={
@@ -205,12 +204,17 @@ def input_path(tmp_path):
         },
     )
     tree = xr.DataTree.from_dict({"/measurements": ds})
-    tree.attrs["stac_discovery"] = STAC_ITEM
+    tree.attrs["stac_discovery"] = item
 
-    path = tmp_path / "input.zarr"
+    path = tmp_path / name
     tree.to_zarr(path, mode="w", consolidated=True)
 
     return str(path)
+
+
+@pytest.fixture
+def input_path(tmp_path):
+    return _write_input(tmp_path, "input.zarr", STAC_ITEM)
 
 
 def _convert(tmp_path, input_path, stac_settings: dict) -> dict:
@@ -347,3 +351,55 @@ def test_excluded_extensions_are_not_propagated(tmp_path, input_path) -> None:
     )
 
     assert stac["stac_extensions"] == [STAC_PROCESSING_SCHEMA_URL]
+
+
+EO_SCHEMA_URL = "https://stac-extensions.github.io/eo/v1.1.0/schema.json"
+
+
+def _convert_two_inputs(tmp_path, stac_settings: dict) -> dict:
+    """Convert two inputs whose items differ, to exercise the merge."""
+    second = STAC_ITEM | {
+        "stac_extensions": [EO_SCHEMA_URL],
+        "properties": STAC_ITEM["properties"] | {"only_second": "x"},
+    }
+    inputs = [
+        _write_input(tmp_path, "input-a.zarr", STAC_ITEM),
+        _write_input(tmp_path, "input-b.zarr", second),
+    ]
+
+    settings = ConvertSettings.model_validate(
+        {
+            "metadata": {"stac": stac_settings},
+            "group_settings": {
+                "measurements": {
+                    "healpix": {"refinement_level": 4, "indexing_scheme": "nested"},
+                    "chunk": {"method": "no_chunk"},
+                    "resampler": {"name": "nearest"},
+                }
+            },
+        }
+    )
+    output_path = str(tmp_path / "output.zarr")
+    create_healpix_dataset(inputs, settings, output_path)
+
+    return xr.open_datatree(output_path, engine="zarr").attrs["stac_discovery"]
+
+
+def test_merge_strategy_reaches_the_conversion(tmp_path) -> None:
+    # the settings must make it all the way into the merge of the input items
+    stac = _convert_two_inputs(
+        tmp_path, {"merge_extensions": "join_outer", "merge_properties": "join_inner"}
+    )
+
+    assert PROJ_SCHEMA_URL in stac["stac_extensions"]
+    assert EO_SCHEMA_URL in stac["stac_extensions"]
+    # join_inner drops what only the second input has
+    assert "only_second" not in stac["properties"]
+    assert stac["properties"]["proj:epsg"] == 4326
+
+
+def test_mismatching_extensions_no_longer_fail(tmp_path) -> None:
+    # they used to raise; pick_first, the default, keeps the first input's
+    stac = _convert_two_inputs(tmp_path, {})
+
+    assert stac["stac_extensions"] == [PROJ_SCHEMA_URL, STAC_PROCESSING_SCHEMA_URL]

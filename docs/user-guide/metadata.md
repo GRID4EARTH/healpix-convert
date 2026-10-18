@@ -100,10 +100,38 @@ item merged from the `stac_discovery` attributes of the input datasets, with
 Set `metadata.stac.include_conversion_settings` to `False` to leave
 `processing:expression` out (not recommended).
 
+### Merging the input items
+
+With several input datasets, the properties, extensions, links and assets of
+the output item are merged from theirs, with the strategy chosen per kind by
+`merge_properties`, `merge_extensions`, `merge_links` and `merge_assets`:
+
+| Strategy       | Kept                                             | Available for     |
+| -------------- | ------------------------------------------------ | ----------------- |
+| `"pick_first"` | what the first input dataset has (the default)   | all four          |
+| `"join_inner"` | what every input dataset has: their intersection | all four          |
+| `"join_outer"` | what any input dataset has: their union          | extensions, links |
+
+Properties and assets are merged by name, and `"join_inner"` keeps an entry
+only when every input has it _with the same value_ — a `datetime` that differs
+across the inputs does not describe the output either. They have no
+`"join_outer"`: a union of mappings has to invent a rule for the keys whose
+value differs across the inputs, and any such rule describes the output less
+well than leaving the entry out.
+
+Extensions and links are merged whole — two of them are the same one when they
+are equal, which is all a link has to go on — so `"join_outer"` is meaningful
+there, and lists them in the order they first appear.
+
+With a single input dataset the strategies are all equivalent. The other
+fields of the item are unaffected: the geometry, the bounding box and the `id`
+describe the output, and `stac_version` must match across the inputs or the
+conversion fails.
+
 ### Excluding and setting STAC properties, extensions, links and assets
 
-`metadata.stac` drops and sets what the output item propagates from the input
-items:
+Once merged, `metadata.stac` drops and sets what the output item propagates
+from the input items:
 
 ```python
 "metadata": {

@@ -607,6 +607,48 @@
           "title": "Include Conversion Settings",
           "type": "boolean"
         },
+        "merge_properties": {
+          "default": "pick_first",
+          "description": "How the STAC properties of several input datasets are merged.\n\n``\"join_inner\"`` keeps the properties every input has with the same value,\ni.e., what they agree on: a ``datetime`` that differs across the inputs\ndoes not describe the output either.\n\nWith a single input dataset both strategies are equivalent.",
+          "enum": [
+            "pick_first",
+            "join_inner"
+          ],
+          "title": "Merge Properties",
+          "type": "string"
+        },
+        "merge_extensions": {
+          "default": "pick_first",
+          "description": "How the STAC extensions of several input datasets are merged.\n\n``\"join_outer\"`` lists every extension any input declares, which is what\nkeeps the output item from dropping a namespace its properties still use.",
+          "enum": [
+            "pick_first",
+            "join_inner",
+            "join_outer"
+          ],
+          "title": "Merge Extensions",
+          "type": "string"
+        },
+        "merge_links": {
+          "default": "pick_first",
+          "description": "How the STAC links of several input datasets are merged.\n\nLinks have no identifier, so they are merged whole: two links are the same\none when they are equal. ``\"join_inner\"`` keeps the links every input has\nand ``\"join_outer\"`` every link any input has, in the order they first\nappear.",
+          "enum": [
+            "pick_first",
+            "join_inner",
+            "join_outer"
+          ],
+          "title": "Merge Links",
+          "type": "string"
+        },
+        "merge_assets": {
+          "default": "pick_first",
+          "description": "How the STAC assets of several input datasets are merged.\n\nMerged like the properties, by asset key. The result is then filtered by\n``exclude_assets``, which drops every input asset by default.",
+          "enum": [
+            "pick_first",
+            "join_inner"
+          ],
+          "title": "Merge Assets",
+          "type": "string"
+        },
         "exclude_properties": {
           "description": "Names of the input STAC properties that must not be propagated to the output.\n\nEach item is either the exact name of a property or a regular expression\nmatched against the whole property name (e.g., ``\"internal:.*\"`` excludes\nevery property of an ``internal`` namespace).\n\nThe properties written by healpix-convert itself (``processing:*``) keep\nprecedence.",
           "items": {

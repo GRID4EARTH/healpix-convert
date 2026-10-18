@@ -23,11 +23,25 @@ settings themselves are recorded.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from typing import Any
+from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from healpix_convert.core.utils import check_patterns, matches_any
+
+#: How the listed STAC metadata of several input datasets (extensions, links)
+#: is merged into the output's: ``"pick_first"`` keeps what the first input
+#: dataset has, ignoring the others; ``"join_inner"`` what every input dataset
+#: has (their intersection); ``"join_outer"`` what any input dataset has
+#: (their union).
+MergeStrategy: TypeAlias = Literal["pick_first", "join_inner", "join_outer"]
+
+#: How the keyed STAC metadata of several input datasets (properties, assets)
+#: is merged into the output's. There is no ``"join_outer"``: a union of
+#: mappings has to invent a rule for the keys whose value differs across the
+#: inputs, and any such rule describes the output less well than leaving the
+#: entry out.
+MappingMergeStrategy: TypeAlias = Literal["pick_first", "join_inner"]
 
 
 def _link_rel(link: Any) -> str:
@@ -87,6 +101,39 @@ class STACSettings(BaseModel):
     they name internal paths that should not be published. The rest of the
     provenance (``processing:datetime``, ``processing:software``,
     ``processing:lineage``) is written either way.
+    """
+
+    merge_properties: MappingMergeStrategy = "pick_first"
+    """How the STAC properties of several input datasets are merged.
+
+    ``"join_inner"`` keeps the properties every input has with the same value,
+    i.e., what they agree on: a ``datetime`` that differs across the inputs
+    does not describe the output either.
+
+    With a single input dataset both strategies are equivalent.
+    """
+
+    merge_extensions: MergeStrategy = "pick_first"
+    """How the STAC extensions of several input datasets are merged.
+
+    ``"join_outer"`` lists every extension any input declares, which is what
+    keeps the output item from dropping a namespace its properties still use.
+    """
+
+    merge_links: MergeStrategy = "pick_first"
+    """How the STAC links of several input datasets are merged.
+
+    Links have no identifier, so they are merged whole: two links are the same
+    one when they are equal. ``"join_inner"`` keeps the links every input has
+    and ``"join_outer"`` every link any input has, in the order they first
+    appear.
+    """
+
+    merge_assets: MappingMergeStrategy = "pick_first"
+    """How the STAC assets of several input datasets are merged.
+
+    Merged like the properties, by asset key. The result is then filtered by
+    ``exclude_assets``, which drops every input asset by default.
     """
 
     exclude_properties: list[str] = Field(default_factory=list)

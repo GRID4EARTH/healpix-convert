@@ -9,7 +9,7 @@ from __future__ import annotations
 import itertools
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import PurePath
 from typing import TYPE_CHECKING, Any, Literal
@@ -23,8 +23,9 @@ from healpix_convert.core.conversion_models import OutputSpatialInfo
 from healpix_convert.core.json_schema import convert_settings_schema_url
 
 if TYPE_CHECKING:
-    # only for the annotation: `core` must not depend on `settings` at runtime
+    # only for the annotations: `core` must not depend on `settings` at runtime
     from healpix_convert.settings.common import ConvertSettings
+    from healpix_convert.settings.stac import STACSettings
 
 log = structlog.get_logger()
 
@@ -188,16 +189,51 @@ def _merge_no_conflicts(values: list[Any]) -> Any:
     return values[0]
 
 
-def _merge_properties(values: list[dict[str, Any]]) -> dict[str, Any]:
-    return values[0]
+def _merge_mapping(values: list[Mapping[str, Any]], strategy: str) -> dict[str, Any]:
+    """Merge the keyed STAC metadata of the input items (properties, assets).
+
+    ``join_inner`` keeps what every input agrees on, key and value: an entry
+    that one input spells differently is not something they have in common.
+    """
+    if strategy == "pick_first" or len(values) == 1:
+        return dict(values[0])
+
+    merged: dict[str, Any] = {}
+
+    others = values[1:]
+    for key, value in values[0].items():
+        if all(key in other and other[key] == value for other in others):
+            merged[key] = value
+
+    return merged
 
 
-def _merge_links(values: list[dict[str, Any]]) -> dict[str, Any]:
-    return values[0]
+def _merge_sequence(values: list[Sequence[Any]], strategy: str) -> list[Any]:
+    """Merge the listed STAC metadata of the input items (extensions, links).
 
+    Items are merged whole: two of them are the same one when they are equal,
+    which is all a link has to go on. ``join_inner`` keeps what every input
+    has, ``join_outer`` what any input has, in the order they first appear.
+    """
+    if strategy == "pick_first" or len(values) == 1:
+        return list(values[0])
 
-def _merge_assets(values: list[dict[str, Any]]) -> dict[str, Any]:
-    return values[0]
+    merged: list[Any] = []
+
+    if strategy == "join_outer":
+        for items in values:
+            for item in items:
+                if item not in merged:
+                    merged.append(item)
+
+        return merged
+
+    others = values[1:]
+    for item in values[0]:
+        if item not in merged and all(item in other for other in others):
+            merged.append(item)
+
+    return merged
 
 
 def _collect_keys(mappings: Iterable[StacItem]):
@@ -214,17 +250,36 @@ def merge_stac_items(
     items: dict[str, StacItem],
     spatial_info: OutputSpatialInfo,
     output_path: str,
+    stac_settings: STACSettings | None = None,
 ) -> StacItem:
+    """Merge the STAC items of the input datasets into the output's one.
+
+    The geometry, the bounding box and the id describe the output. The
+    properties, the extensions, the links and the assets are merged with the
+    strategy the settings select for each of them (all ``pick_first`` without
+    settings). Everything else must match across the inputs.
+
+    """
     if len(items) == 0:
         raise ValueError("no STAC metadata found")
 
     item_id = re.sub("[^a-zA-Z0-9-]", "_", PurePath(output_path).stem)
 
-    # special-case properties, links, assets
+    if stac_settings is None:
+        merge_properties = merge_extensions = "pick_first"
+        merge_links = merge_assets = "pick_first"
+    else:
+        merge_properties = stac_settings.merge_properties
+        merge_extensions = stac_settings.merge_extensions
+        merge_links = stac_settings.merge_links
+        merge_assets = stac_settings.merge_assets
+
+    # special-case properties, extensions, links, assets
     merge_strategies = {
-        "properties": _merge_properties,
-        "links": _merge_links,
-        "assets": _merge_assets,
+        "properties": lambda v: _merge_mapping(v, merge_properties),
+        "stac_extensions": lambda v: _merge_sequence(v, merge_extensions),
+        "links": lambda v: _merge_sequence(v, merge_links),
+        "assets": lambda v: _merge_mapping(v, merge_assets),
         "geometry": lambda _: json.loads(
             shapely.to_geojson(spatial_info.geometry_latlon)
         ),

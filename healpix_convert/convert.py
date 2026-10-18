@@ -131,14 +131,14 @@ def _create_and_process_output(
     output_store = root_group.store
 
     log.info("••• propagating stac metadata...")
+    stac_settings = settings.metadata.stac
     stac_metadata = _extract_stac_metadata(cache.input_datatrees)
     merged_stac_metadata = merge_stac_items(
-        stac_metadata, cache.output_spatial, output_path
+        stac_metadata, cache.output_spatial, output_path, stac_settings
     )
 
     # applied on the propagated metadata only: what is written below describes
     # the conversion itself and must survive the settings
-    stac_settings = settings.metadata.stac
     merged_stac_metadata.properties = stac_settings.filter_properties(
         merged_stac_metadata.properties
     )
