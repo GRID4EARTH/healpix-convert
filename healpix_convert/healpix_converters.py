@@ -19,6 +19,7 @@ import xarray as xr
 import zarr.api.synchronous as zarr
 from zarr.api.asynchronous import JSON
 from zarr.core.sync import sync
+from zarr.dtype import parse_dtype
 
 import healpix_convert.core.utils as utils
 from healpix_convert.core.conversion_models import (
@@ -215,7 +216,9 @@ class HealpixGroupConverter(ABC):
 
         zarrays: dict[str, zarr.Array] = {}
 
-        def _get_maybe_create_array(name: str, **kwargs: Unpack[ZarrCreateArrayKwargs]):
+        def _get_maybe_create_array(
+            name: str, fill_value: Any = None, **kwargs: Unpack[ZarrCreateArrayKwargs]
+        ):
             arr = self.output_group.get(name)
             if arr is None:
                 path = (
@@ -223,7 +226,12 @@ class HealpixGroupConverter(ABC):
                     if self.output_group.path
                     else name
                 )
-                arr = zarr.create(path=path, store=self.output_group.store, **kwargs)
+                arr = zarr.create(
+                    path=path,
+                    store=self.output_group.store,
+                    fill_value=fill_value,
+                    **kwargs,
+                )
 
             assert isinstance(arr, zarr.Array)
             zarrays[name] = arr
@@ -305,6 +313,16 @@ class HealpixGroupConverter(ABC):
                     get_cf_data_variable_attrs(self.healpix, self.metadata_settings)
                 )
 
+                # cells without data are NaN in a floating output: with zarr's
+                # default fill value (0.0) they would be written as zeros, which
+                # a lossy serializer codes as values next to the real ones
+                if np.dtype(dtype).kind == "f":
+                    fill_value = np.nan
+                else:
+                    fill_value = parse_dtype(
+                        np.dtype(dtype), zarr_format=3
+                    ).default_scalar()
+
                 _get_maybe_create_array(
                     str(name),
                     shape=shape,
@@ -313,6 +331,7 @@ class HealpixGroupConverter(ABC):
                     dimension_names=[str(d) for d in dims],
                     codecs=cast(Iterable[dict[str, JSON]], self.settings.codecs),
                     attributes=attributes,
+                    fill_value=fill_value,
                 )
             else:
                 # write array unchanged in output group
