@@ -149,8 +149,7 @@
         },
         "configuration": {
           "$ref": "#/$defs/ConventionConfiguration",
-          "description": "Options of the convention.",
-          "title": "Configuration"
+          "description": "Options of the convention."
         }
       },
       "title": "DGGSConventionSelector",
@@ -192,8 +191,7 @@
         },
         "ellipsoid": {
           "$ref": "#/$defs/WGS84Ellipsoid",
-          "description": "Reference system of the DGGS (if not given, a sphere is assumed).",
-          "title": "Ellipsoid"
+          "description": "Reference system of the DGGS (if not given, a sphere is assumed)."
         },
         "spatial_dimension": {
           "default": "cells",
@@ -501,8 +499,7 @@
         },
         "configuration": {
           "$ref": "#/$defs/ConventionConfiguration",
-          "description": "Options of the convention.",
-          "title": "Configuration"
+          "description": "Options of the convention."
         }
       },
       "title": "MultiscalesConventionSelector",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -143,3 +144,21 @@ def test_schema_url_matches_the_recorded_version() -> None:
     assert properties["processing:expression"]["format"] == convert_settings_schema_url(
         version
     )
+
+
+def test_schema_does_not_depend_on_the_pydantic_version() -> None:
+    # pydantic <= 2.13 adds a `title` next to a `$ref` and 2.14 does not: the
+    # published schema must not change with the version that generated it
+    def refs(node: object) -> Iterator[dict]:
+        if isinstance(node, list):
+            for item in node:
+                yield from refs(item)
+        elif isinstance(node, dict):
+            if "$ref" in node:
+                yield node
+            for value in node.values():
+                yield from refs(value)
+
+    assert not [
+        node for node in refs(convert_settings_json_schema()) if "title" in node
+    ]

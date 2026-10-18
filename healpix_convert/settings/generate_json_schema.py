@@ -23,12 +23,33 @@ from healpix_convert.core.json_schema import (
 from healpix_convert.settings.common import ConvertSettings
 
 
+def _without_ref_titles(node: Any) -> Any:
+    """Return the schema without the ``title`` keys sitting next to a ``$ref``.
+
+    pydantic <= 2.13 writes them and 2.14 does not, so dropping them keeps the
+    published schema identical whichever version generated it. Such a title
+    only repeats the name of the field it describes.
+
+    """
+    if isinstance(node, list):
+        return [_without_ref_titles(item) for item in node]
+
+    if not isinstance(node, dict):
+        return node
+
+    cleaned = {key: _without_ref_titles(value) for key, value in node.items()}
+    if "$ref" in cleaned:
+        cleaned.pop("title", None)
+
+    return cleaned
+
+
 def convert_settings_json_schema() -> dict[str, Any]:
     """Return the JSON schema of the conversion settings."""
     return {
         "$schema": JSON_SCHEMA_DIALECT,
         "$id": CONVERT_SETTINGS_SCHEMA_URL,
-        **ConvertSettings.model_json_schema(),
+        **_without_ref_titles(ConvertSettings.model_json_schema()),
     }
 
 
