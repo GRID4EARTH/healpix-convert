@@ -309,6 +309,8 @@ class HealpixGroupConverter(ABC):
                     for key in ("valid_min", "valid_max", "valid_range"):
                         attributes.pop(key, None)
 
+                attributes.update(self.settings.metadata.overridden_attrs(str(name)))
+
                 attributes.update(
                     get_cf_data_variable_attrs(self.healpix, self.metadata_settings)
                 )

@@ -388,6 +388,15 @@
           },
           "title": "Exclude Attrs",
           "type": "array"
+        },
+        "override_attrs": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "description": "Attributes set on the output variables, overriding the input ones.\n\nEach key is either the exact name of a variable or a regular expression\nmatched against the whole name (e.g., ``\"b0[1-9]|b8a\"``), and each value the\nattributes set on the matching variables.\n\nAn override wins over ``exclude_attrs``, and the last of several matching\npatterns wins. The attributes written by healpix-convert itself\n(``grid_mapping``, ``coordinates``) keep precedence.",
+          "title": "Override Attrs",
+          "type": "object"
         }
       },
       "title": "InputMetadataSettings",

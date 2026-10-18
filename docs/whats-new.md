@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The attributes of the output variables can be set from the group settings
+  (`metadata.override_attrs`), and not only excluded ({issue}`36`).
 - The JSON schema of the conversion settings is generated from
   {py:class}`~healpix_convert.ConvertSettings` and published as
   `convert-settings.schema.json` in the root of the repository. The STAC
