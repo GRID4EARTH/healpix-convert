@@ -14,7 +14,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from pydantic.experimental.missing_sentinel import MISSING
+
+from healpix_convert.core.pydantic_compat import MISSING
 
 _UUID: str = "7b255807-140c-42ca-97f6-7a1cfecdbc38"
 _SCHEMA_URL = (
