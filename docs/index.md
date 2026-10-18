@@ -24,7 +24,8 @@ This package is under heavy development. The API is not stable yet.
   PSF, cell-point (provided by
   [healpix-resample](https://grid4earth.eu/healpix-resample/))
 - **Multi-stage workflow** — first prepare the output dataset, then run data
-  conversion in parallel jobs
+  conversion in parallel jobs, defined as the tasks of a workflow orchestration
+  tool (Prefect, Airflow, Argo Workflows, etc.)
 - **Dask-native** — parallel conversion out of the box with a distributed Dask
   cluster
 - **Cloud-ready** — read from and write to S3 object stores
