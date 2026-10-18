@@ -16,6 +16,7 @@ import structlog
 import xarray as xr
 import zarr.api.synchronous as zarr
 from zarr.api.asynchronous import JSON
+from zarr.dtype import parse_dtype
 
 import healpix_convert.core.utils as utils
 from healpix_convert.core.conversion_models import (
@@ -57,7 +58,6 @@ class ZarrCreateArrayKwargs(TypedDict):
     dimension_names: NotRequired[Iterable[str]]
     codecs: NotRequired[Iterable[dict[str, JSON]] | None]
     attributes: NotRequired[dict[str, JSON] | None]
-    fill_value: NotRequired[Any]
 
 
 class HealpixGroupConverter(ABC):
@@ -165,7 +165,9 @@ class HealpixGroupConverter(ABC):
 
         zarrays: dict[str, zarr.Array] = {}
 
-        def _get_maybe_create_array(name: str, **kwargs: Unpack[ZarrCreateArrayKwargs]):
+        def _get_maybe_create_array(
+            name: str, fill_value: Any = None, **kwargs: Unpack[ZarrCreateArrayKwargs]
+        ):
             arr = self.output_group.get(name)
             if arr is None:
                 path = (
@@ -173,7 +175,12 @@ class HealpixGroupConverter(ABC):
                     if self.output_group.path
                     else name
                 )
-                arr = zarr.create(path=path, store=self.output_group.store, **kwargs)
+                arr = zarr.create(
+                    path=path,
+                    store=self.output_group.store,
+                    fill_value=fill_value,
+                    **kwargs,
+                )
 
             assert isinstance(arr, zarr.Array)
             zarrays[name] = arr
@@ -255,7 +262,12 @@ class HealpixGroupConverter(ABC):
                 # cells without data are NaN in a floating output: with zarr's
                 # default fill value (0.0) they would be written as zeros, which
                 # a lossy serializer codes as values next to the real ones
-                fill = {"fill_value": np.nan} if np.dtype(dtype).kind == "f" else {}
+                if np.dtype(dtype).kind == "f":
+                    fill_value = np.nan
+                else:
+                    fill_value = parse_dtype(
+                        np.dtype(dtype), zarr_format=3
+                    ).default_scalar()
 
                 _get_maybe_create_array(
                     str(name),
@@ -265,7 +277,7 @@ class HealpixGroupConverter(ABC):
                     dimension_names=[str(d) for d in dims],
                     codecs=cast(Iterable[dict[str, JSON]], self.settings.codecs),
                     attributes=attributes,
-                    **fill,
+                    fill_value=fill_value,
                 )
             else:
                 # write array unchanged in output group
