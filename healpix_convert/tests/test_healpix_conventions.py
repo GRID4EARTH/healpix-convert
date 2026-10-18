@@ -25,7 +25,7 @@ def test_dggs_zarr_convention_values() -> None:
 def test_wgs84_ellipsoid_values() -> None:
     e = WGS84Ellipsoid()
 
-    assert e.name == "wgs84"
+    assert e.name == "WGS84"
     assert e.semi_major_axis == 6378137.0
     assert e.inverse_flattening == 298.257223563
 
@@ -41,12 +41,14 @@ def test_healpix_default_values() -> None:
     assert h.compression == "none"
 
 
-def test_healpix_ellipsoid_dscriminator() -> None:
-    fields = {"refinement_level": 10, "ellipsoid": {"name": "wgs84"}}
+@pytest.mark.parametrize("name", ["WGS84", "wgs84", "Wgs84"])
+def test_healpix_ellipsoid_name_case_insensitive(name: str) -> None:
+    fields = {"refinement_level": 10, "ellipsoid": {"name": name}}
 
     h = Healpix.model_validate(fields)
 
     assert isinstance(h.ellipsoid, WGS84Ellipsoid)
+    assert h.ellipsoid.name == "WGS84"
 
 
 def test_healpix_invalid_refinement_level() -> None:
