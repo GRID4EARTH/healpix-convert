@@ -35,6 +35,8 @@ output dataset (see {doc}`metadata`).
   and written as `<group>/<refinement level>` in the output, with metadata
   following the Multiscales Zarr convention. `add_healpix_positioning`
   (default `True`) adds the HEALPix grid of each level to that metadata.
+  `pyramid_groups` gives the pyramid settings of (some of) those groups, see
+  below.
 - `metadata`: the conventions followed by the output dataset (see
   {doc}`metadata`).
 
@@ -124,3 +126,41 @@ def set_level(group, group_settings):
 
 settings = settings.filter_and_replace(set_level)
 ```
+
+## Pyramid settings
+
+Each entry of `multiscale_settings.pyramid_groups` is the path of a multiscale
+group (it must also be listed in `multiscale_settings.groups`) and the settings
+of the pyramid generated for it by
+{py:func}`~healpix_convert.generate_pyramids` (see {doc}`pyramids`).
+
+| Field                  | Default     | Description                                                            |
+| ---------------------- | ----------- | ---------------------------------------------------------------------- |
+| `min_refinement_level` | (required)  | Coarsest refinement level of the pyramid                               |
+| `name`                 | `None`      | Name of a child group of the multiscale group for the generated levels |
+| `reduce`               | `"mean"`    | `"mean"`, `"min"`, `"max"` or `"sum"`                                  |
+| `coarsen_from`         | `"nearest"` | Native level a variable converted at several levels is aggregated from |
+
+```python
+settings = hc.ConvertSettings.from_dict(
+    {
+        "multiscale_settings": {
+            "groups": ["measurements/reflectance"],
+            "pyramid_groups": {
+                "measurements/reflectance": {"min_refinement_level": 12},
+            },
+        },
+        "group_settings": {...},
+    }
+)
+```
+
+`min_refinement_level` must be coarser than the finest native level of the
+group and not finer than its coarsest native level, which the pyramid would
+leave out.
+
+Every child group of a pyramid group must be converted with the
+`healpix_cell_dense` chunk method: the cells of such a chunk are all the
+children of one HEALPix cell, which is what the pyramid stage relies on. The
+chunks of the generated levels are HEALPix cells as well, sized by a heuristic
+(see {doc}`pyramids`).

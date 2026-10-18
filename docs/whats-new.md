@@ -11,8 +11,10 @@
   aggregated data, and the converted levels are never rewritten. The groups must be converted with the
   `healpix_cell_dense` chunk method: the cells of a coarser cell are then
   consecutive cells of the converted arrays, so the levels are aggregated by
-  position without reading any cell id
-  ({pull}`29`).
+  position without reading any cell id.
+- The `asset` of a multiscales layout item is now a path relative to the group
+  holding the metadata (e.g. `"7"` instead of `"measurements/7"`), as the
+  Multiscales Zarr convention asks.
 - The CAMS converter's nearest-neighbour method now assigns the input points
   to cells with healpix-geo on the WGS84 ellipsoid that the output declares,
   instead of healpy on the sphere. Some points move to a neighbouring cell,

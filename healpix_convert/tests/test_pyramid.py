@@ -24,6 +24,7 @@ from healpix_convert.cache import (
     MIN_CHUNK_DEPTH,
     _chunk_cells,
     _coarsest_whole_level,
+    _multiscales_metadata,
     _pyramid_chunk_level,
     _set_pyramid_groups,
 )
@@ -108,7 +109,7 @@ def _block_means(values, parents) -> list[float]:
 def _multiscales(levels) -> HealpixMultiscales:
     """Multiscales metadata of the levels converted from the input data."""
     layout = [
-        {"asset": f"{GROUP}/{level}", "dggs": _healpix(level)}
+        {"asset": str(level), "dggs": _healpix(level)}
         for level in sorted(levels, reverse=True)
     ]
 
@@ -160,10 +161,16 @@ def _cache_and_settings(
     )
     multiscale_groups = {PurePath(GROUP): _multiscales(levels)}
 
-    for group_path, info in pyramid_multiscale_groups.items():
-        if group_path == io_path_map[info.input_multiscale_path]:
-            # the group holding the pyramid is described by its whole layout
-            multiscale_groups[info.input_multiscale_path] = info.multiscales_metadata
+    for path, info in pyramid_multiscale_groups.items():
+        # the group holding the pyramid is described by its whole layout
+        levels = {}
+
+        for level_path, (level_healpix, _) in (
+            info.native_levels | info.pyramid_levels
+        ).items():
+            levels[level_path] = level_healpix
+
+        multiscale_groups[path] = _multiscales_metadata(io_path_map[path], levels, True)
 
     cache = ConvertStagingCache(
         output_spatial=output_spatial,
@@ -292,7 +299,7 @@ def test_pyramid_levels_and_metadata(converted):
 
     # the multiscale group declares the whole pyramid, and keeps its attributes
     multiscales = dt[GROUP].attrs["multiscales"]
-    assert _layout_assets(multiscales) == [f"{GROUP}/3", f"{GROUP}/2", f"{GROUP}/1"]
+    assert _layout_assets(multiscales) == ["3", "2", "1"]
     assert [item["dggs"]["refinement_level"] for item in multiscales["layout"]] == [
         3,
         2,
@@ -456,28 +463,26 @@ def test_pyramid_chunk_level():
     assert _pyramid_chunk_level(18, 20, 19) == 18 - MIN_CHUNK_DEPTH
 
 
-def test_pyramid_in_a_sibling_group(converted):
+def test_pyramid_in_a_child_group(converted):
     path, cell_ids, temperature, _ = converted
 
     dt = _generate_pyramids(
-        *_cache_and_settings([3], {"min_refinement_level": 2, "name": "pyramid"}), path
+        *_cache_and_settings([3], {"min_refinement_level": 2, "name": "pyramids"}), path
     )
 
-    # the generated levels are written next to the multiscale group, which is
-    # left as it is
-    assert set(dt[GROUP].children) == {"3"}
-    assert _layout_assets(dt[GROUP].attrs["multiscales"]) == [f"{GROUP}/3"]
-    assert set(dt["pyramid"].children) == {"2"}
+    # the generated levels are written in a child group of the multiscale
+    # group, next to the levels converted from the input data
+    assert set(dt[GROUP].children) == {"3", "pyramids"}
+    assert set(dt[f"{GROUP}/pyramids"].children) == {"2"}
 
-    # the layout of the new group describes the whole pyramid: the native level
-    # (in the original group) followed by the generated ones
-    assert _layout_assets(dt["pyramid"].attrs["multiscales"]) == [
-        f"{GROUP}/3",
-        "pyramid/2",
-    ]
+    # the multiscale group still describes the whole pyramid, with assets
+    # pointing at its own children only
+    assert _layout_assets(dt[GROUP].attrs["multiscales"]) == ["3", "pyramids/2"]
+
     parents = cell_ids >> np.uint64(2)
-    expected = [np.nanmean(temperature[parents == cell]) for cell in np.unique(parents)]
-    np.testing.assert_allclose(dt["pyramid/2"]["temperature"].values, expected)
+    expected = _block_means(temperature, parents)
+    generated = dt[f"{GROUP}/pyramids/2"]["temperature"]
+    np.testing.assert_allclose(generated.values, expected)
 
 
 def test_multiple_native_levels(converted_multi_level):
@@ -655,12 +660,7 @@ def test_prepare_creates_the_pyramid_groups(prepared):
     # the generated levels are groups of the output dataset, like the converted
     # ones, and the multiscale group describes the whole pyramid
     assert sorted(root[GROUP].group_keys()) == ["0", "1", "2", "3"]
-    assert _layout_assets(root[GROUP].attrs["multiscales"]) == [
-        f"{GROUP}/3",
-        f"{GROUP}/2",
-        f"{GROUP}/1",
-        f"{GROUP}/0",
-    ]
+    assert _layout_assets(root[GROUP].attrs["multiscales"]) == ["3", "2", "1", "0"]
 
     for level in (1, 0):
         group = root[f"{GROUP}/{level}"]
@@ -681,12 +681,7 @@ def test_prepare_dry_run_creates_the_pyramid_groups(tmp_path):
     # the structure of the output dataset, pyramid groups included, without
     # writing anything
     assert set(dt[GROUP].children) == {"3", "2", "1", "0"}
-    assert _layout_assets(dt[GROUP].attrs["multiscales"]) == [
-        f"{GROUP}/3",
-        f"{GROUP}/2",
-        f"{GROUP}/1",
-        f"{GROUP}/0",
-    ]
+    assert _layout_assets(dt[GROUP].attrs["multiscales"]) == ["3", "2", "1", "0"]
     assert not dt[f"{GROUP}/0"].to_dataset().variables
     assert not (tmp_path / "converted.zarr").exists()
 
@@ -714,12 +709,7 @@ def test_conversion_workflow(converted_workflow):
 
     # the converted levels (3 and 2) and the generated ones (1 and 0)
     assert set(dt[GROUP].children) == {"3", "2", "1", "0"}
-    assert _layout_assets(dt[GROUP].attrs["multiscales"]) == [
-        f"{GROUP}/3",
-        f"{GROUP}/2",
-        f"{GROUP}/1",
-        f"{GROUP}/0",
-    ]
+    assert _layout_assets(dt[GROUP].attrs["multiscales"]) == ["3", "2", "1", "0"]
 
     converted = dt[GROUP]["3"].to_dataset()
     for level in (1, 0):
@@ -740,13 +730,9 @@ def test_pyramid_structure_comes_from_the_staging_cache(converted_workflow):
     info = cache.output_groups.pyramid_multiscale_groups[PurePath(GROUP)]
     dt = utils.open_datatrees([output_path], chunks={})[0]
 
-    assert info.input_multiscale_path == PurePath(GROUP)
-    assert _layout_assets(info.multiscales_metadata) == [
-        f"{GROUP}/3",
-        f"{GROUP}/2",
-        f"{GROUP}/1",
-        f"{GROUP}/0",
-    ]
+    # the multiscales metadata of the group describes the whole pyramid
+    multiscales = cache.output_groups.multiscale_groups[PurePath(GROUP)]
+    assert _layout_assets(multiscales) == ["3", "2", "1", "0"]
 
     # the converted levels, with the HEALPix grid and the chunks they were
     # converted with

@@ -407,6 +407,10 @@ class PyramidSettings(BaseModel):
     (the native levels of the multiscale group), down to
     :py:attr:`min_refinement_level`.
 
+    The generated levels are written in the multiscale group, next to the
+    levels converted from the input data or in a child group of its own (see
+    :py:attr:`name`).
+
     Every child group of the multiscale group must be converted with the
     ``healpix_cell_dense`` chunk method: the cells of such a chunk are all the
     children of one HEALPix cell, which is what lets the generated levels be
@@ -426,15 +430,29 @@ class PyramidSettings(BaseModel):
     """
 
     name: str | None = None
-    """Name of the new group, sibling of the multiscale group, where the
-    generated levels are written.
+    """Name of a new group, direct child of the multiscale group, where the
+    generated levels are written, e.g. "pyramids"::
 
-    That group is a multiscale group of its own: its layout lists the native
-    levels (in the original group) followed by the generated ones, so that the
-    original group is left untouched.
+        reflectance          (multiscale group)
+        ├── 20               (native level)
+        ├── 19               (native level)
+        ├── 17               (native level)
+        └── pyramids
+            ├── 18           (generated level)
+            └── 16           (generated level)
 
-    If None (default), the generated levels are added to the multiscale group
-    itself (its layout is extended).
+    If None (default), the generated levels are written next to the native
+    levels, as direct children of the multiscale group::
+
+        reflectance          (multiscale group)
+        ├── 20               (native level)
+        ├── 19               (native level)
+        ├── 18               (generated level)
+        ├── 17               (native level)
+        └── 16               (generated level)
+
+    Either way the multiscale group holds every level of the pyramid, and its
+    multiscales metadata describes them all.
     """
 
     reduce: ReduceMethod = "mean"

@@ -60,8 +60,11 @@ Each HEALPix group lists the
 A multiscale group (see `multiscale_settings` in {doc}`settings`) lists the
 [Multiscales Zarr convention](https://github.com/zarr-conventions/multiscales)
 and the DGGS Zarr convention in its `zarr_conventions` attribute. Its
-`multiscales` attribute lists its children groups, one per refinement level
-(`layout`), with their HEALPix grid if `add_healpix_positioning` is set.
+`multiscales` attribute lists its groups, one per refinement level (`layout`),
+with their HEALPix grid if `add_healpix_positioning` is set. As the convention
+asks, the `asset` of a layout item is a path relative to the group holding the
+metadata, e.g. `"7"` for a converted level and `"pyramids/4"` for a level
+generated in a child group (see {doc}`pyramids`).
 
 ## CF conventions
 

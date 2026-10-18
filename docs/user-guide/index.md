@@ -25,6 +25,12 @@ Convert the chunks of a group in parallel on a Dask distributed cluster.
 Read the input datasets from and write the output dataset to S3.
 :::
 
+:::{grid-item-card} HEALPix pyramids
+:link: pyramids
+:link-type: doc
+Generate coarser HEALPix refinement levels in a converted dataset.
+:::
+
 :::{grid-item-card} Output metadata
 :link: metadata
 :link-type: doc
@@ -40,5 +46,6 @@ output dataset.
 settings
 dask
 s3
+pyramids
 metadata
 ```

@@ -61,14 +61,15 @@ Multiscale group
   `multiscale_settings` in {doc}`user-guide/settings`).
 
 Pyramid multiscale group
-  A group of the output Zarr dataset holding the levels converted from the
-  input data (native levels) and the coarser levels generated from them
-  (pyramid levels). It is the converted multiscale group itself, or a sibling
-  of it. See {py:func}`~healpix_convert.generate_pyramids`.
+  A multiscale group of the output Zarr dataset holding the levels converted
+  from the input data (native levels) and the coarser levels generated from
+  them (pyramid levels). Its multiscales metadata describes them all. See
+  {py:func}`~healpix_convert.generate_pyramids`.
 
 Pyramid level group
-  A group of a pyramid multiscale group holding one generated level, named
-  after its refinement level, sibling of the native level groups.
+  A group holding one generated level, named after its refinement level. It is
+  a child of the pyramid multiscale group, next to the native level groups, or
+  of a group of its own within it (the `name` pyramid setting).
 
 Native level
   A refinement level of a multiscale group that is converted from the input

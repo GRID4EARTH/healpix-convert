@@ -14,13 +14,13 @@ import xarray as xr
 import healpix_convert.core.utils as utils
 from healpix_convert.core.conversion_models import (
     ConvertStagingCache,
-    HealpixLevelInfo,
     InputGroupSpatialInfo,
     InputSpatialInfo,
     OutputGroupInfo,
     OutputSpatialInfo,
     PyramidMultiscaleGroupInfo,
 )
+from healpix_convert.core.healpix_conventions import Healpix
 from healpix_convert.core.multiscales_conventions import HealpixMultiscales
 from healpix_convert.settings.common import (
     ConvertSettings,
@@ -213,14 +213,28 @@ def _pyramid_chunk_level(level: int, native_level: int, native_chunk_level: int)
     return max(level - max(native_depth, MIN_CHUNK_DEPTH), 0)
 
 
-def _level_number(item: tuple[PurePath, HealpixLevelInfo]) -> int:
-    """HEALPix refinement level of one level group, given as a
-    ``(path, information)`` item (sort key).
-    """
-    healpix, _ = item[1]
-    assert healpix.refinement_level is not None
+def _multiscales_metadata(
+    group_path: PurePath,
+    levels: dict[PurePath, Healpix],
+    add_dggs: bool,
+) -> HealpixMultiscales:
+    """Multiscales metadata of a multiscale group: its levels, finest first.
 
-    return healpix.refinement_level
+    The assets are the paths of the level groups relative to the group holding
+    the metadata, as the Multiscales Zarr convention asks.
+
+    """
+    layout: list[dict] = []
+
+    for level_path, level_healpix in sorted(
+        levels.items(), key=lambda item: item[1].refinement_level, reverse=True
+    ):
+        item: dict = {"asset": level_path.relative_to(group_path)}
+        if add_dggs:
+            item["dggs"] = level_healpix
+        layout.append(item)
+
+    return HealpixMultiscales.model_validate({"layout": layout})
 
 
 def _set_pyramid_groups(
@@ -229,16 +243,17 @@ def _set_pyramid_groups(
     output_spatial: OutputSpatialInfo,
 ) -> dict[PurePath, PyramidMultiscaleGroupInfo]:
     """Compute the structure of the pyramids given in the multiscale settings:
-    the levels of each pyramid multiscale group of the output dataset, with
-    their HEALPix grid, their chunks and the multiscales metadata of the group.
+    the levels of each multiscale group holding one, with their HEALPix grid
+    and their chunks.
 
     The generated (pyramid) levels are the levels from the finest level
     converted from the input data down to the coarsest level of the pyramid,
-    those converted from the input data (native levels) excepted.
+    those converted from the input data (native levels) excepted. They are
+    written next to the native levels or in a child group of the multiscale
+    group, as its ``name`` pyramid setting says.
 
     """
     pyramid_groups: dict[PurePath, PyramidMultiscaleGroupInfo] = {}
-    add_dggs = settings.multiscale_settings.add_healpix_positioning
 
     for path, pyramid in settings.multiscale_settings.pyramid_groups.items():
         native_paths = settings.native_refinement_levels(path)
@@ -275,13 +290,13 @@ def _set_pyramid_groups(
                 group_settings.chunk.healpix.refinement_level,
             )
 
-        # the generated levels are added to the multiscale group itself, or to
-        # a new group next to it
+        # the generated levels are written next to the native levels, or in a
+        # child group of the multiscale group
         group_path = io_path_map[path]
         if pyramid.name is None:
             pyramid_path = group_path
         else:
-            pyramid_path = group_path.parent / pyramid.name
+            pyramid_path = group_path / pyramid.name
 
         healpix = finest_settings.healpix
         pyramid_levels = {}
@@ -295,21 +310,7 @@ def _set_pyramid_groups(
                 _pyramid_chunk_level(level, finest_level, chunk_level),
             )
 
-        # the layout of the group describes all its levels, finest first
-        levels = dict(native_levels) | pyramid_levels
-        layout: list[dict] = []
-
-        for level_path, (level_healpix, _) in sorted(
-            levels.items(), key=_level_number, reverse=True
-        ):
-            item: dict = {"asset": level_path}
-            if add_dggs:
-                item["dggs"] = level_healpix
-            layout.append(item)
-
-        pyramid_groups[pyramid_path] = PyramidMultiscaleGroupInfo(
-            input_multiscale_path=path,
-            multiscales_metadata=HealpixMultiscales.model_validate({"layout": layout}),
+        pyramid_groups[path] = PyramidMultiscaleGroupInfo(
             native_levels=native_levels,
             pyramid_levels=pyramid_levels,
         )
@@ -344,7 +345,7 @@ def _set_output_groups(
 
         # configure multiscales
         if path in multiscales_settings.groups:
-            layouts: list[dict] = []
+            levels: dict[PurePath, Healpix] = {}
 
             for child_dt in dt0.children.values():
                 child_path = PurePath(child_dt.path.lstrip("/"))
@@ -355,30 +356,36 @@ def _set_output_groups(
                         child_settings.healpix.refinement_level
                     )
                     io_path_map[child_path] = group_output_path
-                    layout = {"asset": group_output_path}
-                    if multiscales_settings.add_healpix_positioning:
-                        layout["dggs"] = child_settings.healpix
-                    layouts.append(layout)
+                    levels[group_output_path] = child_settings.healpix
 
-            if layouts:
-                multiscale_groups[path] = HealpixMultiscales.model_validate(
-                    {"layout": layouts}
-                )
-            else:
+            if not levels:
                 raise ValueError(
                     f"multiscale group {path} has no child group to convert to HEALPix"
                 )
+
+            multiscale_groups[path] = _multiscales_metadata(
+                path, levels, multiscales_settings.add_healpix_positioning
+            )
 
     pyramid_multiscale_groups = _set_pyramid_groups(
         settings, io_path_map, output_spatial
     )
 
-    for group_path, info in pyramid_multiscale_groups.items():
-        input_path = info.input_multiscale_path
-        if group_path == io_path_map[input_path]:
-            # the pyramid is written in the multiscale group itself: that group
-            # is described once, by the layout of the whole pyramid
-            multiscale_groups[input_path] = info.multiscales_metadata
+    for path, info in pyramid_multiscale_groups.items():
+        # the metadata of a multiscale group holding a pyramid describes the
+        # whole pyramid, its generated levels included
+        pyramid_levels = {}
+
+        for level_path, (level_healpix, _) in (
+            info.native_levels | info.pyramid_levels
+        ).items():
+            pyramid_levels[level_path] = level_healpix
+
+        multiscale_groups[path] = _multiscales_metadata(
+            io_path_map[path],
+            pyramid_levels,
+            multiscales_settings.add_healpix_positioning,
+        )
 
     return OutputGroupInfo(
         multiscale_groups=multiscale_groups,
@@ -504,7 +511,9 @@ def create_staging_cache(
     pyramid_group_lines = []
 
     for path, info in cache.output_groups.pyramid_multiscale_groups.items():
-        levels = [_level_number(item) for item in info.pyramid_levels.items()]
+        levels = [
+            healpix.refinement_level for healpix, _ in info.pyramid_levels.values()
+        ]
         pyramid_group_lines.append(
             f"  - {path} (generated levels: {sorted(levels, reverse=True)})"
         )

@@ -45,7 +45,9 @@ class HealpixMultiscalesLayoutItem(BaseModel):
     model_config = ConfigDict(frozen=True, use_attribute_docstrings=True)
 
     asset: PurePath
-    """Name of the single-scale group (healpix level)."""
+    """Path of the single-scale group (healpix level), relative to the group
+    holding the multiscales metadata.
+    """
 
     dggs: Healpix | MISSING = MISSING
     """HEALPix grid settings (absolute positioning)."""

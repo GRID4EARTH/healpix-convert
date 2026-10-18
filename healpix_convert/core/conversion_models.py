@@ -214,17 +214,13 @@ class PyramidMultiscaleGroupInfo(BaseModel):
     i.e., a group holding the HEALPix levels converted from the input data
     (native levels) and the coarser levels generated from them (pyramid
     levels).
+
+    The generated levels are groups of the multiscale group, next to the
+    converted ones or under a child group of it (the ``name`` pyramid setting).
+
     """
 
     model_config = ConfigDict(use_attribute_docstrings=True)
-
-    input_multiscale_path: PurePath
-    """Path of the multiscale group in the input dataset(s)."""
-
-    multiscales_metadata: HealpixMultiscales
-    """Multiscales metadata of the group (all its levels, from the finest
-    native level down to the coarsest generated one).
-    """
 
     native_levels: dict[PurePath, HealpixLevelInfo] = Field(default_factory=dict)
     """HEALPix grid and chunk level of each level converted from the input data
@@ -235,11 +231,6 @@ class PyramidMultiscaleGroupInfo(BaseModel):
     """HEALPix grid and chunk level of each generated level (keys: paths of the
     pyramid level groups in the output dataset).
     """
-
-    @field_serializer("input_multiscale_path")
-    def serialize_input_multiscale_path(self, value):
-        # always convert paths to strings (unix-style)
-        return value.as_posix()
 
     @field_serializer("native_levels", "pyramid_levels")
     def serialize_levels(self, value):
@@ -257,7 +248,9 @@ class OutputGroupInfo(BaseModel):
         default_factory=dict
     )
     """Multiscale groups holding a pyramid of generated HEALPix levels
-    (keys: paths of those groups in the output dataset).
+    (keys: paths of those groups in the input dataset(s), like
+    :py:attr:`multiscale_groups`, whose metadata describes their whole
+    pyramid).
     """
 
     excluded_groups: list[PurePath] = Field(default_factory=list)

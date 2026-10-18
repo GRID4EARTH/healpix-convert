@@ -2,8 +2,8 @@
 
 The last stage of the conversion aggregates the levels of the multiscale groups
 of the output dataset onto coarser HEALPix refinement levels, each written in a
-group of its own (the converted levels are never rewritten). Viewers like
-Gridlook then pick the level from the zoom.
+group of the multiscale group (the converted levels are never rewritten).
+Viewers like Gridlook then pick the level from the zoom.
 
 The structure of the pyramids — which levels are generated, in which groups,
 with which HEALPix grid and chunks, and the multiscales metadata describing
@@ -46,7 +46,6 @@ from healpix_convert.core.healpix_conventions import CFHealpixGridMapping, Healp
 from healpix_convert.core.metadata import (
     CF_GRID_MAPPING_VARIABLE,
     get_healpix_group_attrs,
-    get_multiscale_group_attrs,
 )
 from healpix_convert.settings.common import ConvertSettings, PyramidSettings
 
@@ -58,12 +57,12 @@ def create_pyramid_groups(
     cache: ConvertStagingCache,
     settings: ConvertSettings,
 ) -> None:
-    """Create the (empty) Zarr groups of the generated pyramid levels, and
-    describe the pyramids in the multiscales metadata of the groups holding
-    them.
+    """Create the (empty) Zarr groups of the generated pyramid levels.
 
     The arrays of those groups are created when the converted data is
-    aggregated onto them (see :py:func:`write_pyramid_levels`).
+    aggregated onto them (see :py:func:`write_pyramid_levels`). The multiscales
+    metadata describing a pyramid is written with the multiscale group that
+    holds it, like the metadata of any other output group.
 
     Parameters
     ----------
@@ -76,29 +75,15 @@ def create_pyramid_groups(
         The conversion settings (the conventions written here).
 
     """
-    # the multiscale groups of the output dataset are created with their
-    # metadata (the layout of their whole pyramid, when they hold one)
-    multiscale_paths = {
-        cache.output_groups.io_path_map[path]
-        for path in cache.output_groups.multiscale_groups
-    }
-
     for path, info in cache.output_groups.pyramid_multiscale_groups.items():
         for level_path, (healpix, _) in info.pyramid_levels.items():
+            # the group named by the pyramid settings, if any, is created along
+            # the way
             group = zarr.open_group(output_store, path=level_path.as_posix(), mode="a")
             group.attrs.update(get_healpix_group_attrs(healpix, settings.metadata))
 
-        if path not in multiscale_paths:
-            # a group of its own, next to the multiscale group: it describes
-            # the pyramid itself (and keeps the attributes it has)
-            group = zarr.open_group(output_store, path=path.as_posix(), mode="a")
-            group.attrs.update(
-                get_multiscale_group_attrs(info.multiscales_metadata, settings.metadata)
-            )
-
         log.info(
-            f"••• created the pyramid groups of "
-            f"'{info.input_multiscale_path.as_posix()}' in '{path.as_posix()}': "
+            f"••• created the pyramid groups of '{path.as_posix()}': "
             f"levels {_levels(info.pyramid_levels)}"
         )
 
@@ -142,9 +127,7 @@ def write_pyramid_levels(
     writes = []
 
     for path, info in cache.output_groups.pyramid_multiscale_groups.items():
-        pyramid = settings.multiscale_settings.pyramid_groups[
-            info.input_multiscale_path
-        ]
+        pyramid = settings.multiscale_settings.pyramid_groups[path]
         log.info(
             f"••• aggregating the pyramid levels of '{path.as_posix()}' "
             f"({pyramid.reduce} of the converted levels "
