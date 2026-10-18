@@ -216,7 +216,8 @@ class PyramidMultiscaleGroupInfo(BaseModel):
     levels).
 
     The derived levels are groups of the multiscale group, next to the
-    converted ones or under a child group of it (the ``name`` pyramid setting).
+    converted ones or under a child group of it (the ``subgroup_name`` pyramid
+    setting).
 
     """
 

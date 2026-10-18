@@ -73,7 +73,7 @@ Derived level
 Derived level group
   A group holding one derived level, named after its refinement level. It is a
   child of the pyramid multiscale group, next to the native level groups, or of
-  a group of its own within it (the `name` pyramid setting).
+  a group of its own within it (the `subgroup_name` pyramid setting).
 
 Native level
   A refinement level of a multiscale group that is converted from the input

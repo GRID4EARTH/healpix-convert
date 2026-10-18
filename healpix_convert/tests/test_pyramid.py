@@ -467,7 +467,8 @@ def test_pyramid_in_a_child_group(converted):
     path, cell_ids, temperature, _ = converted
 
     dt = _generate_pyramids(
-        *_cache_and_settings([3], {"derived_levels": [2], "name": "pyramids"}), path
+        *_cache_and_settings([3], {"derived_levels": [2], "subgroup_name": "pyramids"}),
+        path,
     )
 
     # the derived levels are written in a child group of the multiscale

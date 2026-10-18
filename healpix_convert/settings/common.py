@@ -408,7 +408,7 @@ class PyramidSettings(BaseModel):
     multiscale group).
 
     The derived levels are written in the multiscale group, next to the native
-    levels or in a child group of its own (see :py:attr:`name`).
+    levels or in a child group of its own (see :py:attr:`subgroup_name`).
 
     Every child group of the multiscale group must be converted with the
     ``healpix_cell_dense`` chunk method: the cells of such a chunk are all the
@@ -430,7 +430,7 @@ class PyramidSettings(BaseModel):
     the input data).
     """
 
-    name: str | None = None
+    subgroup_name: str | None = None
     """Name of a new group, direct child of the multiscale group, where the
     derived levels are written, e.g. "pyramids"::
 

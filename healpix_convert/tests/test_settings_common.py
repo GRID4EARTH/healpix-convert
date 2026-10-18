@@ -193,7 +193,7 @@ def test_pyramid_settings() -> None:
 
     assert pyramid.derived_levels == [6, 3]
     assert pyramid.reduce == "max"
-    assert pyramid.name is None
+    assert pyramid.subgroup_name is None
     assert pyramid.coarsen_from == "nearest"
 
     # paths are serialized unix-style

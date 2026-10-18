@@ -248,7 +248,7 @@ def _set_pyramid_multiscale_groups(
 
     The derived levels are the ``derived_levels`` of the pyramid settings. They
     are written next to the native levels or in a child group of the multiscale
-    group, as its ``name`` pyramid setting says.
+    group, as its ``subgroup_name`` pyramid setting says.
 
     """
     pyramid_multiscale_groups: dict[PurePath, PyramidMultiscaleGroupInfo] = {}
@@ -294,10 +294,10 @@ def _set_pyramid_multiscale_groups(
         # the derived levels are written next to the native levels, or in a
         # child group of the multiscale group
         group_path = io_path_map[path]
-        if pyramid.name is None:
+        if pyramid.subgroup_name is None:
             derived_path = group_path
         else:
-            derived_path = group_path / pyramid.name
+            derived_path = group_path / pyramid.subgroup_name
 
         healpix = finest_settings.healpix
         derived_levels = {}

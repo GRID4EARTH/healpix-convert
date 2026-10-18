@@ -147,7 +147,7 @@ measurements        (multiscale group)
 └── 4               (derived)
 ```
 
-With a `name`, they are written in a child group of it instead:
+With a `subgroup_name`, they are written in a child group of it instead:
 
 ```text
 measurements        (multiscale group)
@@ -160,8 +160,9 @@ measurements        (multiscale group)
 
 Either way the multiscale group describes the whole pyramid in its
 `multiscales` metadata, whose assets are paths relative to that group
-(`"7"`, `"6"`, `"5"`, `"4"` above, or `"pyramids/5"` with a name), and the
-levels converted from the input data are neither moved nor copied. They are
+(`"7"`, `"6"`, `"5"`, `"4"` above, or `"pyramids/5"` with a subgroup name),
+and the levels converted from the input data are neither moved nor copied. They
+are
 not rewritten either, so the codecs they were written with, lossy ones
 included, are left untouched.
 

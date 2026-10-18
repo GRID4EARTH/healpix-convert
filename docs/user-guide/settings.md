@@ -137,7 +137,7 @@ of the pyramid derived for it by
 | Field            | Default     | Description                                                            |
 | ---------------- | ----------- | ---------------------------------------------------------------------- |
 | `derived_levels` | (required)  | Refinement levels of the pyramid to generate                           |
-| `name`           | `None`      | Name of a child group of the multiscale group for the derived levels   |
+| `subgroup_name`  | `None`      | Name of a child group of the multiscale group for the derived levels   |
 | `reduce`         | `"mean"`    | `"mean"`, `"min"`, `"max"` or `"sum"`                                  |
 | `coarsen_from`   | `"nearest"` | Native level a variable converted at several levels is aggregated from |
 
