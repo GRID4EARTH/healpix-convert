@@ -34,6 +34,16 @@ import healpix_convert as hc
 hc.create_healpix_dataset(["input.zarr"], settings, "output.zarr")
 ```
 
+:::{note}
+This all-at-once function is meant for quick conversions of small inputs and
+for test cases. Avoid it for production conversions of large datasets: run the
+steps below as the tasks of a workflow orchestration tool instead (e.g.,
+[Prefect](https://www.prefect.io), [Airflow](https://airflow.apache.org) or
+[Argo Workflows](https://argoproj.github.io/workflows/)). The multi-stage API
+is designed for that, and the orchestrator handles resource management, task
+failures and retries.
+:::
+
 The rest of this page goes through the steps one by one.
 
 ## Input datasets

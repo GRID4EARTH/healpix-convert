@@ -487,6 +487,15 @@ def create_healpix_dataset(
         The output Zarr dataset with HEALPix data and/or metadata, returned
         as an Xarray DataTree object.
 
+    Notes
+    -----
+    This function is meant for quick conversions of small inputs and for test
+    cases. For production conversions of large datasets, prefer the staged API
+    (:py:func:`create_staging_cache`, :py:func:`prepare_healpix_dataset` and
+    :py:func:`convert_group_to_healpix`) and run the stages as the tasks of a
+    workflow orchestration tool (Prefect, Airflow, Argo Workflows, etc.), which
+    handles resource management, task failures and retries.
+
     """
     log.info(f"••• start converting {len(input_paths)} input datasets into HEALPix...")
 

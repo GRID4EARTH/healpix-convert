@@ -15,6 +15,14 @@
 - The `asset` of a multiscales layout item is now a path relative to the group
   holding the metadata (e.g. `"7"` instead of `"measurements/7"`), as the
   Multiscales Zarr convention asks.
+- The attributes of the output variables can be set from the group settings
+  (`metadata.override_attrs`), and not only excluded ({issue}`36`).
+- The JSON schema of the conversion settings is generated from
+  {py:class}`~healpix_convert.ConvertSettings` and published as
+  `convert-settings.schema.json` in the root of the repository. The STAC
+  `processing:expression` property of the output records it as the `format` of
+  the settings, pinned to the tag or the commit of the `healpix-convert`
+  version that produced the dataset ({issue}`19`).
 - The CAMS converter's nearest-neighbour method now assigns the input points
   to cells with healpix-geo on the WGS84 ellipsoid that the output declares,
   instead of healpy on the sphere. Some points move to a neighbouring cell,

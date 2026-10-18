@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import PurePath
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -262,6 +262,15 @@ class CodecSettings(TypedDict):
     configuration: dict[str, Any]
 
 
+def _check_patterns(patterns: Iterable[str]) -> None:
+    """Raise a ValueError if any of the given regular expressions is invalid."""
+    for pattern in patterns:
+        try:
+            re.compile(pattern)
+        except re.error as err:
+            raise ValueError(f"invalid regular expression {pattern!r}: {err}") from None
+
+
 class InputMetadataSettings(BaseModel):
     """Settings for the metadata read from the input dataset(s)."""
 
@@ -277,16 +286,31 @@ class InputMetadataSettings(BaseModel):
     ``"history"`` and ``"history_of_appended_files"``).
     """
 
+    override_attrs: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    """Attributes set on the output variables, overriding the input ones.
+
+    Each key is either the exact name of a variable or a regular expression
+    matched against the whole name (e.g., ``"b0[1-9]|b8a"``), and each value the
+    attributes set on the matching variables.
+
+    An override wins over ``exclude_attrs``, and the last of several matching
+    patterns wins. The attributes written by healpix-convert itself
+    (``grid_mapping``, ``coordinates``) keep precedence.
+    """
+
     @field_validator("exclude_attrs")
     @classmethod
     def validate_patterns(cls, value: list[str]) -> list[str]:
-        for pattern in value:
-            try:
-                re.compile(pattern)
-            except re.error as err:
-                raise ValueError(
-                    f"invalid regular expression {pattern!r}: {err}"
-                ) from None
+        _check_patterns(value)
+
+        return value
+
+    @field_validator("override_attrs")
+    @classmethod
+    def validate_override_patterns(
+        cls, value: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        _check_patterns(value)
 
         return value
 
@@ -299,6 +323,18 @@ class InputMetadataSettings(BaseModel):
     def filter_attrs(self, attrs: Mapping[str, Any]) -> dict[str, Any]:
         """Return a copy of the given input attributes without the excluded ones."""
         return {k: v for k, v in attrs.items() if not self.is_excluded(k)}
+
+    def overridden_attrs(self, name: str) -> dict[str, Any]:
+        """Return the attributes set on the output variable with the given name,
+        merged from all the matching ``override_attrs`` patterns.
+        """
+        attrs: dict[str, Any] = {}
+
+        for pattern, overrides in self.override_attrs.items():
+            if re.fullmatch(pattern, name):
+                attrs.update(overrides)
+
+        return attrs
 
 
 class HealpixGroupSettings(BaseModel):

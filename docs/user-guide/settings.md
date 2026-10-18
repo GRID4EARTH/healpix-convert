@@ -22,6 +22,10 @@ settings = hc.get_settings("era5")  # or "cams-eac4", "climatedt-sfc"
 pass them to other jobs. The settings are also recorded in the metadata of the
 output dataset (see {doc}`metadata`).
 
+Settings written as JSON can be checked against the
+[JSON schema](https://raw.githubusercontent.com/GRID4EARTH/healpix-convert/main/convert-settings.schema.json)
+generated from the model, e.g., to get completion and validation in an editor.
+
 ## Top-level settings
 
 - `group_settings`: the conversion settings of each group to convert, keyed by
@@ -105,12 +109,28 @@ as `float64`. The other methods keep the data type of the input variables.
 ### Other group settings
 
 - `metadata`: `exclude_attrs` lists the names (or regular expressions matching
-  the whole name) of the input attributes not copied to the output.
+  the whole name) of the input attributes not copied to the output, and
+  `override_attrs` sets attributes on the output variables (see below).
 - `codecs`: the Zarr codecs of the resampled data variables (Zarr's defaults
   if not set). Each codec must be registered with Zarr where the settings are
   created.
 - `healpix_coordinate_codecs`: the Zarr codecs of the cell ids coordinate
   (Zarr's defaults if not set).
+
+`override_attrs` sets attributes on the output variables whose name matches a
+pattern (an exact name or a regular expression matched against the whole name),
+e.g. for bands that the input stores packed:
+
+```python
+"metadata": {
+    "exclude_attrs": ["history"],
+    "override_attrs": {"b0[1-9]|b8a|b1[0-2]": {"units": "1"}},
+}
+```
+
+An override wins over `exclude_attrs`, and the last of several matching
+patterns wins. The attributes written by `healpix-convert` itself
+(`grid_mapping`, `coordinates`) keep precedence.
 
 ## Changing the settings of all groups
 

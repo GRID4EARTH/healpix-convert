@@ -19,6 +19,7 @@ import xarray as xr
 import zarr.api.synchronous as zarr
 from zarr.api.asynchronous import JSON
 from zarr.core.sync import sync
+from zarr.dtype import parse_dtype
 
 import healpix_convert.core.utils as utils
 from healpix_convert.core.conversion_models import (
@@ -215,7 +216,9 @@ class HealpixGroupConverter(ABC):
 
         zarrays: dict[str, zarr.Array] = {}
 
-        def _get_maybe_create_array(name: str, **kwargs: Unpack[ZarrCreateArrayKwargs]):
+        def _get_maybe_create_array(
+            name: str, fill_value: Any = None, **kwargs: Unpack[ZarrCreateArrayKwargs]
+        ):
             arr = self.output_group.get(name)
             if arr is None:
                 path = (
@@ -223,7 +226,12 @@ class HealpixGroupConverter(ABC):
                     if self.output_group.path
                     else name
                 )
-                arr = zarr.create(path=path, store=self.output_group.store, **kwargs)
+                arr = zarr.create(
+                    path=path,
+                    store=self.output_group.store,
+                    fill_value=fill_value,
+                    **kwargs,
+                )
 
             assert isinstance(arr, zarr.Array)
             zarrays[name] = arr
@@ -301,9 +309,21 @@ class HealpixGroupConverter(ABC):
                     for key in ("valid_min", "valid_max", "valid_range"):
                         attributes.pop(key, None)
 
+                attributes.update(self.settings.metadata.overridden_attrs(str(name)))
+
                 attributes.update(
                     get_cf_data_variable_attrs(self.healpix, self.metadata_settings)
                 )
+
+                # cells without data are NaN in a floating output: with zarr's
+                # default fill value (0.0) they would be written as zeros, which
+                # a lossy serializer codes as values next to the real ones
+                if np.dtype(dtype).kind == "f":
+                    fill_value = np.nan
+                else:
+                    fill_value = parse_dtype(
+                        np.dtype(dtype), zarr_format=3
+                    ).default_scalar()
 
                 _get_maybe_create_array(
                     str(name),
@@ -313,6 +333,7 @@ class HealpixGroupConverter(ABC):
                     dimension_names=[str(d) for d in dims],
                     codecs=cast(Iterable[dict[str, JSON]], self.settings.codecs),
                     attributes=attributes,
+                    fill_value=fill_value,
                 )
             else:
                 # write array unchanged in output group
@@ -531,7 +552,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
                     ds[lon_name].values,
                     ds[lat_name].values,
                     level,
-                    self.chunk_healpix.ellipsoid.name.upper(),
+                    self.chunk_healpix.ellipsoid.name,
                 )
             )
 
@@ -641,7 +662,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         lon, lat = healpix_geo.nested.vertices(
             chunk_cell_id,
             self.chunk_healpix.refinement_level,
-            ellipsoid=self.chunk_healpix.ellipsoid.name.upper(),
+            ellipsoid=self.chunk_healpix.ellipsoid.name,
         )
         lon, lat = np.asarray(lon).ravel(), np.asarray(lat).ravel()
         # A lower bound on terrestrial curvature radii gives a conservative
@@ -655,7 +676,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         centre_lon, _ = healpix_geo.nested.healpix_to_lonlat(
             chunk_cell_id,
             self.chunk_healpix.refinement_level,
-            ellipsoid=self.chunk_healpix.ellipsoid.name.upper(),
+            ellipsoid=self.chunk_healpix.ellipsoid.name,
         )
         centre_lon = float(np.asarray(centre_lon).ravel()[0])
         relative_lon = (lon - centre_lon + 180.0) % 360.0 - 180.0
@@ -718,7 +739,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         lon, lat = healpix_geo.nested.vertices(
             chunk_cell_id,
             self.chunk_healpix.refinement_level,
-            ellipsoid=self.chunk_healpix.ellipsoid.name.upper(),
+            ellipsoid=self.chunk_healpix.ellipsoid.name,
         )
         chunk_poly_latlon = shapely.Polygon(list(zip(lon[0], lat[0])))
 
@@ -870,7 +891,7 @@ class DenseChunkConverter(UniformChunkConverter):
             verbose=False,
             out_cell_ids=out_cell_ids,
             nest=self.healpix.indexing_scheme == "nested",
-            ellipsoid=self.healpix.ellipsoid.name.upper(),
+            ellipsoid=self.healpix.ellipsoid.name,
             **dict(resampler_settings.init_params),
         )
         # resample arrays (data variables)
@@ -958,7 +979,7 @@ class SparseChunkConverter(UniformChunkConverter):
             # level=self.healpix.refinement_level,  # assumes cell-point (level=29)
             verbose=False,
             nest=self.healpix.indexing_scheme == "nested",
-            ellipsoid=self.healpix.ellipsoid.name.upper(),
+            ellipsoid=self.healpix.ellipsoid.name,
             **dict(resampler_settings.init_params),
         )
 
@@ -1017,7 +1038,7 @@ class NoChunkConverter(HealpixGroupConverter):
         assert self.healpix.indexing_scheme == "nested"
 
         if isinstance(self.healpix.ellipsoid, WGS84Ellipsoid):
-            self.ellipsoid = self.healpix.ellipsoid.name.upper()
+            self.ellipsoid = self.healpix.ellipsoid.name
         else:
             # TODO: is sphere really used here? If yes, need a fix below
             # in `query_input_points` where input x/y coordinates are converted

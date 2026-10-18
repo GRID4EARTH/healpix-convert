@@ -59,6 +59,8 @@ def test_input_metadata_settings_default() -> None:
     assert settings.exclude_attrs == []
     assert not settings.is_excluded("history")
     assert settings.filter_attrs({"units": "K"}) == {"units": "K"}
+    assert settings.override_attrs == {}
+    assert settings.overridden_attrs("radiance") == {}
 
 
 def test_input_metadata_settings_exclude_attrs_name() -> None:
@@ -89,9 +91,63 @@ def test_input_metadata_settings_filter_attrs() -> None:
     assert "_io_config" in attrs
 
 
+def test_input_metadata_settings_override_attrs_name() -> None:
+    settings = InputMetadataSettings(override_attrs={"radiance": {"units": "1"}})
+
+    assert settings.overridden_attrs("radiance") == {"units": "1"}
+    # a plain name is matched exactly (not as a substring)
+    assert settings.overridden_attrs("radiance_bis") == {}
+    assert settings.overridden_attrs("toa_radiance") == {}
+
+
+def test_input_metadata_settings_override_attrs_pattern() -> None:
+    settings = InputMetadataSettings(
+        override_attrs={"b0[1-9]|b8a": {"units": "1", "long_name": "reflectance"}}
+    )
+
+    assert settings.overridden_attrs("b01") == {
+        "units": "1",
+        "long_name": "reflectance",
+    }
+    assert settings.overridden_attrs("b8a") == {
+        "units": "1",
+        "long_name": "reflectance",
+    }
+    assert settings.overridden_attrs("quality_mask") == {}
+
+
+def test_input_metadata_settings_override_attrs_merged() -> None:
+    # several patterns may match the same variable: the last one wins
+    settings = InputMetadataSettings(
+        override_attrs={
+            "b.*": {"units": "digital_counts", "source": "eopf"},
+            "b01": {"units": "1"},
+        }
+    )
+
+    assert settings.overridden_attrs("b01") == {"units": "1", "source": "eopf"}
+    assert settings.overridden_attrs("b02") == {
+        "units": "digital_counts",
+        "source": "eopf",
+    }
+
+
+def test_input_metadata_settings_override_attrs_beats_exclude() -> None:
+    # the attribute is wrong on the input and needs a value, not a removal
+    settings = InputMetadataSettings(
+        exclude_attrs=["units"], override_attrs={"radiance": {"units": "1"}}
+    )
+
+    assert settings.filter_attrs({"units": "digital_counts"}) == {}
+    assert settings.overridden_attrs("radiance") == {"units": "1"}
+
+
 def test_input_metadata_settings_invalid_pattern() -> None:
     with pytest.raises(ValidationError, match=".*invalid regular expression.*"):
         InputMetadataSettings(exclude_attrs=["[unbalanced"])
+
+    with pytest.raises(ValidationError, match=".*invalid regular expression.*"):
+        InputMetadataSettings(override_attrs={"[unbalanced": {"units": "1"}})
 
 
 def test_input_metadata_settings_extra_forbidden() -> None:
@@ -124,7 +180,10 @@ def test_convert_settings_metadata_roundtrip() -> None:
                     "healpix": {"refinement_level": 10},
                     "chunk": {"method": "no_chunk"},
                     "resampler": {"name": "nearest"},
-                    "metadata": {"exclude_attrs": ["_.*"]},
+                    "metadata": {
+                        "exclude_attrs": ["_.*"],
+                        "override_attrs": {"radiance": {"units": "1"}},
+                    },
                 }
             },
         }
@@ -134,6 +193,7 @@ def test_convert_settings_metadata_roundtrip() -> None:
 
     group_settings = roundtripped.group_settings[PurePath("/root/group")]
     assert group_settings.metadata.exclude_attrs == ["_.*"]
+    assert group_settings.metadata.override_attrs == {"radiance": {"units": "1"}}
 
 
 def _group_settings(codecs):
