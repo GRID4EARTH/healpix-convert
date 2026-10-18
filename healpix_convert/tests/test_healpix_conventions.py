@@ -41,12 +41,14 @@ def test_healpix_default_values() -> None:
     assert h.compression == "none"
 
 
-def test_healpix_ellipsoid_dscriminator() -> None:
-    fields = {"refinement_level": 10, "ellipsoid": {"name": "WGS84"}}
+@pytest.mark.parametrize("name", ["WGS84", "wgs84", "Wgs84"])
+def test_healpix_ellipsoid_discriminator(name: str) -> None:
+    fields = {"refinement_level": 10, "ellipsoid": {"name": name}}
 
     h = Healpix.model_validate(fields)
 
     assert isinstance(h.ellipsoid, WGS84Ellipsoid)
+    assert h.ellipsoid.name == "WGS84"
 
 
 def test_healpix_invalid_refinement_level() -> None:
