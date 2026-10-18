@@ -403,9 +403,9 @@ class PyramidSettings(BaseModel):
     """Settings for generating a pyramid of coarser HEALPix refinement levels
     in a multiscale group.
 
-    The levels are aggregated from the levels converted from the input data
-    (the native levels of the multiscale group), down to
-    :py:attr:`min_refinement_level`.
+    The levels given by :py:attr:`derived_levels` are aggregated from the
+    levels converted from the input data (the native levels of the multiscale
+    group).
 
     The generated levels are written in the multiscale group, next to the
     levels converted from the input data or in a child group of its own (see
@@ -421,12 +421,14 @@ class PyramidSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True, use_attribute_docstrings=True)
 
-    min_refinement_level: Annotated[int, Field(ge=0, le=29)]
-    """Coarsest HEALPix refinement level of the pyramid.
+    derived_levels: Annotated[
+        list[Annotated[int, Field(ge=0, le=29)]], Field(min_length=1)
+    ]
+    """HEALPix refinement levels to generate, e.g. ``[18, 16]``.
 
-    It must be coarser than the finest native level of the multiscale group and
-    not finer than its coarsest native level (which the pyramid would leave
-    out).
+    Each of them must be coarser than the finest native level of the multiscale
+    group and must not be one of its native levels (which are converted from
+    the input data).
     """
 
     name: str | None = None
@@ -623,19 +625,25 @@ class ConvertSettings(BaseModel):
                     f"pyramid group {path.as_posix()!r} has no child group to "
                     "convert to HEALPix"
                 )
-            if pyramid.min_refinement_level >= levels[-1]:
+            if len(set(pyramid.derived_levels)) != len(pyramid.derived_levels):
                 raise ValueError(
-                    f"pyramid group {path.as_posix()!r}: the coarsest level "
-                    f"{pyramid.min_refinement_level} of the pyramid must be coarser "
-                    f"than the finest native level {levels[-1]} of the group"
+                    f"pyramid group {path.as_posix()!r}: duplicate levels in "
+                    f"{pyramid.derived_levels}"
                 )
-            if pyramid.min_refinement_level > levels[0]:
-                raise ValueError(
-                    f"pyramid group {path.as_posix()!r}: the coarsest level "
-                    f"{pyramid.min_refinement_level} of the pyramid is finer than "
-                    f"the coarsest native level {levels[0]} of the group, which the "
-                    "pyramid would leave out"
-                )
+
+            for level in pyramid.derived_levels:
+                if level in levels:
+                    raise ValueError(
+                        f"pyramid group {path.as_posix()!r}: the level {level} of "
+                        "the pyramid is one of the levels converted from the input "
+                        f"data {levels}"
+                    )
+                if level >= levels[-1]:
+                    raise ValueError(
+                        f"pyramid group {path.as_posix()!r}: the level {level} of "
+                        "the pyramid must be coarser than the finest native level "
+                        f"{levels[-1]} of the group"
+                    )
 
         return self
 

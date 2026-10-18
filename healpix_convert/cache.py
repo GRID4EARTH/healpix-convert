@@ -246,11 +246,9 @@ def _set_pyramid_groups(
     the levels of each multiscale group holding one, with their HEALPix grid
     and their chunks.
 
-    The generated (pyramid) levels are the levels from the finest level
-    converted from the input data down to the coarsest level of the pyramid,
-    those converted from the input data (native levels) excepted. They are
-    written next to the native levels or in a child group of the multiscale
-    group, as its ``name`` pyramid setting says.
+    The generated (pyramid) levels are the ``derived_levels`` of the pyramid
+    settings. They are written next to the native levels or in a child group of
+    the multiscale group, as its ``name`` pyramid setting says.
 
     """
     pyramid_groups: dict[PurePath, PyramidMultiscaleGroupInfo] = {}
@@ -270,14 +268,17 @@ def _set_pyramid_groups(
             chunk_level,
         )
 
-        if pyramid.min_refinement_level < coarsest_level:
+        too_coarse = sorted(
+            level for level in pyramid.derived_levels if level < coarsest_level
+        )
+
+        if too_coarse:
             raise ValueError(
                 f"pyramid group {path.as_posix()!r}: the converted cells do not "
                 f"cover whole HEALPix cells below the refinement level "
                 f"{coarsest_level} (the spatial extent of the output covers the "
-                f"cells of the chunk level {chunk_level} partially), so the "
-                f"coarsest level of the pyramid cannot be "
-                f"{pyramid.min_refinement_level}"
+                f"cells of the chunk level {chunk_level} partially), so the levels "
+                f"{too_coarse} of the pyramid cannot be generated"
             )
 
         native_levels = {}
@@ -301,10 +302,7 @@ def _set_pyramid_groups(
         healpix = finest_settings.healpix
         pyramid_levels = {}
 
-        for level in range(finest_level, pyramid.min_refinement_level - 1, -1):
-            if level in native_paths:
-                # the level is converted from the input data
-                continue
+        for level in sorted(pyramid.derived_levels, reverse=True):
             pyramid_levels[pyramid_path / str(level)] = (
                 healpix.model_copy(update={"refinement_level": level}),
                 _pyramid_chunk_level(level, finest_level, chunk_level),

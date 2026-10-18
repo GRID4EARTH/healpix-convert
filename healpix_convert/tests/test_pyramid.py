@@ -287,7 +287,7 @@ def converted_multi_level(tmp_path):
 
 def test_pyramid_levels_and_metadata(converted):
     path, cell_ids, _, _ = converted
-    cache, settings = _cache_and_settings([3], {"min_refinement_level": 1})
+    cache, settings = _cache_and_settings([3], {"derived_levels": [2, 1]})
 
     dt = _generate_pyramids(cache, settings, path)
 
@@ -326,7 +326,7 @@ def test_pyramid_levels_and_metadata(converted):
 def test_consolidated_metadata_is_up_to_date(converted):
     path, *_ = converted
 
-    _generate_pyramids(*_cache_and_settings([3], {"min_refinement_level": 1}), path)
+    _generate_pyramids(*_cache_and_settings([3], {"derived_levels": [2, 1]}), path)
 
     # the stage consolidates what it wrote: a reader that uses the consolidated
     # metadata of the dataset sees the generated levels (the stage itself never
@@ -368,7 +368,7 @@ def test_native_levels_are_not_rewritten(tmp_path):
     metadata = native.metadata.to_dict()
     chunk = native.store.get_sync(f"{GROUP}/3/a/c/0")
 
-    _generate_pyramids(*_cache_and_settings([3], {"min_refinement_level": 2}), path)
+    _generate_pyramids(*_cache_and_settings([3], {"derived_levels": [2]}), path)
 
     rewritten = zarr.open_group(path, mode="r")[f"{GROUP}/3"]["a"]
     assert rewritten.metadata.to_dict() == metadata
@@ -384,7 +384,7 @@ def test_native_levels_are_not_rewritten(tmp_path):
 def test_generated_levels_are_block_means(converted):
     path, cell_ids, temperature, counts = converted
 
-    _generate_pyramids(*_cache_and_settings([3], {"min_refinement_level": 0}), path)
+    _generate_pyramids(*_cache_and_settings([3], {"derived_levels": [2, 1, 0]}), path)
 
     for level in (2, 1, 0):
         actual = xr.open_zarr(path, group=f"{GROUP}/{level}")
@@ -414,7 +414,7 @@ def test_block_mean_differs_from_mean_of_means(tmp_path):
         tmp_path / "converted.zarr", {3: _level_dataset(3, cell_ids, a=values)}
     )
 
-    _generate_pyramids(*_cache_and_settings([3], {"min_refinement_level": 1}), path)
+    _generate_pyramids(*_cache_and_settings([3], {"derived_levels": [2, 1]}), path)
 
     level1 = xr.open_zarr(path, group=f"{GROUP}/1")
     np.testing.assert_allclose(level1["a"].values[0], np.nanmean(values[:16]))
@@ -427,7 +427,7 @@ def test_reduce_method(converted):
     path, cell_ids, temperature, _ = converted
 
     _generate_pyramids(
-        *_cache_and_settings([3], {"min_refinement_level": 2, "reduce": "max"}), path
+        *_cache_and_settings([3], {"derived_levels": [2], "reduce": "max"}), path
     )
 
     level2 = xr.open_zarr(path, group=f"{GROUP}/2")
@@ -438,7 +438,7 @@ def test_reduce_method(converted):
 
 def test_generated_chunks_are_healpix_cells(converted):
     path, *_ = converted
-    cache, settings = _cache_and_settings([3], {"min_refinement_level": 1})
+    cache, settings = _cache_and_settings([3], {"derived_levels": [2, 1]})
 
     dt = _generate_pyramids(cache, settings, path)
 
@@ -467,7 +467,7 @@ def test_pyramid_in_a_child_group(converted):
     path, cell_ids, temperature, _ = converted
 
     dt = _generate_pyramids(
-        *_cache_and_settings([3], {"min_refinement_level": 2, "name": "pyramids"}), path
+        *_cache_and_settings([3], {"derived_levels": [2], "name": "pyramids"}), path
     )
 
     # the generated levels are written in a child group of the multiscale
@@ -488,9 +488,7 @@ def test_pyramid_in_a_child_group(converted):
 def test_multiple_native_levels(converted_multi_level):
     path, cell_ids, data = converted_multi_level
 
-    dt = _generate_pyramids(
-        *_cache_and_settings([3, 2], {"min_refinement_level": 1}), path
-    )
+    dt = _generate_pyramids(*_cache_and_settings([3, 2], {"derived_levels": [1]}), path)
 
     assert set(dt[GROUP].children) == {"3", "2", "1"}
 
@@ -514,9 +512,7 @@ def test_coarsen_from_finest(converted_multi_level):
     path, _, data = converted_multi_level
 
     dt = _generate_pyramids(
-        *_cache_and_settings(
-            [3, 2], {"min_refinement_level": 1, "coarsen_from": "finest"}
-        ),
+        *_cache_and_settings([3, 2], {"derived_levels": [1], "coarsen_from": "finest"}),
         path,
     )
 
@@ -529,7 +525,7 @@ def test_coarsen_from_finest(converted_multi_level):
 
 def test_sparse_chunks_are_not_supported():
     with pytest.raises(ValueError, match="requires the 'healpix_cell_dense' method"):
-        _settings([3], {"min_refinement_level": 1}, chunk_method="sparse")
+        _settings([3], {"derived_levels": [2, 1]}, chunk_method="sparse")
 
 
 def test_partial_extent_coarsest_level(tmp_path):
@@ -544,13 +540,13 @@ def test_partial_extent_coarsest_level(tmp_path):
 
     # down to the chunk level: fine
     dt = _generate_pyramids(
-        *_cache_and_settings([3], {"min_refinement_level": CHUNK_LEVEL}, extent), path
+        *_cache_and_settings([3], {"derived_levels": [2, CHUNK_LEVEL]}, extent), path
     )
     assert set(dt[GROUP].children) == {"3", "2", "1"}
 
     # the staging cache is where that is checked, before anything is written
     with pytest.raises(ValueError, match="do not cover whole HEALPix cells"):
-        _cache_and_settings([3], {"min_refinement_level": 0}, extent)
+        _cache_and_settings([3], {"derived_levels": [0]}, extent)
 
 
 def test_no_pyramid_settings(converted):
@@ -594,9 +590,9 @@ def _write_input(path):
     return str(path)
 
 
-def _workflow_settings(min_refinement_level: int = 0) -> ConvertSettings:
+def _workflow_settings(derived_levels=(1, 0)) -> ConvertSettings:
     """Convert two input groups at the levels 3 and 2, with dense chunks of one
-    level-1 cell each, and a pyramid down to the given level.
+    level-1 cell each, and a pyramid of the given levels.
     """
     chunk = {
         "method": "healpix_cell_dense",
@@ -616,9 +612,7 @@ def _workflow_settings(min_refinement_level: int = 0) -> ConvertSettings:
         {
             "multiscale_settings": {
                 "groups": [GROUP],
-                "pyramid_groups": {
-                    GROUP: {"min_refinement_level": min_refinement_level}
-                },
+                "pyramid_groups": {GROUP: {"derived_levels": list(derived_levels)}},
             },
             "group_settings": group_settings,
         }
@@ -691,7 +685,7 @@ def test_create_healpix_dataset_fills_the_pyramids(tmp_path):
     output_path = str(tmp_path / "converted.zarr")
 
     dt = create_healpix_dataset(
-        [input_path], _workflow_settings(min_refinement_level=1), output_path
+        [input_path], _workflow_settings(derived_levels=[1]), output_path
     )
 
     # a conversion in one call aggregates the pyramid levels as well

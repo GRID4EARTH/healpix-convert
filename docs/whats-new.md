@@ -3,8 +3,8 @@
 ## Unreleased
 
 - New `generate_pyramids` conversion stage, which aggregates the converted
-  data onto the coarser HEALPix refinement levels of the multiscale groups,
-  down to the level given by the new `pyramid_groups` multiscale settings. One
+  data onto the coarser HEALPix refinement levels given by the new
+  `pyramid_groups` multiscale settings. One
   group per generated level, and the multiscales metadata describing the
   pyramid, are created with the rest of the structure of the output dataset by
   `prepare_healpix_dataset`; the arrays of those groups are written with the

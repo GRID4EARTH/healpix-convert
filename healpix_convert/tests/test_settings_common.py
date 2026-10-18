@@ -187,11 +187,11 @@ def _multiscale_settings_dict(
 
 def test_pyramid_settings() -> None:
     settings = ConvertSettings.model_validate(
-        _multiscale_settings_dict({"min_refinement_level": 3, "reduce": "max"})
+        _multiscale_settings_dict({"derived_levels": [6, 3], "reduce": "max"})
     )
     pyramid = settings.multiscale_settings.pyramid_groups[PurePath("measurements")]
 
-    assert pyramid.min_refinement_level == 3
+    assert pyramid.derived_levels == [6, 3]
     assert pyramid.reduce == "max"
     assert pyramid.name is None
     assert pyramid.coarsen_from == "nearest"
@@ -204,21 +204,36 @@ def test_pyramid_settings() -> None:
 def test_pyramid_settings_group_not_multiscale() -> None:
     with pytest.raises(ValidationError, match="are not multiscale groups"):
         ConvertSettings.model_validate(
-            _multiscale_settings_dict({"min_refinement_level": 3}, groups=())
+            _multiscale_settings_dict({"derived_levels": [3]}, groups=())
         )
 
 
-def test_pyramid_settings_min_level_not_coarser() -> None:
+def test_pyramid_settings_derived_level_not_coarser() -> None:
+    # the group is converted at the levels 7 and 5
     with pytest.raises(ValidationError, match="must be coarser than the finest"):
         ConvertSettings.model_validate(
-            _multiscale_settings_dict({"min_refinement_level": 7})
+            _multiscale_settings_dict({"derived_levels": [8]})
         )
 
 
-def test_pyramid_settings_min_level_leaves_a_native_level_out() -> None:
-    with pytest.raises(ValidationError, match="finer than the coarsest native level"):
+def test_pyramid_settings_derived_level_already_converted() -> None:
+    with pytest.raises(ValidationError, match="converted from the input data"):
         ConvertSettings.model_validate(
-            _multiscale_settings_dict({"min_refinement_level": 6})
+            _multiscale_settings_dict({"derived_levels": [5]})
+        )
+
+
+def test_pyramid_settings_duplicate_derived_levels() -> None:
+    with pytest.raises(ValidationError, match="duplicate levels"):
+        ConvertSettings.model_validate(
+            _multiscale_settings_dict({"derived_levels": [4, 4]})
+        )
+
+
+def test_pyramid_settings_no_derived_level() -> None:
+    with pytest.raises(ValidationError, match="derived_levels"):
+        ConvertSettings.model_validate(
+            _multiscale_settings_dict({"derived_levels": []})
         )
 
 
@@ -230,7 +245,7 @@ def test_pyramid_settings_chunk_method() -> None:
         ):
             ConvertSettings.model_validate(
                 _multiscale_settings_dict(
-                    {"min_refinement_level": 3}, chunk_method=chunk_method
+                    {"derived_levels": [3]}, chunk_method=chunk_method
                 )
             )
 
@@ -252,13 +267,13 @@ def test_pyramid_settings_chunk_method() -> None:
 def test_pyramid_settings_unsupported_reduce_method() -> None:
     with pytest.raises(ValidationError, match="reduce"):
         ConvertSettings.model_validate(
-            _multiscale_settings_dict({"min_refinement_level": 3, "reduce": "mode"})
+            _multiscale_settings_dict({"derived_levels": [3], "reduce": "mode"})
         )
 
 
 def test_native_refinement_levels() -> None:
     settings = ConvertSettings.model_validate(
-        _multiscale_settings_dict({"min_refinement_level": 3})
+        _multiscale_settings_dict({"derived_levels": [3]})
     )
 
     assert settings.native_refinement_levels(PurePath("measurements")) == {

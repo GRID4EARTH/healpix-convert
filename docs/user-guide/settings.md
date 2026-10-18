@@ -134,12 +134,12 @@ group (it must also be listed in `multiscale_settings.groups`) and the settings
 of the pyramid generated for it by
 {py:func}`~healpix_convert.generate_pyramids` (see {doc}`pyramids`).
 
-| Field                  | Default     | Description                                                            |
-| ---------------------- | ----------- | ---------------------------------------------------------------------- |
-| `min_refinement_level` | (required)  | Coarsest refinement level of the pyramid                               |
-| `name`                 | `None`      | Name of a child group of the multiscale group for the generated levels |
-| `reduce`               | `"mean"`    | `"mean"`, `"min"`, `"max"` or `"sum"`                                  |
-| `coarsen_from`         | `"nearest"` | Native level a variable converted at several levels is aggregated from |
+| Field            | Default     | Description                                                            |
+| ---------------- | ----------- | ---------------------------------------------------------------------- |
+| `derived_levels` | (required)  | Refinement levels of the pyramid to generate                           |
+| `name`           | `None`      | Name of a child group of the multiscale group for the generated levels |
+| `reduce`         | `"mean"`    | `"mean"`, `"min"`, `"max"` or `"sum"`                                  |
+| `coarsen_from`   | `"nearest"` | Native level a variable converted at several levels is aggregated from |
 
 ```python
 settings = hc.ConvertSettings.from_dict(
@@ -147,7 +147,7 @@ settings = hc.ConvertSettings.from_dict(
         "multiscale_settings": {
             "groups": ["measurements/reflectance"],
             "pyramid_groups": {
-                "measurements/reflectance": {"min_refinement_level": 12},
+                "measurements/reflectance": {"derived_levels": [12, 10, 8]},
             },
         },
         "group_settings": {...},
@@ -155,9 +155,9 @@ settings = hc.ConvertSettings.from_dict(
 )
 ```
 
-`min_refinement_level` must be coarser than the finest native level of the
-group and not finer than its coarsest native level, which the pyramid would
-leave out.
+Each level of `derived_levels` must be coarser than the finest native level of
+the group and must not be one of its native levels, which are converted from
+the input data.
 
 Every child group of a pyramid group must be converted with the
 `healpix_cell_dense` chunk method: the cells of such a chunk are all the

@@ -3,7 +3,6 @@
 The last stage of the conversion aggregates the levels of the multiscale groups
 of the output dataset onto coarser HEALPix refinement levels, each written in a
 group of the multiscale group (the converted levels are never rewritten).
-Viewers like Gridlook then pick the level from the zoom.
 
 The structure of the pyramids — which levels are generated, in which groups,
 with which HEALPix grid and chunks, and the multiscales metadata describing
