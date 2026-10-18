@@ -4,15 +4,19 @@ Pydantic model classes for the STAC metadata written in the output dataset.
 The STAC item of the output is merged from the items of the input datasets and
 completed with the provenance of the conversion. The settings here are a basic
 control mechanism over the propagated part of that item: they drop and set
-properties and extensions by name, and nothing else. In particular the item is
-not validated against the extensions it lists, so keeping the properties and
-the extensions consistent with each other is left to the data provider.
+properties, extensions, links and assets by name, and nothing else. In
+particular the item is not validated against the extensions it lists, so
+keeping the properties, the extensions and the assets consistent with each
+other is left to the data provider.
 
-The STAC metadata written by healpix-convert itself (the properties and the
-extension of the STAC processing extension, describing the conversion) keeps
-precedence: it is written after these settings are applied. The one exception
-is ``include_conversion_settings``, which decides whether the settings
-themselves are recorded.
+The input's assets are the one thing not propagated by default: they point at
+the input files, which the output does not hold.
+
+The STAC metadata written by healpix-convert itself (the properties, the links
+and the extension of the STAC processing extension, describing the conversion)
+keeps precedence: it is written after these settings are applied. The one
+exception is ``include_conversion_settings``, which decides whether the
+settings themselves are recorded.
 
 """
 
@@ -24,6 +28,46 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from healpix_convert.core.utils import check_patterns, matches_any
+
+
+def _link_rel(link: Any) -> str:
+    """Return the ``rel`` of a STAC link, the name it is excluded by.
+
+    STAC links have no identifier: ``rel`` is the one field that says what a
+    link is for, so it is what the patterns are matched against. A link
+    without one matches the empty string.
+    """
+    if isinstance(link, Mapping):
+        return str(link.get("rel", ""))
+
+    return ""
+
+
+def _filter_mapping(
+    values: Mapping[str, Any],
+    exclude: Iterable[str],
+    override: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Drop the entries whose key matches ``exclude``, then apply ``override``."""
+    filtered = {k: v for k, v in values.items() if not matches_any(k, exclude)}
+    filtered.update(override)
+
+    return filtered
+
+
+def _filter_sequence(
+    values: Iterable[Any],
+    exclude: Iterable[str],
+    override: Iterable[Any],
+    key=str,
+) -> list[Any]:
+    """Drop the items whose ``key`` matches ``exclude``, then append the items
+    of ``override`` that are not in the result yet.
+    """
+    filtered = [v for v in values if not matches_any(key(v), exclude)]
+    filtered += [v for v in override if v not in filtered]
+
+    return filtered
 
 
 class STACSettings(BaseModel):
@@ -45,7 +89,7 @@ class STACSettings(BaseModel):
     ``processing:lineage``) is written either way.
     """
 
-    exclude_props: list[str] = Field(default_factory=list)
+    exclude_properties: list[str] = Field(default_factory=list)
     """Names of the input STAC properties that must not be propagated to the output.
 
     Each item is either the exact name of a property or a regular expression
@@ -56,10 +100,10 @@ class STACSettings(BaseModel):
     precedence.
     """
 
-    override_props: dict[str, Any] = Field(default_factory=dict)
+    override_properties: dict[str, Any] = Field(default_factory=dict)
     """STAC properties set in the output, overriding the propagated ones.
 
-    An override wins over ``exclude_props``. The properties written by
+    An override wins over ``exclude_properties``. The properties written by
     healpix-convert itself (``processing:*``) keep precedence.
     """
 
@@ -82,40 +126,81 @@ class STACSettings(BaseModel):
     An override wins over ``exclude_extensions``.
     """
 
-    @field_validator("exclude_props", "exclude_extensions")
+    exclude_links: list[str] = Field(default_factory=list)
+    """Input STAC links that must not be propagated to the output.
+
+    Links have no identifier, so each item is matched against the whole ``rel``
+    of a link: either an exact relation type (e.g., ``"via"``) or a regular
+    expression (e.g., ``"self|parent|root"``).
+
+    The ``derived_from`` links written by healpix-convert itself keep
+    precedence.
+    """
+
+    override_links: list[dict[str, Any]] = Field(default_factory=list)
+    """STAC links written in the output, in addition to the propagated ones.
+
+    Each item is a whole link object (``rel``, ``href``, and whatever else the
+    link carries). An override wins over ``exclude_links``.
+    """
+
+    exclude_assets: list[str] = Field(default=[".*"])
+    """Keys of the input STAC assets that must not be propagated to the output.
+
+    Each item is either the exact key of an asset or a regular expression
+    matched against the whole key (e.g., ``"thumbnail.*"``).
+
+    Every input asset is excluded by default: the assets of the input point at
+    the input files, which the output does not hold, so propagating them would
+    have the output item advertise files that are not its own. Set this to an
+    empty list to keep them, or describe the output's own files with
+    ``override_assets``.
+    """
+
+    override_assets: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    """STAC assets set in the output, overriding the propagated ones.
+
+    Each key is the key of an asset and each value the whole asset object
+    (``href``, ``type``, ``roles``, etc.). An override wins over
+    ``exclude_assets``.
+    """
+
+    @field_validator(
+        "exclude_properties", "exclude_extensions", "exclude_links", "exclude_assets"
+    )
     @classmethod
     def validate_patterns(cls, value: list[str]) -> list[str]:
         check_patterns(value)
 
         return value
 
-    def is_excluded_prop(self, name: str) -> bool:
-        """Returns True if the input STAC property with the given name must not
-        be propagated to the output.
-        """
-        return matches_any(name, self.exclude_props)
-
-    def is_excluded_extension(self, url: str) -> bool:
-        """Returns True if the input STAC extension with the given schema URL
-        must not be propagated to the output.
-        """
-        return matches_any(url, self.exclude_extensions)
-
-    def filter_props(self, props: Mapping[str, Any]) -> dict[str, Any]:
+    def filter_properties(self, properties: Mapping[str, Any]) -> dict[str, Any]:
         """Return the propagated STAC properties: the given ones without the
-        excluded ones, updated with ``override_props``.
+        excluded ones, updated with ``override_properties``.
         """
-        filtered = {k: v for k, v in props.items() if not self.is_excluded_prop(k)}
-        filtered.update(self.override_props)
+        return _filter_mapping(
+            properties, self.exclude_properties, self.override_properties
+        )
 
-        return filtered
+    def filter_assets(self, assets: Mapping[str, Any]) -> dict[str, Any]:
+        """Return the propagated STAC assets: the given ones without the
+        excluded ones, updated with ``override_assets``.
+        """
+        return _filter_mapping(assets, self.exclude_assets, self.override_assets)
 
     def filter_extensions(self, extensions: Iterable[str]) -> list[str]:
         """Return the propagated STAC extensions: the given ones without the
         excluded ones, followed by the ``override_extensions`` that are not
         listed yet.
         """
-        filtered = [url for url in extensions if not self.is_excluded_extension(url)]
-        filtered += [url for url in self.override_extensions if url not in filtered]
+        return _filter_sequence(
+            extensions, self.exclude_extensions, self.override_extensions
+        )
 
-        return filtered
+    def filter_links(self, links: Iterable[Any]) -> list[Any]:
+        """Return the propagated STAC links: the given ones whose ``rel`` is not
+        excluded, followed by the ``override_links`` that are not listed yet.
+        """
+        return _filter_sequence(
+            links, self.exclude_links, self.override_links, key=_link_rel
+        )

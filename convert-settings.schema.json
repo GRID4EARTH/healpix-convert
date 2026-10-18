@@ -607,18 +607,18 @@
           "title": "Include Conversion Settings",
           "type": "boolean"
         },
-        "exclude_props": {
+        "exclude_properties": {
           "description": "Names of the input STAC properties that must not be propagated to the output.\n\nEach item is either the exact name of a property or a regular expression\nmatched against the whole property name (e.g., ``\"internal:.*\"`` excludes\nevery property of an ``internal`` namespace).\n\nThe properties written by healpix-convert itself (``processing:*``) keep\nprecedence.",
           "items": {
             "type": "string"
           },
-          "title": "Exclude Props",
+          "title": "Exclude Properties",
           "type": "array"
         },
-        "override_props": {
+        "override_properties": {
           "additionalProperties": true,
-          "description": "STAC properties set in the output, overriding the propagated ones.\n\nAn override wins over ``exclude_props``. The properties written by\nhealpix-convert itself (``processing:*``) keep precedence.",
-          "title": "Override Props",
+          "description": "STAC properties set in the output, overriding the propagated ones.\n\nAn override wins over ``exclude_properties``. The properties written by\nhealpix-convert itself (``processing:*``) keep precedence.",
+          "title": "Override Properties",
           "type": "object"
         },
         "exclude_extensions": {
@@ -636,6 +636,43 @@
           },
           "title": "Override Extensions",
           "type": "array"
+        },
+        "exclude_links": {
+          "description": "Input STAC links that must not be propagated to the output.\n\nLinks have no identifier, so each item is matched against the whole ``rel``\nof a link: either an exact relation type (e.g., ``\"via\"``) or a regular\nexpression (e.g., ``\"self|parent|root\"``).\n\nThe ``derived_from`` links written by healpix-convert itself keep\nprecedence.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Exclude Links",
+          "type": "array"
+        },
+        "override_links": {
+          "description": "STAC links written in the output, in addition to the propagated ones.\n\nEach item is a whole link object (``rel``, ``href``, and whatever else the\nlink carries). An override wins over ``exclude_links``.",
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Override Links",
+          "type": "array"
+        },
+        "exclude_assets": {
+          "default": [
+            ".*"
+          ],
+          "description": "Keys of the input STAC assets that must not be propagated to the output.\n\nEach item is either the exact key of an asset or a regular expression\nmatched against the whole key (e.g., ``\"thumbnail.*\"``).\n\nEvery input asset is excluded by default: the assets of the input point at\nthe input files, which the output does not hold, so propagating them would\nhave the output item advertise files that are not its own. Set this to an\nempty list to keep them, or describe the output's own files with\n``override_assets``.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Exclude Assets",
+          "type": "array"
+        },
+        "override_assets": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "description": "STAC assets set in the output, overriding the propagated ones.\n\nEach key is the key of an asset and each value the whole asset object\n(``href``, ``type``, ``roles``, etc.). An override wins over\n``exclude_assets``.",
+          "title": "Override Assets",
+          "type": "object"
         }
       },
       "title": "STACSettings",

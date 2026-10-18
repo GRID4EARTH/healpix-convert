@@ -100,26 +100,47 @@ item merged from the `stac_discovery` attributes of the input datasets, with
 Set `metadata.stac.include_conversion_settings` to `False` to leave
 `processing:expression` out (not recommended).
 
-### Excluding and setting STAC properties and extensions
+### Excluding and setting STAC properties, extensions, links and assets
 
-`metadata.stac` drops and sets the properties and extensions propagated from
-the input items:
+`metadata.stac` drops and sets what the output item propagates from the input
+items:
 
 ```python
 "metadata": {
     "stac": {
-        "exclude_props": ["internal:.*"],
-        "override_props": {"license": "CC-BY-4.0"},
+        "exclude_properties": ["internal:.*"],
+        "override_properties": {"license": "CC-BY-4.0"},
         "exclude_extensions": ["https://stac-extensions.github.io/projection/.*"],
         "override_extensions": ["https://example.org/ext/v1.0.0/schema.json"],
+        "exclude_links": ["self|parent"],
+        "override_links": [
+            {"rel": "canonical", "href": "https://example.org/out.zarr"}
+        ],
+        "override_assets": {"data": {"href": "s3://public/out.zarr"}},
     }
 }
 ```
 
-`exclude_props` and `exclude_extensions` list exact names (property names,
-extension schema URLs) or regular expressions matched against the whole name.
-`override_props` sets properties and `override_extensions` lists extensions in
-addition to the propagated ones. An override wins over an exclusion.
+The four `exclude_*` settings list exact names or regular expressions matched
+against the whole name. What that name is depends on the kind:
+
+| Setting              | Matched against          | Override                               |
+| -------------------- | ------------------------ | -------------------------------------- |
+| `exclude_properties` | the property name        | `override_properties`: name → value    |
+| `exclude_extensions` | the extension schema URL | `override_extensions`: list of URLs    |
+| `exclude_links`      | the link's `rel`         | `override_links`: list of link objects |
+| `exclude_assets`     | the asset key            | `override_assets`: key → asset object  |
+
+Links have no identifier, so `rel` is what they are matched on; a link without
+one matches the empty string. An override wins over an exclusion, and the
+`override_*` of a list (extensions, links) appends what is not there yet rather
+than replacing.
+
+`exclude_assets` is the one setting that is not empty by default: it is
+`[".*"]`, so the input's assets are not propagated. They point at the input
+files, which the output does not hold, and an output item advertising files
+that are not its own is worse than one advertising none. Set it to `[]` to
+keep them, or describe the output's own files with `override_assets`.
 
 These settings apply to the propagated metadata only. The STAC metadata written
 by `healpix-convert` itself keeps precedence: the `processing:*` properties and

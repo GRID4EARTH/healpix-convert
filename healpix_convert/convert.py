@@ -138,11 +138,15 @@ def _create_and_process_output(
     # applied on the propagated metadata only: what is written below describes
     # the conversion itself and must survive the settings
     stac_settings = settings.metadata.stac
-    merged_stac_metadata.properties = stac_settings.filter_props(
+    merged_stac_metadata.properties = stac_settings.filter_properties(
         merged_stac_metadata.properties
     )
     merged_stac_metadata.stac_extensions = stac_settings.filter_extensions(
         merged_stac_metadata.stac_extensions
+    )
+    merged_stac_metadata.links = stac_settings.filter_links(merged_stac_metadata.links)
+    merged_stac_metadata.assets = stac_settings.filter_assets(
+        merged_stac_metadata.assets
     )
 
     # record how this output was produced: without the settings, two outputs
