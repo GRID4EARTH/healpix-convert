@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Projected input datasets whose x or y coordinates run the other way than
+  usual (increasing y, i.e. a bottom-up raster, or decreasing x) are now
+  converted: the input points of a chunk are selected with slice bounds that
+  follow the signs of the transform. Before, the selection was empty for every
+  chunk of such a dataset.
 - The chunks of a derived level always hold all the children of one HEALPix
   cell: on a partial spatial extent, their cells are no longer coarser than the
   coarsest level the converted cells cover entirely. Before, the chunks of the
