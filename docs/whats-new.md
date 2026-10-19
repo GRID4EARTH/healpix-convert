@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A chunk whose (buffered) polygon only grazes the extent of a projected input
+  dataset, with no pixel centre in the overlap, no longer gives the resampler
+  zero points: that dataset is skipped for the chunk, and a chunk left without
+  input is not written ({issue}`23`). The conversion of a tile stopped there
+  with `nearest` and with healpix-resample < 2026.10.1 for `psf`.
 - New `extra_dimensions` group setting, to align several input datasets along
   a non-spatial dimension whose labels differ between them (e.g. the
   `detector` dimension of the Sentinel-2 `conditions/geometry` group): union,
