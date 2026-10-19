@@ -29,6 +29,11 @@
   cells were aggregated (`transform`). The Multiscales Zarr convention asks
   for the same referencing style throughout a layout, so the whole multiscale
   group is then described array by array, the native levels included.
+- The HEALPix grid of a level is no longer added to its multiscales layout
+  items by default (`add_healpix_positioning`): it repeats the whole grid in
+  every item of that level, which one item per array makes particularly
+  verbose, while the attributes of a level group already describe its grid and
+  the `asset` of an item names its refinement level.
 - New `asset_type` multiscale setting: what a layout item refers to, a level
   group (`"group"`) or one array of a level (`"array"`). With `"auto"` (the
   default), the level groups are the assets where they describe every level

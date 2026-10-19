@@ -170,10 +170,9 @@ them from its own native level:
 ```
 
 Each item then carries the transformation from the native level of that array
-alone, with the aggregation method and the absolute positioning of its level
-like any other item. The level group of an array is the parent path of its
-asset (`1` for `1/a` above), the group that holds the cell ids coordinate the
-arrays of the level share.
+alone, with the aggregation method like any other item. The level group of an
+array is the parent path of its asset (`1` for `1/a` above), the group that
+holds the cell ids coordinate the arrays of the level share.
 
 The `asset_type` multiscale setting chooses the style: `"auto"` (default)
 describes the level groups where that describes every level and switches the

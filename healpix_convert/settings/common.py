@@ -580,9 +580,16 @@ class MultiscaleSettings(BaseModel):
     is compliant with the "multiscales" Zarr convention.
     """
 
-    add_healpix_positioning: bool = True
+    add_healpix_positioning: bool = False
     """If True, add HEALPix grid settings as absolute positioning
     information in each multiscale layout entry.
+
+    False by default: it repeats the whole grid of a level in every entry of
+    that level, which one entry per array (see :py:attr:`asset_type`) makes
+    particularly verbose. The HEALPix grid info of a level can be read from the
+    attributes of its group (easily accessible if metadata is consolidated for
+    the multiscale group), and the refinement level corresponds to the name of
+    a level group.
     """
 
     asset_type: Literal["group", "array", "auto"] = "auto"

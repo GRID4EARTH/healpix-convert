@@ -158,6 +158,7 @@ def _cache_and_settings(
     chunk_method: str = "dense",
     variables: dict[int, list[str]] | None = None,
     asset_type: str = "auto",
+    add_positioning: bool = False,
 ) -> tuple[ConvertStagingCache, ConvertSettings]:
     """The staging cache and the settings of that conversion: where the
     children of the multiscale group have been written, the spatial extent of
@@ -171,7 +172,7 @@ def _cache_and_settings(
     single variable, i.e. a derived level is aggregated from one native level.
 
     """
-    settings = _settings(levels, pyramid, chunk_method, asset_type)
+    settings = _settings(levels, pyramid, chunk_method, asset_type, add_positioning)
     output_spatial = OutputSpatialInfo(geometry_latlon=extent)
     io_path_map = {PurePath(GROUP): PurePath(GROUP)}
 
@@ -203,7 +204,7 @@ def _cache_and_settings(
         multiscale_groups[path] = _multiscales_metadata(
             io_path_map[path],
             levels,
-            True,
+            settings.multiscale_settings.add_healpix_positioning,
             variables=native_variables,
             derived_from=_derived_level_sources(
                 info, pyramid_settings.coarsen_from, native_variables
@@ -229,6 +230,7 @@ def _settings(
     pyramid: dict | None = None,
     chunk_method: str = "dense",
     asset_type: str = "auto",
+    add_positioning: bool = False,
 ):
     """The settings of that conversion, with the pyramid settings of the
     multiscale group.
@@ -259,6 +261,7 @@ def _settings(
             "multiscale_settings": {
                 "groups": [GROUP],
                 "asset_type": asset_type,
+                "add_healpix_positioning": add_positioning,
                 "pyramid_groups": {} if pyramid is None else {GROUP: pyramid},
             },
             "group_settings": group_settings,
@@ -333,7 +336,9 @@ def converted_multi_level(tmp_path):
 
 def test_derived_levels_and_metadata(converted):
     path, cell_ids, _, _ = converted
-    cache, settings = _cache_and_settings([3], {"derived_levels": [2, 1]})
+    cache, settings = _cache_and_settings(
+        [3], {"derived_levels": [2, 1]}, add_positioning=True
+    )
 
     dt = _generate_pyramids(cache, settings, path)
 
@@ -968,6 +973,7 @@ def test_arrays_aggregated_from_different_native_levels(converted_multi_level):
             [3, 2],
             {"derived_levels": [1], "coarsen_from": "finest"},
             variables=_variable_names(data),
+            add_positioning=True,
         ),
         path,
     )
@@ -991,6 +997,20 @@ def test_arrays_aggregated_from_different_native_levels(converted_multi_level):
     # both arrays are at the same refinement level, which their absolute
     # positioning says and their asset paths share
     assert item_a["dggs"] == item_b["dggs"]
+
+
+def test_absolute_positioning_is_off_by_default(converted):
+    path, *_ = converted
+
+    dt = _generate_pyramids(*_cache_and_settings([3], {"derived_levels": [2]}), path)
+    multiscales = dt[GROUP].attrs["multiscales"]
+
+    # repeating the grid of a level in its layout items would be verbose for
+    # nothing: a consumer reads it in the attributes of the level group, which
+    # the asset of an item names
+    assert all("dggs" not in item for item in multiscales["layout"])
+    assert _layout_assets(multiscales) == ["3", "2"]
+    assert dt[GROUP]["2"].attrs["dggs"]["refinement_level"] == 2
 
 
 def test_asset_type_array_describes_every_array(converted):

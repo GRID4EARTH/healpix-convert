@@ -37,11 +37,12 @@ generated from the model, e.g., to get completion and validation in an editor.
 - `multiscale_settings`: the input groups (`groups`) converted as multiscale
   groups. Their children groups are converted at different refinement levels and
   written as `<group>/<refinement level>` in the output, with metadata following
-  the Multiscales Zarr convention. `add_healpix_positioning` (default `True`)
-  adds the HEALPix grid of each level to that metadata, and `asset_type` what a
-  layout item of that metadata refers to: a level group (`"group"`), one array
-  of a level (`"array"`), or the level groups where they describe every level
-  and the arrays otherwise (`"auto"`, the default; see {doc}`pyramids`).
+  the Multiscales Zarr convention. `add_healpix_positioning` (default `False`)
+  adds the HEALPix grid of each level to that metadata, which repeats it in
+  every item of that level. `asset_type` says what a layout item of that
+  metadata refers to: a level group (`"group"`), one array of a level
+  (`"array"`), or the level groups where they describe every level and the
+  arrays otherwise (`"auto"`, the default; see {doc}`pyramids`).
   `pyramid_groups` gives the pyramid settings of (some of) those groups, see
   below.
 - `metadata`: the conventions followed by the output dataset and the STAC
