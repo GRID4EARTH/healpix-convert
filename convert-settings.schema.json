@@ -464,6 +464,10 @@
           },
           "title": "Zarr Conventions",
           "type": "array"
+        },
+        "stac": {
+          "$ref": "#/$defs/STACSettings",
+          "description": "Settings for the STAC metadata written in the root group of the output\ndataset (see :py:class:`~healpix_convert.settings.stac.STACSettings`)."
         }
       },
       "title": "MetadataSettings",
@@ -591,6 +595,129 @@
         }
       },
       "title": "PSFResamplerSettings",
+      "type": "object"
+    },
+    "STACSettings": {
+      "additionalProperties": false,
+      "description": "Settings for the STAC metadata (``stac_discovery``) written in the root\ngroup of the output dataset.",
+      "properties": {
+        "include_conversion_settings": {
+          "default": true,
+          "description": "If True (the default), the conversion settings are recorded in the output\nas the ``processing:expression`` STAC property.\n\nSet it to False to leave them out, e.g., because they are large or because\nthey name internal paths that should not be published. The rest of the\nprovenance (``processing:datetime``, ``processing:software``,\n``processing:lineage``) is written either way.",
+          "title": "Include Conversion Settings",
+          "type": "boolean"
+        },
+        "merge_properties": {
+          "default": "pick_first",
+          "description": "How the STAC properties of several input datasets are merged.\n\n``\"join_inner\"`` keeps the properties every input has with the same value,\ni.e., what they agree on: a ``datetime`` that differs across the inputs\ndoes not describe the output either.\n\nWith a single input dataset both strategies are equivalent.",
+          "enum": [
+            "pick_first",
+            "join_inner"
+          ],
+          "title": "Merge Properties",
+          "type": "string"
+        },
+        "merge_extensions": {
+          "default": "pick_first",
+          "description": "How the STAC extensions of several input datasets are merged.\n\n``\"join_outer\"`` lists every extension any input declares, which is what\nkeeps the output item from dropping a namespace its properties still use.",
+          "enum": [
+            "pick_first",
+            "join_inner",
+            "join_outer"
+          ],
+          "title": "Merge Extensions",
+          "type": "string"
+        },
+        "merge_links": {
+          "default": "pick_first",
+          "description": "How the STAC links of several input datasets are merged.\n\nLinks have no identifier, so they are merged whole: two links are the same\none when they are equal. ``\"join_inner\"`` keeps the links every input has\nand ``\"join_outer\"`` every link any input has, in the order they first\nappear.",
+          "enum": [
+            "pick_first",
+            "join_inner",
+            "join_outer"
+          ],
+          "title": "Merge Links",
+          "type": "string"
+        },
+        "merge_assets": {
+          "default": "pick_first",
+          "description": "How the STAC assets of several input datasets are merged.\n\nMerged like the properties, by asset key. The result is then filtered by\n``exclude_assets``, which drops every input asset by default.",
+          "enum": [
+            "pick_first",
+            "join_inner"
+          ],
+          "title": "Merge Assets",
+          "type": "string"
+        },
+        "exclude_properties": {
+          "description": "Names of the input STAC properties that must not be propagated to the output.\n\nEach item is either the exact name of a property or a regular expression\nmatched against the whole property name (e.g., ``\"internal:.*\"`` excludes\nevery property of an ``internal`` namespace).\n\nThe properties written by healpix-convert itself (``processing:*``) keep\nprecedence.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Exclude Properties",
+          "type": "array"
+        },
+        "override_properties": {
+          "additionalProperties": true,
+          "description": "STAC properties set in the output, overriding the propagated ones.\n\nAn override wins over ``exclude_properties``. The properties written by\nhealpix-convert itself (``processing:*``) keep precedence.",
+          "title": "Override Properties",
+          "type": "object"
+        },
+        "exclude_extensions": {
+          "description": "Input STAC extensions that must not be listed in the output.\n\nEach item is either the exact URL of an extension schema or a regular\nexpression matched against the whole URL (e.g.,\n``\"https://stac-extensions.github.io/projection/.*\"`` excludes any version\nof the projection extension).\n\nThe STAC processing extension, listed by healpix-convert itself, keeps\nprecedence.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Exclude Extensions",
+          "type": "array"
+        },
+        "override_extensions": {
+          "description": "URLs of the STAC extension schemas listed in the output, in addition to\nthe propagated ones.\n\nAn override wins over ``exclude_extensions``.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Override Extensions",
+          "type": "array"
+        },
+        "exclude_links": {
+          "description": "Input STAC links that must not be propagated to the output.\n\nLinks have no identifier, so each item is matched against the whole ``rel``\nof a link: either an exact relation type (e.g., ``\"via\"``) or a regular\nexpression (e.g., ``\"self|parent|root\"``).\n\nThe ``derived_from`` links written by healpix-convert itself keep\nprecedence.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Exclude Links",
+          "type": "array"
+        },
+        "override_links": {
+          "description": "STAC links written in the output, in addition to the propagated ones.\n\nEach item is a whole link object (``rel``, ``href``, and whatever else the\nlink carries). An override wins over ``exclude_links``.",
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Override Links",
+          "type": "array"
+        },
+        "exclude_assets": {
+          "default": [
+            ".*"
+          ],
+          "description": "Keys of the input STAC assets that must not be propagated to the output.\n\nEach item is either the exact key of an asset or a regular expression\nmatched against the whole key (e.g., ``\"thumbnail.*\"``).\n\nEvery input asset is excluded by default: the assets of the input point at\nthe input files, which the output does not hold, so propagating them would\nhave the output item advertise files that are not its own. Set this to an\nempty list to keep them, or describe the output's own files with\n``override_assets``.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Exclude Assets",
+          "type": "array"
+        },
+        "override_assets": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "description": "STAC assets set in the output, overriding the propagated ones.\n\nEach key is the key of an asset and each value the whole asset object\n(``href``, ``type``, ``roles``, etc.). An override wins over\n``exclude_assets``.",
+          "title": "Override Assets",
+          "type": "object"
+        }
+      },
+      "title": "STACSettings",
       "type": "object"
     },
     "WGS84Ellipsoid": {

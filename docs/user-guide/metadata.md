@@ -96,3 +96,89 @@ item merged from the `stac_discovery` attributes of the input datasets, with
   conversion settings (`processing:expression`, whose `format` is the URL of
   the settings JSON schema of the recorded `healpix-convert` version) and the
   inputs (`processing:lineage`).
+
+Set `metadata.stac.include_conversion_settings` to `False` to leave
+`processing:expression` out (not recommended).
+
+### Merging the input items
+
+With several input datasets, the properties, extensions, links and assets of
+the output item are merged from theirs, with the strategy chosen per kind by
+`merge_properties`, `merge_extensions`, `merge_links` and `merge_assets`:
+
+| Strategy       | Kept                                             | Available for     |
+| -------------- | ------------------------------------------------ | ----------------- |
+| `"pick_first"` | what the first input dataset has (the default)   | all four          |
+| `"join_inner"` | what every input dataset has: their intersection | all four          |
+| `"join_outer"` | what any input dataset has: their union          | extensions, links |
+
+Properties and assets are merged by name, and `"join_inner"` keeps an entry
+only when every input has it _with the same value_ — a `datetime` that differs
+across the inputs does not describe the output either. They have no
+`"join_outer"`: a union of mappings has to invent a rule for the keys whose
+value differs across the inputs, and any such rule describes the output less
+well than leaving the entry out.
+
+Extensions and links are merged whole — two of them are the same one when they
+are equal, which is all a link has to go on — so `"join_outer"` is meaningful
+there, and lists them in the order they first appear.
+
+With a single input dataset the strategies are all equivalent. The other
+fields of the item are unaffected: the geometry, the bounding box and the `id`
+describe the output, and `stac_version` must match across the inputs or the
+conversion fails.
+
+### Excluding and setting STAC properties, extensions, links and assets
+
+Once merged, `metadata.stac` drops and sets what the output item propagates
+from the input items:
+
+```python
+"metadata": {
+    "stac": {
+        "exclude_properties": ["internal:.*"],
+        "override_properties": {"license": "CC-BY-4.0"},
+        "exclude_extensions": ["https://stac-extensions.github.io/projection/.*"],
+        "override_extensions": ["https://example.org/ext/v1.0.0/schema.json"],
+        "exclude_links": ["self|parent"],
+        "override_links": [
+            {"rel": "canonical", "href": "https://example.org/out.zarr"}
+        ],
+        "override_assets": {"data": {"href": "s3://public/out.zarr"}},
+    }
+}
+```
+
+The four `exclude_*` settings list exact names or regular expressions matched
+against the whole name. What that name is depends on the kind:
+
+| Setting              | Matched against          | Override                               |
+| -------------------- | ------------------------ | -------------------------------------- |
+| `exclude_properties` | the property name        | `override_properties`: name → value    |
+| `exclude_extensions` | the extension schema URL | `override_extensions`: list of URLs    |
+| `exclude_links`      | the link's `rel`         | `override_links`: list of link objects |
+| `exclude_assets`     | the asset key            | `override_assets`: key → asset object  |
+
+Links have no identifier, so `rel` is what they are matched on; a link without
+one matches the empty string. An override wins over an exclusion, and the
+`override_*` of a list (extensions, links) appends what is not there yet rather
+than replacing.
+
+`exclude_assets` is the one setting that is not empty by default: it is
+`[".*"]`, so the input's assets are not propagated. They point at the input
+files, which the output does not hold, and an output item advertising files
+that are not its own is worse than one advertising none. Set it to `[]` to
+keep them, or describe the output's own files with `override_assets`.
+
+These settings apply to the propagated metadata only. The STAC metadata written
+by `healpix-convert` itself keeps precedence: the `processing:*` properties and
+the processing extension above are written after the settings are applied, so
+the output stays traceable whatever they say. The one exception is
+`include_conversion_settings`, which decides whether the settings themselves
+are recorded.
+
+:::{note}
+The output item is not validated against the extensions it lists: keeping the
+properties and the extensions consistent with each other is left to the data
+provider.
+:::

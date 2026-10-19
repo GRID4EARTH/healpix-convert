@@ -18,6 +18,17 @@ def test_settings_are_recorded_verbatim() -> None:
     assert expression["expression"] == settings.to_dict()
 
 
+def test_settings_can_be_left_out() -> None:
+    properties = format_stac_processing(
+        get_settings("era5"), include_conversion_settings=False
+    )
+
+    assert "processing:expression" not in properties
+    # the rest of the provenance does not depend on it
+    assert "processing:datetime" in properties
+    assert "processing:software" in properties
+
+
 def test_resampler_and_its_parameters_are_recoverable() -> None:
     # the point of this metadata: two outputs resampled from one input by
     # different methods must be tellable apart
@@ -54,7 +65,9 @@ def test_processing_datetime_is_utc_and_injectable() -> None:
 
 
 def test_lineage_names_the_inputs() -> None:
-    properties = format_stac_processing(get_settings("era5"), input_ids=["item-b", "item-a"])
+    properties = format_stac_processing(
+        get_settings("era5"), input_ids=["item-b", "item-a"]
+    )
 
     assert "item-a" in properties["processing:lineage"]
     assert "item-b" in properties["processing:lineage"]
@@ -65,7 +78,9 @@ def test_no_lineage_without_inputs() -> None:
 
 
 def test_extension_url_is_versioned() -> None:
-    assert STAC_PROCESSING_SCHEMA_URL.startswith("https://stac-extensions.github.io/processing/v")
+    assert STAC_PROCESSING_SCHEMA_URL.startswith(
+        "https://stac-extensions.github.io/processing/v"
+    )
     assert STAC_PROCESSING_SCHEMA_URL.endswith("/schema.json")
 
 
