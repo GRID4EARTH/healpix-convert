@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping
 from pathlib import PurePath
 from typing import Annotated, Any, Literal, TypeAlias
 
+import numpy as np
 import structlog
 from pydantic import (
     BaseModel,
@@ -448,6 +449,34 @@ class HealpixGroupSettings(BaseModel):
     that provides it must be installed where the settings are created, e.g.
     ``healpix-compress`` for ``hcc-sentinel2-pyramid``.
     """
+
+    dtype: str | None = Field(default=None)
+    """Floating-point data type of the group's resampled data variables, e.g.
+    ``"float16"`` or ``"float32"``.
+
+    If None, the variables are written as ``float64`` with the ``"bilinear"``
+    and ``"psf"`` resamplers, and with the data type of the input variables
+    with the other resamplers. The resampling itself is not changed: its
+    results are cast when they are written. The derived levels of a pyramid
+    have the data type of the converted level they are aggregated from.
+    """
+
+    @field_validator("dtype")
+    @classmethod
+    def validate_dtype(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+
+        try:
+            dtype = np.dtype(value)
+        except TypeError:
+            raise ValueError(f"{value!r} is not a data type") from None
+
+        if dtype.kind != "f":
+            raise ValueError(f"dtype must be a floating-point data type, got {value!r}")
+
+        # one spelling per data type, e.g. "f4" -> "float32"
+        return dtype.name
 
     @field_validator("codecs")
     @classmethod

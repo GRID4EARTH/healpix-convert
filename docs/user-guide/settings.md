@@ -108,7 +108,8 @@ is either used for all the data variables of the group, or given per variable
 as a dictionary keyed by variable name.
 
 With the `"bilinear"` and `"psf"` methods, the resampled variables are written
-as `float64`. The other methods keep the data type of the input variables.
+as `float64`. The other methods keep the data type of the input variables. The
+`dtype` group setting (below) chooses another floating-point data type.
 
 ### Other group settings
 
@@ -120,6 +121,10 @@ as `float64`. The other methods keep the data type of the input variables.
   created.
 - `healpix_coordinate_codecs`: the Zarr codecs of the cell ids coordinate
   (Zarr's defaults if not set).
+- `dtype`: the floating-point data type of the resampled data variables, e.g.
+  `"float16"` or `"float32"` (see above if not set). The results of the
+  resampling are cast when they are written, and the derived levels of a
+  pyramid have the data type of the converted level.
 - `extra_dimensions`: how several input datasets are aligned along a
   non-spatial dimension (see below).
 

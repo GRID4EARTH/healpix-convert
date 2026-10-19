@@ -400,6 +400,19 @@
           "default": null,
           "description": "Zarr codecs of the group's resampled data variables (other arrays use\nzarr's defaults).\n\nEach codec is looked up by name in zarr's codec registry, so the package\nthat provides it must be installed where the settings are created, e.g.\n``healpix-compress`` for ``hcc-sentinel2-pyramid``.",
           "title": "Codecs"
+        },
+        "dtype": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Floating-point data type of the group's resampled data variables, e.g.\n``\"float16\"`` or ``\"float32\"``.\n\nIf None, the variables are written as ``float64`` with the ``\"bilinear\"``\nand ``\"psf\"`` resamplers, and with the data type of the input variables\nwith the other resamplers. The resampling itself is not changed: its\nresults are cast when they are written. The derived levels of a pyramid\nhave the data type of the converted level they are aggregated from.",
+          "title": "Dtype"
         }
       },
       "required": [

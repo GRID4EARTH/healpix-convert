@@ -377,7 +377,9 @@ class HealpixGroupConverter(ABC):
                     shape = (self.cell_dim_size,)
                     chunks = (self.cell_dim_chunk_size,)
 
-                if self.settings.resampler.name in ["bilinear", "psf"]:
+                if self.settings.dtype is not None:
+                    dtype = np.dtype(self.settings.dtype)
+                elif self.settings.resampler.name in ["bilinear", "psf"]:
                     dtype = np.float64
                 else:
                     dtype = var.dtype
@@ -1029,9 +1031,7 @@ class DenseChunkConverter(UniformChunkConverter):
             zarray = self.output_arrays[name]
             # cells without data (TODO: get the right fill_value and dtype)
             cell_data[np.isnan(cell_data)] = zarray.fill_value
-            writes.append(
-                (zarray, (..., chunk_slice), cell_data.astype(cell_data.dtype))
-            )
+            writes.append((zarray, (..., chunk_slice), cell_data.astype(zarray.dtype)))
 
         _write_chunk_arrays(writes)
 
@@ -1121,9 +1121,8 @@ class SparseChunkConverter(UniformChunkConverter):
         
         writes = []
         for name, cell_data in resampled.items():
-            dtype = ds_input_points.variables[name].dtype
             zarray = self.output_arrays[name]
-            writes.append((zarray, (..., chunk_slice), cell_data.astype(dtype)))
+            writes.append((zarray, (..., chunk_slice), cell_data.astype(zarray.dtype)))
 
         _write_chunk_arrays(writes)
 
@@ -1289,7 +1288,7 @@ class NoChunkConverter(HealpixGroupConverter):
             if len(extra_dims) > 1:
                 cell_data = cell_data.reshape(tuple(extra_dim_sizes + [cell_ids.size]))
 
-            zarray[..., :] = cell_data.astype(cell_data.dtype)
+            zarray[..., :] = cell_data.astype(zarray.dtype)
 
 
 _CONVERTER_NAME_CLS: dict[str, type[HealpixGroupConverter]] = {
