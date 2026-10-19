@@ -208,12 +208,12 @@ def _derived_chunk_level(
     derived level hold as many cells as the ones of the level it is aggregated
     from, with :py:data:`MIN_CHUNK_DEPTH` as a floor.
 
-    The chunk cells are never coarser than ``coarsest_level``, the coarsest
-    level whose cells the converted cells cover entirely (the base cells,
-    level 0, for a full-earth extent): a coarser chunk cell would be only
-    partly covered, and since a derived level holds the converted cells only,
-    its chunks would then be cut along the array rather than along HEALPix
-    cells.
+    To ensure HEALPix-aligned chunks for all derived levels, the chunk cell
+    refinement level stops at ``coarsest_level``: the coarsest level that is
+    entirely covered by converted data (for a full-earth extent this
+    corresponds to level 0). Beyond that level threshold, some of the chunk
+    cells would be only partly covered, such that the actual chunks would be
+    cut along the array (i.e., not HEALPix-aligned).
 
     """
     native_depth = native_level - native_chunk_level
