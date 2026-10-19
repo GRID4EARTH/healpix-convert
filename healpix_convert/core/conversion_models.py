@@ -5,7 +5,7 @@ Pydantic model classes for temporary data used during conversion.
 from __future__ import annotations
 
 from pathlib import PurePath
-from typing import Annotated, Any
+from typing import Annotated, Any, TypeAlias
 
 import affine
 import pyproj
@@ -21,8 +21,15 @@ from pydantic import (
     field_validator,
 )
 
+from healpix_convert.core.healpix_conventions import Healpix
 from healpix_convert.core.multiscales_conventions import HealpixMultiscales
 from healpix_convert.core.utils import open_datatrees
+
+#: One (single-scale) HEALPix group of the output dataset: the HEALPix grid of
+#: its cells and the refinement level of its chunk cells (each chunk holds the
+#: children of one such cell, as the ``healpix_cell_dense`` chunk method
+#: writes them).
+HealpixLevelInfo: TypeAlias = tuple[Healpix, int]
 
 
 def serialize_crss(value: list[pyproj.CRS]) -> list[dict]:
@@ -202,17 +209,71 @@ class OutputSpatialInfo(BaseModel):
         return shapely.bounds(self.geometry_latlon)
 
 
+class PyramidMultiscaleGroupInfo(BaseModel):
+    """Information about a pyramid multiscale group in the output Zarr dataset,
+    i.e., a group holding the HEALPix levels converted from the input data
+    (native levels) and the coarser levels derived from them (derived
+    levels).
+
+    The derived levels are groups of the multiscale group, next to the
+    converted ones or under a child group of it (the ``subgroup_name`` pyramid
+    setting).
+
+    """
+
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
+    native_levels: dict[PurePath, HealpixLevelInfo] = Field(default_factory=dict)
+    """HEALPix grid and chunk level of each level converted from the input data
+    (keys: paths of the converted groups in the output dataset).
+    """
+
+    derived_levels: dict[PurePath, HealpixLevelInfo] = Field(default_factory=dict)
+    """HEALPix grid and chunk level of each derived level (keys: paths of the
+    derived level groups in the output dataset).
+    """
+
+    @field_serializer("native_levels", "derived_levels")
+    def serialize_levels(self, value):
+        # always convert paths to strings (unix-style)
+        return {k.as_posix(): v for k, v in value.items()}
+
+
 class OutputGroupInfo(BaseModel):
     """Information about groups in the output Zarr dataset."""
 
     multiscale_groups: dict[PurePath, HealpixMultiscales] = Field(default_factory=dict)
     """Multiscales groups (including metadata)."""
 
+    pyramid_multiscale_groups: dict[PurePath, PyramidMultiscaleGroupInfo] = Field(
+        default_factory=dict
+    )
+    """Multiscale groups holding a pyramid of derived HEALPix levels
+    (keys: paths of those groups in the input dataset(s), like
+    :py:attr:`multiscale_groups`, whose metadata describes their whole
+    pyramid).
+    """
+
     excluded_groups: list[PurePath] = Field(default_factory=list)
     """Input dataset groups excluded from the output dataset."""
 
     io_path_map: dict[PurePath, PurePath] = Field(default_factory=dict)
     """Mapping input->output group paths."""
+
+    @field_serializer("multiscale_groups", "pyramid_multiscale_groups")
+    def serialize_group_paths(self, value):
+        # always convert paths to strings (unix-style)
+        return {k.as_posix(): v for k, v in value.items()}
+
+    @field_serializer("io_path_map")
+    def serialize_io_path_map(self, value):
+        # always convert paths to strings (unix-style)
+        return {k.as_posix(): v.as_posix() for k, v in value.items()}
+
+    @field_serializer("excluded_groups")
+    def serialize_excluded_groups(self, value):
+        # always convert paths to strings (unix-style)
+        return [v.as_posix() for v in value]
 
 
 class ConvertStagingCache(BaseModel):
@@ -253,6 +314,11 @@ class ConvertStagingCache(BaseModel):
     @field_serializer("input_datatrees", mode="plain")
     def serialize_datatrees(self, dts: dict[str, xr.DataTree]) -> list[str]:
         return list(dts)
+
+    @field_serializer("input_spatial_groups")
+    def serialize_input_spatial_groups(self, value):
+        # always convert paths to strings (unix-style)
+        return {k.as_posix(): v for k, v in value.items()}
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> ConvertStagingCache:

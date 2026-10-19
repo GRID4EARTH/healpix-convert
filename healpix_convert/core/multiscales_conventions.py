@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import PurePath
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, field_serializer
+from pydantic import BaseModel, ConfigDict, field_serializer, model_validator
 
 from healpix_convert.core.healpix_conventions import Healpix
 from healpix_convert.core.pydantic_compat import MISSING
@@ -39,21 +39,66 @@ class MultiscalesZarrConvention(BaseModel):
     description: Literal["Multiscale layout of zarr datasets"] = _DESCR
 
 
+class MultiscalesTransform(BaseModel):
+    """Coordinate transformation of a multiscales layout item, from the level
+    it is derived from.
+    """
+
+    model_config = ConfigDict(frozen=True, use_attribute_docstrings=True)
+
+    scale: list[float]
+    """Scale factor per axis, from the source level to this one.
+
+    A HEALPix group has a single axis, the cell dimension, so there is a
+    single factor: the length of a cell relative to a cell of the source
+    level, i.e. ``2 ** (source refinement level - this refinement level)``.
+    HEALPix tessellates a 2D surface, so one cell of this level covers the
+    square of that, the number of cells of the source level it aggregates.
+    """
+
+
 class HealpixMultiscalesLayoutItem(BaseModel):
     """Metadata for a single Healpix multiscales layout item."""
 
     model_config = ConfigDict(frozen=True, use_attribute_docstrings=True)
 
     asset: PurePath
-    """Name of the single-scale group (healpix level)."""
+    """Path of the single-scale group (healpix level), relative to the group
+    holding the multiscales metadata.
+    """
 
     dggs: Healpix | MISSING = MISSING
     """HEALPix grid settings (absolute positioning)."""
 
-    @field_serializer("asset")
+    derived_from: PurePath | MISSING = MISSING
+    """Path of the single-scale group this level is aggregated from, relative
+    to the group holding the multiscales metadata.
+
+    Only given for a derived level, i.e., a level of a pyramid that is
+    aggregated from a level converted from the input data.
+    """
+
+    transform: MultiscalesTransform | MISSING = MISSING
+    """Transformation from the level given by :py:attr:`derived_from` to this
+    one. The convention requires it whenever ``derived_from`` is given.
+    """
+
+    resampling_method: str | MISSING = MISSING
+    """How the values of the source cells are aggregated into one cell of this
+    level (derived levels only).
+    """
+
+    @field_serializer("asset", "derived_from")
     def serialize_group_settings(self, value):
         # always convert paths to strings (unix-style)
-        return value.as_posix()
+        return value.as_posix() if isinstance(value, PurePath) else value
+
+    @model_validator(mode="after")
+    def ensure_transform_of_derived_level(self) -> HealpixMultiscalesLayoutItem:
+        if self.derived_from is not MISSING and self.transform is MISSING:
+            raise ValueError("field 'transform' is required with 'derived_from'")
+
+        return self
 
 
 class HealpixMultiscales(BaseModel):
@@ -63,3 +108,10 @@ class HealpixMultiscales(BaseModel):
 
     layout: list[HealpixMultiscalesLayoutItem]
     """Multiscale description."""
+
+    resampling_method: str | MISSING = MISSING
+    """Default method the derived levels are aggregated with.
+
+    Given for a group holding a pyramid, whose derived levels are all
+    aggregated with the same method.
+    """

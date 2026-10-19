@@ -60,8 +60,39 @@ Each HEALPix group lists the
 A multiscale group (see `multiscale_settings` in {doc}`settings`) lists the
 [Multiscales Zarr convention](https://github.com/zarr-conventions/multiscales)
 and the DGGS Zarr convention in its `zarr_conventions` attribute. Its
-`multiscales` attribute lists its children groups, one per refinement level
-(`layout`), with their HEALPix grid if `add_healpix_positioning` is set.
+`multiscales` attribute lists its groups, one per refinement level (`layout`),
+with their HEALPix grid if `add_healpix_positioning` is set. As the convention
+asks, the `asset` of a layout item is a path relative to the group holding the
+metadata, e.g. `"7"` for a converted level and `"pyramids/4"` for a level
+derived in a child group (see {doc}`pyramids`).
+
+The layout item of a derived level also names the converted level it is
+aggregated from (`derived_from`, a path like `asset`), the transformation from
+that level (`transform`) and how its cells are aggregated
+(`resampling_method`, also given once for the whole group since every derived
+level of a pyramid uses the same method):
+
+```json
+{
+  "layout": [
+    {"asset": "7"},
+    {"asset": "6", "derived_from": "7", "transform": {"scale": [2.0]},
+     "resampling_method": "mean"},
+    {"asset": "4", "derived_from": "7", "transform": {"scale": [8.0]},
+     "resampling_method": "mean"}
+  ],
+  "resampling_method": "mean"
+}
+```
+
+The convention gives `scale` per axis, and a HEALPix group has a single one,
+the cell dimension: the factor is the length of a cell relative to a cell of
+the source level, `[2.0]` one level coarser and `[8.0]` three levels coarser.
+Since HEALPix tessellates a 2D surface, a cell aggregates the square of that,
+4 and 64 cells of the source level.
+
+A derived level is aggregated from a converted level and never from another
+derived level, so its `scale` grows with the distance to that level.
 
 ## CF conventions
 

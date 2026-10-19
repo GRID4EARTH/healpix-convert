@@ -6,7 +6,7 @@ the documentation is built: replace the paths with your own datasets.
 
 ## Overview
 
-A conversion runs in four steps:
+A conversion runs in five steps:
 
 1. **Settings** describe how each input Zarr group is resampled onto HEALPix
    ({py:class}`~healpix_convert.ConvertSettings`).
@@ -19,6 +19,11 @@ A conversion runs in four steps:
 4. **Convert** the data of each group: resample it onto HEALPix and write it in
    the output arrays, possibly chunk by chunk in several parallel jobs
    ({py:func}`~healpix_convert.convert_group_to_healpix`).
+5. **Generate the pyramids**: aggregate the converted data onto the coarser
+   HEALPix refinement levels of the multiscale groups that have pyramid
+   settings, whose groups and metadata the third step has already created
+   ({py:func}`~healpix_convert.generate_pyramids`, see
+   {doc}`../user-guide/pyramids`). It does nothing without such settings.
 
 {py:func}`~healpix_convert.create_healpix_dataset` runs all these steps in a
 single call:

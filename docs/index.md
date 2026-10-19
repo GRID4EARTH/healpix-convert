@@ -26,6 +26,8 @@ This package is under heavy development. The API is not stable yet.
 - **Multi-stage workflow** — first prepare the output dataset, then run data
   conversion in parallel jobs, defined as the tasks of a workflow orchestration
   tool (Prefect, Airflow, Argo Workflows, etc.)
+- **HEALPix pyramids** — generate coarser refinement levels in a converted
+  dataset, for viewers that pick the level from the zoom
 - **Dask-native** — parallel conversion out of the box with a distributed Dask
   cluster
 - **Cloud-ready** — read from and write to S3 object stores

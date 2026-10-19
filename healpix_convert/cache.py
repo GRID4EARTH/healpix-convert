@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import PurePath
 
+import numpy as np
 import pyproj
 import shapely
 import structlog
@@ -17,10 +18,13 @@ from healpix_convert.core.conversion_models import (
     InputSpatialInfo,
     OutputGroupInfo,
     OutputSpatialInfo,
+    PyramidMultiscaleGroupInfo,
 )
+from healpix_convert.core.healpix_conventions import Healpix
 from healpix_convert.core.multiscales_conventions import HealpixMultiscales
 from healpix_convert.settings.common import (
     ConvertSettings,
+    HealpixDenseChunkSettings,
     HealpixGroupSettings,
     validate_convert_settings,
 )
@@ -144,10 +148,234 @@ def _find_input_spatial_groups(
     return spatial_groups
 
 
+#: Smallest number of refinement levels between a derived level and the
+#: HEALPix cells its chunks are aligned with, i.e. the chunks of a derived
+#: level hold at least ``4 ** MIN_CHUNK_DEPTH`` = 256 cells. Without such a
+#: floor, following the chunk level of the converted data would divide the
+#: number of cells per chunk by four at every derived level.
+MIN_CHUNK_DEPTH = 4
+
+
+def _chunk_cells(extent: shapely.Polygon, chunk: HealpixDenseChunkSettings):
+    """Chunk cells of a converted level, i.e. the HEALPix cells of the chunk
+    level covering the spatial extent of the output, in ascending (nested)
+    order.
+
+    These are the cells the conversion writes one chunk for, so they say which
+    cells the level holds.
+
+    """
+    assert chunk.healpix.refinement_level is not None
+
+    cell_ids, _ = utils.compute_output_chunk_info(
+        extent, chunk.healpix.refinement_level, chunk.healpix.ellipsoid.name
+    )
+
+    return np.sort(cell_ids)
+
+
+def _coarsest_whole_level(chunk_cells, chunk_level: int) -> int:
+    """Coarsest refinement level whose cells the converted cells cover
+    entirely.
+
+    A cell of a coarser level than the chunk level is covered entirely only if
+    all its children chunk cells are converted, which is not the case at the
+    edges of a partial spatial extent. Aggregating the cells of the converted
+    data onto such a cell would mix the cells of several of them, so no
+    derived level can go below that level.
+
+    """
+    cells = chunk_cells
+
+    for level in range(chunk_level, 0, -1):
+        parents = cells >> np.uint64(2)
+        counts = np.bincount(np.unique(parents, return_inverse=True)[1])
+        if not np.all(counts == 4):
+            return level
+        cells = np.unique(parents)
+
+    return 0
+
+
+def _derived_chunk_level(level: int, native_level: int, native_chunk_level: int) -> int:
+    """Refinement level of the chunk cells of a derived level: a chunk holds
+    the ``4 ** depth`` children of one HEALPix cell ``depth`` levels above the
+    derived level.
+
+    The depth is the one of the converted chunks, so that the chunks of a
+    derived level hold as many cells as the ones of the level it is aggregated
+    from, with :py:data:`MIN_CHUNK_DEPTH` as a floor; the chunk cells are never
+    finer than the base cells (level 0).
+
+    """
+    native_depth = native_level - native_chunk_level
+
+    return max(level - max(native_depth, MIN_CHUNK_DEPTH), 0)
+
+
+def _derived_level_sources(
+    info: PyramidMultiscaleGroupInfo, coarsen_from: str
+) -> dict[PurePath, PurePath]:
+    """Native level each derived level of a pyramid is aggregated from
+    (derived level path -> native level path).
+
+    Some variables of a derived level may come from another native level: one
+    converted at several levels is aggregated from the level that
+    ``coarsen_from`` selects among the ones it is converted at (see
+    :py:func:`~healpix_convert.pyramid._variable_sources`). The level named
+    here is the one selected for a variable converted at every native level.
+
+    """
+    native: dict[int, PurePath] = {}
+    for level_path, (healpix, _) in info.native_levels.items():
+        assert healpix.refinement_level is not None
+        native[healpix.refinement_level] = level_path
+
+    sources: dict[PurePath, PurePath] = {}
+
+    for level_path, (healpix, _) in info.derived_levels.items():
+        finer = [level for level in native if level >= healpix.refinement_level]
+        source = min(finer) if coarsen_from == "nearest" else max(finer)
+        sources[level_path] = native[source]
+
+    return sources
+
+
+def _multiscales_metadata(
+    group_path: PurePath,
+    levels: dict[PurePath, Healpix],
+    add_dggs: bool,
+    *,
+    derived_from: dict[PurePath, PurePath] | None = None,
+    resampling_method: str | None = None,
+) -> HealpixMultiscales:
+    """Multiscales metadata of a multiscale group: its levels, finest first.
+
+    The assets are the paths of the level groups relative to the group holding
+    the metadata, as the Multiscales Zarr convention asks.
+
+    A level in ``derived_from`` is a derived level of a pyramid: it is
+    described by the native level it is aggregated from, the transformation
+    from that level (how much longer a cell is here) and the method its cells
+    are aggregated with.
+
+    """
+    derived_from = derived_from or {}
+    layout: list[dict] = []
+
+    for level_path, level_healpix in sorted(
+        levels.items(), key=lambda item: item[1].refinement_level, reverse=True
+    ):
+        item: dict = {"asset": level_path.relative_to(group_path)}
+        if add_dggs:
+            item["dggs"] = level_healpix
+
+        source_path = derived_from.get(level_path)
+        if source_path is not None:
+            depth = (
+                levels[source_path].refinement_level - level_healpix.refinement_level
+            )
+            item["derived_from"] = source_path.relative_to(group_path)
+            # one factor for the single (cell) dimension: a cell of this level
+            # is 2 ** depth source cells long, hence aggregates 4 ** depth of
+            # them over the two dimensions of the sphere
+            item["transform"] = {"scale": [float(2**depth)]}
+            item["resampling_method"] = resampling_method
+
+        layout.append(item)
+
+    metadata: dict = {"layout": layout}
+    if resampling_method is not None:
+        # the same method aggregates every derived level of a pyramid
+        metadata["resampling_method"] = resampling_method
+
+    return HealpixMultiscales.model_validate(metadata)
+
+
+def _set_pyramid_multiscale_groups(
+    settings: ConvertSettings,
+    io_path_map: dict[PurePath, PurePath],
+    output_spatial: OutputSpatialInfo,
+) -> dict[PurePath, PyramidMultiscaleGroupInfo]:
+    """Compute the structure of the pyramids given in the multiscale settings:
+    the levels of each multiscale group holding one, with their HEALPix grid
+    and their chunks.
+
+    The derived levels are the ``derived_levels`` of the pyramid settings. They
+    are written next to the native levels or in a child group of the multiscale
+    group, as its ``subgroup_name`` pyramid setting says.
+
+    """
+    pyramid_multiscale_groups: dict[PurePath, PyramidMultiscaleGroupInfo] = {}
+
+    for path, pyramid in settings.multiscale_settings.pyramid_groups.items():
+        native_paths = settings.native_refinement_levels(path)
+        finest_level = max(native_paths)
+        finest_settings = settings.group_settings[native_paths[finest_level]]
+        # the dense chunk method of every child group of a pyramid
+        # multiscale group is enforced when the settings are validated
+        assert isinstance(finest_settings.chunk, HealpixDenseChunkSettings)
+        assert finest_settings.chunk.healpix.refinement_level is not None
+
+        chunk_level = finest_settings.chunk.healpix.refinement_level
+        coarsest_level = _coarsest_whole_level(
+            _chunk_cells(output_spatial.geometry_latlon, finest_settings.chunk),
+            chunk_level,
+        )
+
+        too_coarse = sorted(
+            level for level in pyramid.derived_levels if level < coarsest_level
+        )
+
+        if too_coarse:
+            raise ValueError(
+                f"pyramid multiscale group {path.as_posix()!r}: the converted "
+                f"cells do not cover whole HEALPix cells below the refinement "
+                f"level {coarsest_level} (the spatial extent of the output covers "
+                f"the cells of the chunk level {chunk_level} partially), so the "
+                f"derived levels {too_coarse} cannot be generated"
+            )
+
+        native_levels = {}
+        for input_path in native_paths.values():
+            group_settings = settings.group_settings[input_path]
+            assert isinstance(group_settings.chunk, HealpixDenseChunkSettings)
+            assert group_settings.chunk.healpix.refinement_level is not None
+            native_levels[io_path_map[input_path]] = (
+                group_settings.healpix,
+                group_settings.chunk.healpix.refinement_level,
+            )
+
+        # the derived levels are written next to the native levels, or in a
+        # child group of the multiscale group
+        group_path = io_path_map[path]
+        if pyramid.subgroup_name is None:
+            derived_path = group_path
+        else:
+            derived_path = group_path / pyramid.subgroup_name
+
+        healpix = finest_settings.healpix
+        derived_levels = {}
+
+        for level in sorted(pyramid.derived_levels, reverse=True):
+            derived_levels[derived_path / str(level)] = (
+                healpix.model_copy(update={"refinement_level": level}),
+                _derived_chunk_level(level, finest_level, chunk_level),
+            )
+
+        pyramid_multiscale_groups[path] = PyramidMultiscaleGroupInfo(
+            native_levels=native_levels,
+            derived_levels=derived_levels,
+        )
+
+    return pyramid_multiscale_groups
+
+
 def _set_output_groups(
     datatrees: list[xr.DataTree],
     input_spatial_groups: dict[PurePath, InputGroupSpatialInfo],
     settings: ConvertSettings,
+    output_spatial: OutputSpatialInfo,
 ) -> OutputGroupInfo:
     multiscale_groups: dict[PurePath, HealpixMultiscales] = {}
     excluded_groups: list[PurePath] = []
@@ -170,7 +398,7 @@ def _set_output_groups(
 
         # configure multiscales
         if path in multiscales_settings.groups:
-            layouts: list[dict] = []
+            levels: dict[PurePath, Healpix] = {}
 
             for child_dt in dt0.children.values():
                 child_path = PurePath(child_dt.path.lstrip("/"))
@@ -181,22 +409,43 @@ def _set_output_groups(
                         child_settings.healpix.refinement_level
                     )
                     io_path_map[child_path] = group_output_path
-                    layout = {"asset": group_output_path}
-                    if multiscales_settings.add_healpix_positioning:
-                        layout["dggs"] = child_settings.healpix
-                    layouts.append(layout)
+                    levels[group_output_path] = child_settings.healpix
 
-            if layouts:
-                multiscale_groups[path] = HealpixMultiscales.model_validate(
-                    {"layout": layouts}
-                )
-            else:
+            if not levels:
                 raise ValueError(
                     f"multiscale group {path} has no child group to convert to HEALPix"
                 )
 
+            multiscale_groups[path] = _multiscales_metadata(
+                path, levels, multiscales_settings.add_healpix_positioning
+            )
+
+    pyramid_multiscale_groups = _set_pyramid_multiscale_groups(
+        settings, io_path_map, output_spatial
+    )
+
+    for path, info in pyramid_multiscale_groups.items():
+        # the metadata of a pyramid multiscale group describes all its levels,
+        # the derived ones included
+        all_levels = {}
+
+        for level_path, (level_healpix, _) in (
+            info.native_levels | info.derived_levels
+        ).items():
+            all_levels[level_path] = level_healpix
+
+        pyramid = multiscales_settings.pyramid_groups[path]
+        multiscale_groups[path] = _multiscales_metadata(
+            io_path_map[path],
+            all_levels,
+            multiscales_settings.add_healpix_positioning,
+            derived_from=_derived_level_sources(info, pyramid.coarsen_from),
+            resampling_method=pyramid.reduce,
+        )
+
     return OutputGroupInfo(
         multiscale_groups=multiscale_groups,
+        pyramid_multiscale_groups=pyramid_multiscale_groups,
         excluded_groups=excluded_groups,
         io_path_map=io_path_map,
     )
@@ -308,11 +557,26 @@ def create_staging_cache(
         input_datatrees,
         cache.input_spatial_groups,
         settings,
+        cache.output_spatial,
     )
 
     log.info(
         f"configured {len(cache.output_groups.multiscale_groups)} multiscale groups:\n"
         + "\n".join(f"  - {path}" for path in cache.output_groups.multiscale_groups)
+    )
+    pyramid_group_lines = []
+
+    for path, info in cache.output_groups.pyramid_multiscale_groups.items():
+        levels = [
+            healpix.refinement_level for healpix, _ in info.derived_levels.values()
+        ]
+        pyramid_group_lines.append(
+            f"  - {path} (derived levels: {sorted(levels, reverse=True)})"
+        )
+
+    log.info(
+        f"configured {len(cache.output_groups.pyramid_multiscale_groups)} pyramid "
+        "multiscale groups:\n" + "\n".join(pyramid_group_lines)
     )
     log.info(
         f"skip {len(cache.output_groups.excluded_groups)} group(s) in output dataset:\n"

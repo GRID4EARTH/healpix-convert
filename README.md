@@ -22,6 +22,7 @@ Documentation: <https://grid4earth.eu/healpix-convert/>
 
 - **Multiple resampling methods** — nearest, bilinear, k-nearest neighbors, PSF, cell-point
 - **Multi-stage workflow** — first prepare the output dataset, then run data conversion in parallel jobs
+- **HEALPix pyramids** — generate coarser refinement levels in a converted dataset, for viewers that pick the level from the zoom
 - **Dask-native** — parallel conversion out of the box with a distributed Dask cluster
 - **Cloud-ready** — read from and write to S3 object stores
 - **STAC metadata** — input STAC discovery attributes are propagated and merged in the output

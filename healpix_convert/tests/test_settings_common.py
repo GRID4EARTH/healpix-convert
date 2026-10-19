@@ -218,3 +218,126 @@ def test_convert_group_settings_unknown_codec() -> None:
         HealpixGroupSettings.model_validate(
             _group_settings([{"name": "no-such-codec", "configuration": {}}])
         )
+
+
+def _multiscale_settings_dict(
+    pyramid: dict, groups=("measurements",), chunk_method: str = "healpix_cell_dense"
+) -> dict:
+    chunk: dict = {"method": chunk_method}
+    if chunk_method != "no_chunk":
+        chunk["healpix"] = {"refinement_level": 2}
+    if chunk_method == "healpix_cell_sparse":
+        chunk["chunk_size"] = 64
+
+    return {
+        "multiscale_settings": {
+            "groups": list(groups),
+            "pyramid_groups": {"measurements": pyramid},
+        },
+        "group_settings": {
+            f"measurements/{name}": {
+                "healpix": {"refinement_level": level},
+                "chunk": chunk,
+                "resampler": {"name": "nearest"},
+            }
+            for name, level in (("fine", 7), ("coarse", 5))
+        },
+    }
+
+
+def test_pyramid_settings() -> None:
+    settings = ConvertSettings.model_validate(
+        _multiscale_settings_dict({"derived_levels": [6, 3], "reduce": "max"})
+    )
+    pyramid = settings.multiscale_settings.pyramid_groups[PurePath("measurements")]
+
+    assert pyramid.derived_levels == [6, 3]
+    assert pyramid.reduce == "max"
+    assert pyramid.subgroup_name is None
+    assert pyramid.coarsen_from == "nearest"
+
+    # paths are serialized unix-style
+    dumped = settings.to_dict()["multiscale_settings"]["pyramid_groups"]
+    assert list(dumped) == ["measurements"]
+
+
+def test_pyramid_settings_group_not_multiscale() -> None:
+    with pytest.raises(ValidationError, match="are not multiscale groups"):
+        ConvertSettings.model_validate(
+            _multiscale_settings_dict({"derived_levels": [3]}, groups=())
+        )
+
+
+def test_pyramid_settings_derived_level_not_coarser() -> None:
+    # the group is converted at the levels 7 and 5
+    with pytest.raises(ValidationError, match="must be coarser than the finest"):
+        ConvertSettings.model_validate(
+            _multiscale_settings_dict({"derived_levels": [8]})
+        )
+
+
+def test_pyramid_settings_derived_level_already_converted() -> None:
+    with pytest.raises(ValidationError, match="converted from the input data"):
+        ConvertSettings.model_validate(
+            _multiscale_settings_dict({"derived_levels": [5]})
+        )
+
+
+def test_pyramid_settings_duplicate_derived_levels() -> None:
+    with pytest.raises(ValidationError, match="duplicate levels"):
+        ConvertSettings.model_validate(
+            _multiscale_settings_dict({"derived_levels": [4, 4]})
+        )
+
+
+def test_pyramid_settings_no_derived_level() -> None:
+    with pytest.raises(ValidationError, match="derived_levels"):
+        ConvertSettings.model_validate(
+            _multiscale_settings_dict({"derived_levels": []})
+        )
+
+
+def test_pyramid_settings_chunk_method() -> None:
+    # generating a pyramid requires the dense chunk method
+    for chunk_method in ("no_chunk", "healpix_cell_sparse"):
+        with pytest.raises(
+            ValidationError, match="requires the 'healpix_cell_dense' method"
+        ):
+            ConvertSettings.model_validate(
+                _multiscale_settings_dict(
+                    {"derived_levels": [3]}, chunk_method=chunk_method
+                )
+            )
+
+    # ... but only for the groups that get one
+    ConvertSettings.model_validate(
+        {
+            "multiscale_settings": {"groups": ["measurements"]},
+            "group_settings": {
+                "measurements/fine": {
+                    "healpix": {"refinement_level": 7},
+                    "chunk": {"method": "no_chunk"},
+                    "resampler": {"name": "nearest"},
+                }
+            },
+        }
+    )
+
+
+def test_pyramid_settings_unsupported_reduce_method() -> None:
+    with pytest.raises(ValidationError, match="reduce"):
+        ConvertSettings.model_validate(
+            _multiscale_settings_dict({"derived_levels": [3], "reduce": "mode"})
+        )
+
+
+def test_native_refinement_levels() -> None:
+    settings = ConvertSettings.model_validate(
+        _multiscale_settings_dict({"derived_levels": [3]})
+    )
+
+    assert settings.native_refinement_levels(PurePath("measurements")) == {
+        7: PurePath("measurements/fine"),
+        5: PurePath("measurements/coarse"),
+    }
+    assert settings.native_refinement_levels(PurePath("other")) == {}
