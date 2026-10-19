@@ -264,29 +264,53 @@ def _multiscales_metadata(
     levels: dict[PurePath, Healpix],
     add_dggs: bool,
     *,
+    variables: Mapping[PurePath, Collection[str]] | None = None,
     derived_from: dict[PurePath, dict[str, PurePath]] | None = None,
     resampling_method: str | None = None,
+    asset_type: str = "auto",
 ) -> HealpixMultiscales:
     """Multiscales metadata of a multiscale group: its levels, finest first.
 
-    The assets are the paths of the level groups relative to the group holding
-    the metadata, as the Multiscales Zarr convention asks.
+    The assets are paths relative to the group holding the metadata, as the
+    Multiscales Zarr convention asks, and all of them refer to the same kind of
+    node, which the convention also asks: the level groups with ``asset_type``
+    ``"group"``, one array of a level with ``"array"`` (the arrays of the
+    native levels are given by ``variables``, those of a derived level by
+    ``derived_from``).
 
     A level in ``derived_from`` is a derived level of a pyramid: it is
     described by the native level its variables are aggregated from, the
     transformation from that level (how much longer a cell is here) and the
     method its cells are aggregated with.
 
-    The variables of a derived level may be aggregated from different native
-    levels, which one item per level cannot describe. Such a level is described
-    by one item per variable instead, whose assets are the paths of the arrays
-    (the nested array layout of the convention) rather than the path of the
-    level group: a reader finds the level group of an array in the parent path
-    of its asset.
+    One item per group names a single source, which cannot describe a derived
+    level whose variables are aggregated from different native levels. Such a
+    pyramid is rejected with ``"group"`` and described by one item per array
+    with ``"auto"``, which otherwise keeps the level groups as the assets.
 
     """
     derived_from = derived_from or {}
+    variables = variables or {}
     layout: list[dict] = []
+
+    mixed = [
+        level_path
+        for level_path, sources in derived_from.items()
+        if len(set(sources.values())) > 1
+    ]
+
+    if asset_type == "group" and mixed:
+        sources = derived_from[mixed[0]]
+        raise ValueError(
+            f"the variables of the derived level "
+            f"{mixed[0].relative_to(group_path).as_posix()!r} of the multiscale "
+            f"group {group_path.as_posix()!r} are aggregated from different "
+            f"native levels ({', '.join(sorted({p.name for p in sources.values()}))}"
+            "), which one multiscales layout item per group cannot describe: "
+            "set the 'asset_type' multiscale setting to 'array' or 'auto'"
+        )
+
+    per_array = asset_type == "array" or (asset_type == "auto" and bool(mixed))
 
     def derived_fields(
         level_healpix: Healpix, source_path: PurePath, name: str | None = None
@@ -312,25 +336,29 @@ def _multiscales_metadata(
         if add_dggs:
             item["dggs"] = level_healpix
 
-        sources = derived_from.get(level_path)
+        # a native level, converted from the input data, has no source
+        sources = derived_from.get(level_path, {})
 
-        if not sources:
-            # a native level, converted from the input data
+        if not per_array:
+            if sources:
+                item |= derived_fields(level_healpix, set(sources.values()).pop())
             layout.append(item)
             continue
 
-        source_paths = set(sources.values())
+        names = sorted(sources) if sources else sorted(variables.get(level_path, ()))
 
-        if len(source_paths) == 1:
-            layout.append(item | derived_fields(level_healpix, source_paths.pop()))
-            continue
-
-        for name, source_path in sorted(sources.items()):
-            layout.append(
-                item
-                | {"asset": asset / name}
-                | derived_fields(level_healpix, source_path, name)
+        if not names:
+            raise ValueError(
+                f"no array is known for the level {asset.as_posix()!r} of the "
+                f"multiscale group {group_path.as_posix()!r}, which one "
+                "multiscales layout item per array requires"
             )
+
+        for name in names:
+            array_item = item | {"asset": asset / name}
+            if sources:
+                array_item |= derived_fields(level_healpix, sources[name], name)
+            layout.append(array_item)
 
     metadata: dict = {"layout": layout}
     if resampling_method is not None:
@@ -419,6 +447,18 @@ def _set_pyramid_multiscale_groups(
     return pyramid_multiscale_groups
 
 
+def _converted_arrays(
+    input_spatial_groups: Mapping[PurePath, InputGroupSpatialInfo],
+    input_path: PurePath,
+) -> Collection[str]:
+    """Arrays an input group holds once converted: its spatial arrays, the ones
+    the conversion resamples onto the HEALPix cells.
+    """
+    group_spatial = input_spatial_groups.get(input_path)
+
+    return () if group_spatial is None else group_spatial.spatial_arrays
+
+
 def _set_output_groups(
     datatrees: list[xr.DataTree],
     input_spatial_groups: dict[PurePath, InputGroupSpatialInfo],
@@ -447,6 +487,7 @@ def _set_output_groups(
         # configure multiscales
         if path in multiscales_settings.groups:
             levels: dict[PurePath, Healpix] = {}
+            level_variables: dict[PurePath, Collection[str]] = {}
 
             for child_dt in dt0.children.values():
                 child_path = PurePath(child_dt.path.lstrip("/"))
@@ -458,6 +499,9 @@ def _set_output_groups(
                     )
                     io_path_map[child_path] = group_output_path
                     levels[group_output_path] = child_settings.healpix
+                    level_variables[group_output_path] = _converted_arrays(
+                        input_spatial_groups, child_path
+                    )
 
             if not levels:
                 raise ValueError(
@@ -465,7 +509,11 @@ def _set_output_groups(
                 )
 
             multiscale_groups[path] = _multiscales_metadata(
-                path, levels, multiscales_settings.add_healpix_positioning
+                path,
+                levels,
+                multiscales_settings.add_healpix_positioning,
+                variables=level_variables,
+                asset_type=multiscales_settings.asset_type,
             )
 
     pyramid_multiscale_groups = _set_pyramid_multiscale_groups(
@@ -495,10 +543,12 @@ def _set_output_groups(
             io_path_map[path],
             all_levels,
             multiscales_settings.add_healpix_positioning,
+            variables=native_variables,
             derived_from=_derived_level_sources(
                 info, pyramid.coarsen_from, native_variables
             ),
             resampling_method=pyramid.reduce,
+            asset_type=multiscales_settings.asset_type,
         )
 
     return OutputGroupInfo(

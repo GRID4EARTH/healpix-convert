@@ -154,26 +154,32 @@ native levels must cover exactly the same cells for those variables to be
 aligned with each other.
 
 A layout item of the multiscales metadata describes one level, so it can only
-name one `derived_from` source. A derived level whose variables come from
-different native levels is therefore described by one item per variable, whose
-assets are the paths of the arrays (the nested array layout of the convention)
-instead of the path of the level group:
+name one `derived_from` source: a derived level whose variables come from
+different native levels needs one item per array instead, so the whole group is
+then described array by array, the native levels included. For a group holding
+"a" at the level 3, "b" at the level 2 and a derived level 1 aggregating each of
+them from its own native level:
 
 ```json
 "layout": [
-  { "asset": "3" },
-  { "asset": "2" },
+  { "asset": "3/a" },
+  { "asset": "2/b" },
   { "asset": "1/a", "derived_from": "3/a", "transform": { "scale": [4.0] } },
   { "asset": "1/b", "derived_from": "2/b", "transform": { "scale": [2.0] } }
 ]
 ```
 
-Each item then carries the transformation from the native level of that
-variable alone, with the aggregation method and the absolute positioning of the
-level like any other item. The level group of an array is the parent path of
-its asset (`1` for `1/a` above), the group that holds the cell ids coordinate
-the arrays of the level share. A derived level whose variables all come from
-the same native level keeps a single item, the path of its group as the asset.
+Each item then carries the transformation from the native level of that array
+alone, with the aggregation method and the absolute positioning of its level
+like any other item. The level group of an array is the parent path of its
+asset (`1` for `1/a` above), the group that holds the cell ids coordinate the
+arrays of the level share.
+
+The `asset_type` multiscale setting chooses the style: `"auto"` (default)
+describes the level groups where that describes every level and switches the
+whole layout to the arrays otherwise, `"array"` always describes the arrays, and
+`"group"` always describes the level groups (raises an error when a derived
+level would aggregate its arrays from different native levels).
 
 ## Where the levels are written
 

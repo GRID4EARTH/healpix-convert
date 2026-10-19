@@ -585,6 +585,20 @@ class MultiscaleSettings(BaseModel):
     information in each multiscale layout entry.
     """
 
+    asset_type: Literal["group", "array", "auto"] = "auto"
+    """What a layout item of the multiscales metadata refers to:
+
+    - "group": one item per level, its asset the path of the level group. A
+      pyramid whose derived levels cannot be described that way is rejected,
+      i.e. one whose derived level holds variables aggregated from different
+      native levels.
+    - "array": one item per array of a level, its asset the path of the array
+      (e.g. "7/band1"), which describes what every array is aggregated
+      from.
+    - "auto" (default): "group" when every level can be described by a single
+      item, "array" otherwise.
+    """
+
     pyramid_groups: dict[PurePath, PyramidSettings] = Field(default_factory=dict)
     """Settings of the pyramids derived for (some of) the multiscale groups.
 

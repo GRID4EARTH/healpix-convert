@@ -548,6 +548,17 @@
           "title": "Add Healpix Positioning",
           "type": "boolean"
         },
+        "asset_type": {
+          "default": "auto",
+          "description": "What a layout item of the multiscales metadata refers to:\n\n- \"group\": one item per level, its asset the path of the level group. A\n  pyramid whose derived levels cannot be described that way is rejected,\n  i.e. one whose derived level holds variables aggregated from different\n  native levels.\n- \"array\": one item per array of a level, its asset the path of the array\n  (e.g. \"7/band1\"), which describes what every array is aggregated\n  from.\n- \"auto\" (default): \"group\" when every level can be described by a single\n  item, \"array\" otherwise.",
+          "enum": [
+            "group",
+            "array",
+            "auto"
+          ],
+          "title": "Asset Type",
+          "type": "string"
+        },
         "pyramid_groups": {
           "additionalProperties": {
             "$ref": "#/$defs/PyramidSettings"
