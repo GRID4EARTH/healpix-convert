@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- New `codecs` pyramid setting: the Zarr codecs of the aggregated variables of
+  the derived levels (Zarr's defaults if not set), e.g. a serializer of
+  `healpix-compress` coding one HEALPix cell per chunk. It is checked when the
+  settings are created, like the `codecs` group setting.
 - The multiscales metadata describes each derived level of a pyramid: the
   converted level it is aggregated from (`derived_from`), the transformation
   from it (`transform`, whose `scale` is how much longer a cell is) and the

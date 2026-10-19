@@ -647,6 +647,22 @@
           "title": "Reduce",
           "type": "string"
         },
+        "codecs": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodecSettings"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Zarr codecs of the aggregated data variables of every derived level\n(Zarr's defaults if None), e.g. a serializer that codes the cells of one\nHEALPix cell per chunk, which the chunks of the derived levels are.\n\nAs for the ``codecs`` group setting, each codec is looked up by name in\nZarr's codec registry where the settings are created. The converted levels\nkeep the codecs they were written with.",
+          "title": "Codecs"
+        },
         "coarsen_from": {
           "default": "nearest",
           "description": "Which native level a variable converted at several levels is aggregated\nfrom: the nearest level at or finer than the derived level (default),\ni.e., the copies resampled by the data provider are kept and reused, or\nalways its finest native level, i.e., those copies are ignored.",
