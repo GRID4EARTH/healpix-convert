@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The chunks of a derived level always hold all the children of one HEALPix
+  cell: on a partial spatial extent, their cells are no longer coarser than the
+  coarsest level the converted cells cover entirely. Before, the chunks of the
+  derived levels whose chunk cells were partly covered were cut along the array
+  and mixed the cells of several HEALPix cells.
 - The multiscales metadata describes each derived level of a pyramid: the
   converted level it is aggregated from (`derived_from`), the transformation
   from it (`transform`, whose `scale` is how much longer a cell is) and the

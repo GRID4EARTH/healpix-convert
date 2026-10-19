@@ -111,9 +111,14 @@ The chunks of a derived level are HEALPix cells as well: a chunk holds the
 level the staging cache records next to the HEALPix grid of every level. The depth is the one of the converted chunks, so that the chunks of a
 derived level hold as many cells as the ones of the level they are aggregated
 from; following the chunk level of the converted data instead would divide that
-number by four at every level. The depth is at least 4 (256 cells per chunk)
-and the chunk cells are never finer than the base cells, so the coarsest levels
-hold one chunk per base cell.
+number by four at every level. The depth is at least 4 (256 cells per chunk).
+
+The chunk cells are never coarser than the coarsest level whose cells are
+covered entirely: the base cells with a full-earth extent, so that the coarsest
+levels hold one chunk per base cell, but the chunk level of the converted data
+with a partial extent (e.g., one tile of a satellite product). A chunk then
+always holds all the children of its cell, at the cost of smaller chunks for
+the derived levels close to that level.
 
 ## Groups converted at several levels
 
