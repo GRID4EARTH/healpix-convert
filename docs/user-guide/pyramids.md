@@ -92,7 +92,9 @@ cells:
 Missing (NaN) values are skipped. The `reduce` pyramid setting selects another
 reduction (`"min"`, `"max"`, `"sum"`): these are the reductions that give, for
 a whole block of cells, the same result as aggregating all its cells at once.
-The mean does not suit categorical data such as masks or classifications.
+The mean does not suit categorical data such as masks or classifications:
+aggregate those with `"mode"`, the most frequent value of the cells of a block
+(the smallest of them in case of a tie).
 
 The data type and the fill value of each variable are preserved, an integer
 variable being rounded instead of truncated.

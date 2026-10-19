@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- New `"mode"` reduction for the pyramids (the `reduce` pyramid setting): the
+  most frequent value of the cells of a block, for categorical variables such
+  as masks and classifications.
 - The multiscales metadata describes each derived level of a pyramid: the
   converted level it is aggregated from (`derived_from`), the transformation
   from it (`transform`, whose `scale` is how much longer a cell is) and the

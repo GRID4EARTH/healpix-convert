@@ -452,6 +452,30 @@ def test_reduce_method(converted):
     np.testing.assert_allclose(level2["temperature"].values, expected)
 
 
+def test_reduce_mode(tmp_path):
+    # a classification at the level 3, aggregated onto the level 2
+    cell_ids = _dense_cells(3)
+    classes = np.random.default_rng(0).integers(0, 4, cell_ids.size).astype("uint8")
+    path = _write_converted(
+        tmp_path / "converted.zarr", {3: _level_dataset(3, cell_ids, scl=classes)}
+    )
+
+    dt = _generate_pyramids(
+        *_cache_and_settings([3], {"derived_levels": [2], "reduce": "mode"}), path
+    )
+
+    level2 = dt[f"{GROUP}/2"]["scl"]
+    assert level2.dtype == np.dtype("uint8")
+    # the most frequent class of the 4 children, the smallest one on a tie
+    expected = [
+        min(np.flatnonzero(counts == counts.max()))
+        for counts in (
+            np.bincount(block, minlength=4) for block in classes.reshape(-1, 4)
+        )
+    ]
+    np.testing.assert_array_equal(level2.values, expected)
+
+
 def test_derived_chunks_are_healpix_cells(converted):
     path, *_ = converted
     cache, settings = _cache_and_settings([3], {"derived_levels": [2, 1]})

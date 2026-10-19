@@ -637,12 +637,13 @@
         },
         "reduce": {
           "default": "mean",
-          "description": "How the values of the children cells are aggregated.\n\nMissing (NaN) values are skipped. The mean does not suit categorical data\n(masks, classifications): aggregate those with, e.g., \"max\", which keeps a\nvalue that the data actually has.",
+          "description": "How the values of the children cells are aggregated.\n\nMissing (NaN) values are skipped. The mean does not suit categorical data\n(masks, classifications): aggregate those with \"mode\", the most frequent\nvalue of the cells of a block (the smallest of them in case of a tie).",
           "enum": [
             "mean",
             "min",
             "max",
-            "sum"
+            "sum",
+            "mode"
           ],
           "title": "Reduce",
           "type": "string"

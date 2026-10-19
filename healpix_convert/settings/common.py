@@ -488,8 +488,8 @@ class PyramidSettings(BaseModel):
     """How the values of the children cells are aggregated.
 
     Missing (NaN) values are skipped. The mean does not suit categorical data
-    (masks, classifications): aggregate those with, e.g., "max", which keeps a
-    value that the data actually has.
+    (masks, classifications): aggregate those with "mode", the most frequent
+    value of the cells of a block (the smallest of them in case of a tie).
     """
 
     coarsen_from: Literal["nearest", "finest"] = "nearest"
