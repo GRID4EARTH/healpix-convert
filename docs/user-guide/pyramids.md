@@ -153,6 +153,28 @@ variables of a derived level are merged without reading any cell id, so the
 native levels must cover exactly the same cells for those variables to be
 aligned with each other.
 
+A layout item of the multiscales metadata describes one level, so it can only
+name one `derived_from` source. A derived level whose variables come from
+different native levels is therefore described by one item per variable, whose
+assets are the paths of the arrays (the nested array layout of the convention)
+instead of the path of the level group:
+
+```json
+"layout": [
+  { "asset": "3" },
+  { "asset": "2" },
+  { "asset": "1/a", "derived_from": "3/a", "transform": { "scale": [4.0] } },
+  { "asset": "1/b", "derived_from": "2/b", "transform": { "scale": [2.0] } }
+]
+```
+
+Each item then carries the transformation from the native level of that
+variable alone, with the aggregation method and the absolute positioning of the
+level like any other item. The level group of an array is the parent path of
+its asset (`1` for `1/a` above), the group that holds the cell ids coordinate
+the arrays of the level share. A derived level whose variables all come from
+the same native level keeps a single item, the path of its group as the asset.
+
 ## Where the levels are written
 
 The derived levels are groups of the multiscale group, next to the levels

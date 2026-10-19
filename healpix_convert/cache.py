@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import PurePath
 
 import numpy as np
@@ -12,6 +12,7 @@ import structlog
 import xarray as xr
 
 import healpix_convert.core.utils as utils
+from healpix_convert.core.coarsen import select_source_levels
 from healpix_convert.core.conversion_models import (
     ConvertStagingCache,
     InputGroupSpatialInfo,
@@ -222,29 +223,38 @@ def _derived_chunk_level(
 
 
 def _derived_level_sources(
-    info: PyramidMultiscaleGroupInfo, coarsen_from: str
-) -> dict[PurePath, PurePath]:
-    """Native level each derived level of a pyramid is aggregated from
-    (derived level path -> native level path).
+    info: PyramidMultiscaleGroupInfo,
+    coarsen_from: str,
+    native_variables: Mapping[PurePath, Collection[str]],
+) -> dict[PurePath, dict[str, PurePath]]:
+    """Native level each variable of each derived level of a pyramid is
+    aggregated from (derived level path -> variable name -> native level path).
 
-    Some variables of a derived level may come from another native level: one
-    converted at several levels is aggregated from the level that
-    ``coarsen_from`` selects among the ones it is converted at (see
-    :py:func:`~healpix_convert.pyramid._variable_sources`). The level named
-    here is the one selected for a variable converted at every native level.
+    ``native_variables`` gives the variables converted in each native level
+    (native level path -> variable names): a variable converted at several
+    native levels is aggregated from the one ``coarsen_from`` selects, so the
+    variables of a derived level may come from different native levels (see
+    :py:func:`~healpix_convert.core.coarsen.select_source_levels`).
 
     """
     native: dict[int, PurePath] = {}
+    variables: dict[int, Collection[str]] = {}
+
     for level_path, (healpix, _) in info.native_levels.items():
         assert healpix.refinement_level is not None
         native[healpix.refinement_level] = level_path
+        variables[healpix.refinement_level] = native_variables.get(level_path, ())
 
-    sources: dict[PurePath, PurePath] = {}
+    sources: dict[PurePath, dict[str, PurePath]] = {}
 
     for level_path, (healpix, _) in info.derived_levels.items():
-        finer = [level for level in native if level >= healpix.refinement_level]
-        source = min(finer) if coarsen_from == "nearest" else max(finer)
-        sources[level_path] = native[source]
+        assert healpix.refinement_level is not None
+        selected = select_source_levels(
+            variables, healpix.refinement_level, coarsen_from=coarsen_from
+        )
+        sources[level_path] = {
+            name: native[source] for name, source in selected.items()
+        }
 
     return sources
 
@@ -254,7 +264,7 @@ def _multiscales_metadata(
     levels: dict[PurePath, Healpix],
     add_dggs: bool,
     *,
-    derived_from: dict[PurePath, PurePath] | None = None,
+    derived_from: dict[PurePath, dict[str, PurePath]] | None = None,
     resampling_method: str | None = None,
 ) -> HealpixMultiscales:
     """Multiscales metadata of a multiscale group: its levels, finest first.
@@ -263,34 +273,64 @@ def _multiscales_metadata(
     the metadata, as the Multiscales Zarr convention asks.
 
     A level in ``derived_from`` is a derived level of a pyramid: it is
-    described by the native level it is aggregated from, the transformation
-    from that level (how much longer a cell is here) and the method its cells
-    are aggregated with.
+    described by the native level its variables are aggregated from, the
+    transformation from that level (how much longer a cell is here) and the
+    method its cells are aggregated with.
+
+    The variables of a derived level may be aggregated from different native
+    levels, which one item per level cannot describe. Such a level is described
+    by one item per variable instead, whose assets are the paths of the arrays
+    (the nested array layout of the convention) rather than the path of the
+    level group: a reader finds the level group of an array in the parent path
+    of its asset.
 
     """
     derived_from = derived_from or {}
     layout: list[dict] = []
 
-    for level_path, level_healpix in sorted(
-        levels.items(), key=lambda item: item[1].refinement_level, reverse=True
-    ):
-        item: dict = {"asset": level_path.relative_to(group_path)}
-        if add_dggs:
-            item["dggs"] = level_healpix
+    def derived_fields(
+        level_healpix: Healpix, source_path: PurePath, name: str | None = None
+    ) -> dict:
+        """What a derived level, or one of its arrays, is aggregated from."""
+        depth = levels[source_path].refinement_level - level_healpix.refinement_level
+        source_asset = source_path.relative_to(group_path)
 
-        source_path = derived_from.get(level_path)
-        if source_path is not None:
-            depth = (
-                levels[source_path].refinement_level - level_healpix.refinement_level
-            )
-            item["derived_from"] = source_path.relative_to(group_path)
+        return {
+            "derived_from": source_asset if name is None else source_asset / name,
             # one factor for the single (cell) dimension: a cell of this level
             # is 2 ** depth source cells long, hence aggregates 4 ** depth of
             # them over the two dimensions of the sphere
-            item["transform"] = {"scale": [float(2**depth)]}
-            item["resampling_method"] = resampling_method
+            "transform": {"scale": [float(2**depth)]},
+            "resampling_method": resampling_method,
+        }
 
-        layout.append(item)
+    for level_path, level_healpix in sorted(
+        levels.items(), key=lambda item: item[1].refinement_level, reverse=True
+    ):
+        asset = level_path.relative_to(group_path)
+        item: dict = {"asset": asset}
+        if add_dggs:
+            item["dggs"] = level_healpix
+
+        sources = derived_from.get(level_path)
+
+        if not sources:
+            # a native level, converted from the input data
+            layout.append(item)
+            continue
+
+        source_paths = set(sources.values())
+
+        if len(source_paths) == 1:
+            layout.append(item | derived_fields(level_healpix, source_paths.pop()))
+            continue
+
+        for name, source_path in sorted(sources.items()):
+            layout.append(
+                item
+                | {"asset": asset / name}
+                | derived_fields(level_healpix, source_path, name)
+            )
 
     metadata: dict = {"layout": layout}
     if resampling_method is not None:
@@ -432,6 +472,14 @@ def _set_output_groups(
         settings, io_path_map, output_spatial
     )
 
+    # the arrays a native level holds once converted, which tell the levels
+    # the variables of a derived level are aggregated from
+    native_variables = {
+        io_path_map[input_path]: group_spatial.spatial_arrays
+        for input_path, group_spatial in input_spatial_groups.items()
+        if input_path in io_path_map
+    }
+
     for path, info in pyramid_multiscale_groups.items():
         # the metadata of a pyramid multiscale group describes all its levels,
         # the derived ones included
@@ -447,7 +495,9 @@ def _set_output_groups(
             io_path_map[path],
             all_levels,
             multiscales_settings.add_healpix_positioning,
-            derived_from=_derived_level_sources(info, pyramid.coarsen_from),
+            derived_from=_derived_level_sources(
+                info, pyramid.coarsen_from, native_variables
+            ),
             resampling_method=pyramid.reduce,
         )
 

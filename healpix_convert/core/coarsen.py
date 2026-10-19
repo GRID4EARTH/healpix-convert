@@ -4,7 +4,7 @@ Aggregating HEALPix data onto the cells of a coarser refinement level.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import Literal, TypeAlias
 
 import numpy as np
@@ -22,6 +22,39 @@ ReduceMethod: TypeAlias = Literal["mean", "min", "max", "sum"]
 #: are stored (data type, fill value, CF packing), not how the chunks are
 #: encoded.
 VALUE_ENCODING = ("dtype", "fill_value", "_FillValue", "scale_factor", "add_offset")
+
+
+def select_source_levels(
+    variables: Mapping[int, Collection[str]],
+    level: int,
+    *,
+    coarsen_from: str = "nearest",
+) -> dict[str, int]:
+    """Converted refinement level each variable of a derived level is
+    aggregated from (variable name -> converted level).
+
+    ``variables`` gives the variables of every level converted from the input
+    data (converted level -> variable names).
+
+    A variable is absent from the levels finer than its finest converted level
+    (it is never upsampled). A variable converted at several levels, e.g., the
+    copies of the finest bands that the provider of a multi-resolution product
+    resampled itself, is aggregated from the nearest converted level at or
+    finer than ``level`` (``"nearest"``) or from its finest converted level
+    (``"finest"``). The variables of a derived level may therefore be
+    aggregated from different converted levels.
+
+    """
+    finer = {lvl: set(names) for lvl, names in variables.items() if lvl >= level}
+    names = {name for level_names in finer.values() for name in level_names}
+
+    sources: dict[str, int] = {}
+
+    for name in sorted(names):
+        converted = [lvl for lvl in sorted(finer) if name in finer[lvl]]
+        sources[name] = min(converted) if coarsen_from == "nearest" else max(converted)
+
+    return sources
 
 
 def coarsen_healpix_group(

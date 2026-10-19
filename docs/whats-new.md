@@ -12,6 +12,14 @@
   from it (`transform`, whose `scale` is how much longer a cell is) and the
   method its cells are aggregated with
   (`resampling_method`, also given for the whole group).
+- A derived level whose variables are aggregated from different native levels
+  is described by one layout item per variable, whose assets are the paths of
+  the arrays (the nested array layout of the Multiscales Zarr convention)
+  instead of the path of the level group, e.g. `"1/a"` aggregated from
+  `"3/a"` and `"1/b"` from `"2/b"`. Before, such a level was described by a
+  single item naming one of those native levels, which misdescribed the
+  variables aggregated from the others (`derived_from`) and how much their
+  cells were aggregated (`transform`).
 - New `generate_pyramids` conversion stage, which aggregates the converted
   data onto the coarser HEALPix refinement levels (the derived levels) given by
   the new `pyramid_groups` multiscale settings. One group per derived level,
