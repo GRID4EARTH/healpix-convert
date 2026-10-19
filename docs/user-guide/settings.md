@@ -116,6 +116,28 @@ as `float64`. The other methods keep the data type of the input variables.
   created.
 - `healpix_coordinate_codecs`: the Zarr codecs of the cell ids coordinate
   (Zarr's defaults if not set).
+- `extra_dimensions`: how several input datasets are aligned along a
+  non-spatial dimension (see below).
+
+When a group is converted from several input datasets, they must agree on
+every non-spatial dimension: same size and, where there is a coordinate, same
+labels. A dimension along which they differ, e.g. the detectors that see each
+Sentinel-2 tile, needs an entry in `extra_dimensions`, with the `join` used to
+align the inputs on the labels of its coordinate:
+
+- `"outer"`, `"inner"`: the union, or the intersection, of their labels;
+- `"exact"`: the same labels in every input (error otherwise);
+- `"reindex"`: the fixed `labels` given with it, the same for every conversion,
+  so that outputs converted from different inputs share their labels:
+
+```python
+"extra_dimensions": {
+    "detector": {"join": "reindex", "labels": ["d01", "d02", "d03", "d04"]},
+}
+```
+
+Where an input has no value for a label of the output, its values are missing
+(NaN).
 
 `override_attrs` sets attributes on the output variables whose name matches a
 pattern (an exact name or a regular expression matched against the whole name),
