@@ -68,7 +68,7 @@ hierarchy of groups:
 Predefined settings are available for the supported products:
 
 ```python
-settings = hc.get_settings("era5")  # or "cams-eac4", "climatedt-sfc"
+settings = hc.get_settings("era5")  # or "cams-eac4", "climatedt-sfc", "dem-glo30"
 ```
 
 You can also create the settings from a dictionary, here for a single input

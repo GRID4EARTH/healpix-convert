@@ -17,6 +17,7 @@ This package is under heavy development. The API is not stable yet.
 - ERA5
 - ClimateDT
 - CAMS
+- Copernicus DEM GLO-30
 
 ## Key features
 
@@ -78,7 +79,8 @@ metadata written in the output dataset.
 :::{grid-item-card} Tutorials
 :link: tutorials/index
 :link-type: doc
-Example notebooks converting ERA5, CAMS, ClimateDT and ESA CCI land cover data.
+Example notebooks converting ERA5, CAMS, ClimateDT, ESA CCI land cover and
+Copernicus DEM data.
 :::
 
 :::{grid-item-card} API Reference
