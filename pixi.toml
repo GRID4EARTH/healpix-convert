@@ -82,6 +82,12 @@ jsonschema = "*"
 [feature.tests.pypi-dependencies]
 pytest-structlog = "*"
 
+# the converter extras, so that the ERA5 / CAMS / ClimateDT tests are not skipped
+[feature.tests.pypi-dependencies.healpix-convert]
+path = "."
+editable = true
+extras = ["era5", "cams", "climatedt"]
+
 [feature.tests.tasks]
 tests = { cmd = "pytest --cov=healpix_convert", cwd = "." }
 

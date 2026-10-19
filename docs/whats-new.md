@@ -22,6 +22,20 @@
   Multiscales Zarr convention asks.
 - The attributes of the output variables can be set from the group settings
   (`metadata.override_attrs`), and not only excluded ({issue}`36`).
+- The STAC properties, extensions, links and assets propagated to the output
+  dataset can be excluded and set from the conversion settings
+  (`metadata.stac`). The STAC metadata written by `healpix-convert` itself
+  keeps precedence, except for the recorded conversion settings, which
+  `metadata.stac.include_conversion_settings` leaves out of the output. The
+  input's assets are no longer propagated by default: they point at the input
+  files, which the output does not hold.
+- With several input datasets, the STAC properties, extensions, links and
+  assets of the output can be merged as the intersection of the input ones,
+  and the extensions and links also as their union
+  (`metadata.stac.merge_properties`, `merge_extensions`, `merge_links` and
+  `merge_assets`). They were only ever taken from the first input dataset,
+  which stays the default -- except for the extensions, which used to fail the
+  conversion when they differed across the inputs.
 - The JSON schema of the conversion settings is generated from
   {py:class}`~healpix_convert.ConvertSettings` and published as
   `convert-settings.schema.json` in the root of the repository. The STAC

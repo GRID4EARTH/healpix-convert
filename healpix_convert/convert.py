@@ -22,8 +22,10 @@ from healpix_convert.core.metadata import (
 )
 from healpix_convert.core.stac import (
     STAC_PROCESSING_SCHEMA_URL,
+    _extract_stac_metadata,
     format_stac_derived_links,
     format_stac_processing,
+    merge_stac_items,
 )
 from healpix_convert.healpix_converters import (
     HealpixGroupConverter,
@@ -34,7 +36,6 @@ from healpix_convert.settings.common import (
     ConvertSettings,
     validate_convert_settings,
 )
-from healpix_convert.stac_operations import _extract_stac_metadata, merge_stac_items
 
 log = structlog.get_logger()
 
@@ -131,9 +132,23 @@ def _create_and_process_output(
     output_store = root_group.store
 
     log.info("••• propagating stac metadata...")
+    stac_settings = settings.metadata.stac
     stac_metadata = _extract_stac_metadata(cache.input_datatrees)
     merged_stac_metadata = merge_stac_items(
-        stac_metadata, cache.output_spatial, output_path
+        stac_metadata, cache.output_spatial, output_path, stac_settings
+    )
+
+    # applied on the propagated metadata only: what is written below describes
+    # the conversion itself and must survive the settings
+    merged_stac_metadata.properties = stac_settings.filter_properties(
+        merged_stac_metadata.properties
+    )
+    merged_stac_metadata.stac_extensions = stac_settings.filter_extensions(
+        merged_stac_metadata.stac_extensions
+    )
+    merged_stac_metadata.links = stac_settings.filter_links(merged_stac_metadata.links)
+    merged_stac_metadata.assets = stac_settings.filter_assets(
+        merged_stac_metadata.assets
     )
 
     # record how this output was produced: without the settings, two outputs
@@ -144,6 +159,7 @@ def _create_and_process_output(
             settings,
             input_ids=sorted(item.id for item in stac_metadata.values()),
             input_paths=input_paths,
+            include_conversion_settings=stac_settings.include_conversion_settings,
         )
     )
     merged_stac_metadata.links.extend(format_stac_derived_links(input_paths))

@@ -41,8 +41,8 @@ generated from the model, e.g., to get completion and validation in an editor.
   (default `True`) adds the HEALPix grid of each level to that metadata.
   `pyramid_groups` gives the pyramid settings of (some of) those groups, see
   below.
-- `metadata`: the conventions followed by the output dataset (see
-  {doc}`metadata`).
+- `metadata`: the conventions followed by the output dataset and the STAC
+  metadata written in its root group (see {doc}`metadata`).
 
 ## Group settings
 
