@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The chunks of a derived level always hold all the children of one HEALPix
+  cell: on a partial spatial extent, their cells are no longer coarser than the
+  coarsest level the converted cells cover entirely. Before, the chunks of the
+  derived levels whose chunk cells were partly covered were cut along the array
+  and mixed the cells of several HEALPix cells.
 - New `extra_dimensions` group setting, to align several input datasets along
   a non-spatial dimension whose labels differ between them (e.g. the
   `detector` dimension of the Sentinel-2 `conditions/geometry` group): union,

@@ -197,20 +197,28 @@ def _coarsest_whole_level(chunk_cells, chunk_level: int) -> int:
     return 0
 
 
-def _derived_chunk_level(level: int, native_level: int, native_chunk_level: int) -> int:
+def _derived_chunk_level(
+    level: int, native_level: int, native_chunk_level: int, coarsest_level: int = 0
+) -> int:
     """Refinement level of the chunk cells of a derived level: a chunk holds
     the ``4 ** depth`` children of one HEALPix cell ``depth`` levels above the
     derived level.
 
     The depth is the one of the converted chunks, so that the chunks of a
     derived level hold as many cells as the ones of the level it is aggregated
-    from, with :py:data:`MIN_CHUNK_DEPTH` as a floor; the chunk cells are never
-    finer than the base cells (level 0).
+    from, with :py:data:`MIN_CHUNK_DEPTH` as a floor.
+
+    To ensure HEALPix-aligned chunks for all derived levels, the chunk cell
+    refinement level stops at ``coarsest_level``: the coarsest level that is
+    entirely covered by converted data (for a full-earth extent this
+    corresponds to level 0). Beyond that level threshold, some of the chunk
+    cells would be only partly covered, such that the actual chunks would be
+    cut along the array (i.e., not HEALPix-aligned).
 
     """
     native_depth = native_level - native_chunk_level
 
-    return max(level - max(native_depth, MIN_CHUNK_DEPTH), 0)
+    return max(level - max(native_depth, MIN_CHUNK_DEPTH), coarsest_level)
 
 
 def _derived_level_sources(
@@ -360,7 +368,7 @@ def _set_pyramid_multiscale_groups(
         for level in sorted(pyramid.derived_levels, reverse=True):
             derived_levels[derived_path / str(level)] = (
                 healpix.model_copy(update={"refinement_level": level}),
-                _derived_chunk_level(level, finest_level, chunk_level),
+                _derived_chunk_level(level, finest_level, chunk_level, coarsest_level),
             )
 
         pyramid_multiscale_groups[path] = PyramidMultiscaleGroupInfo(
