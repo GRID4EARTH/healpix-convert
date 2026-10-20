@@ -40,6 +40,7 @@ from healpix_convert.core.coarsen import (
     coarsen_healpix_group,
     codecs_encoding,
     encode_like,
+    select_source_levels,
 )
 from healpix_convert.core.conversion_models import (
     ConvertStagingCache,
@@ -190,23 +191,20 @@ def _variable_sources(
     """Converted level each data variable of a derived level is aggregated
     from (converted level -> variable names).
 
-    A variable is absent from the levels finer than its finest converted level
-    (it is never upsampled). A variable converted at several levels, e.g., the
-    copies of the finest bands that the provider of a multi-resolution product
-    resampled itself, is aggregated from the nearest converted level at or
-    finer than ``level`` (``"nearest"``), or always from its finest converted
-    level (``"finest"``).
+    Which level feeds a variable is decided by
+    :py:func:`~healpix_convert.core.coarsen.select_source_levels`, the same
+    rule the multiscales metadata of the pyramid describes.
 
     """
-    finer_levels = sorted(lvl for lvl in datasets if lvl >= level)
-    data_vars = {lvl: set(datasets[lvl].data_vars) for lvl in finer_levels}
-    names = {name for lvl in finer_levels for name in data_vars[lvl]}
+    selected = select_source_levels(
+        {lvl: set(ds.data_vars) for lvl, ds in datasets.items()},
+        level,
+        coarsen_from=coarsen_from,
+    )
 
     sources: dict[int, list[str]] = {}
 
-    for name in sorted(names):
-        converted = [lvl for lvl in finer_levels if name in data_vars[lvl]]
-        source = min(converted) if coarsen_from == "nearest" else max(converted)
+    for name, source in selected.items():
         sources.setdefault(source, []).append(name)
 
     return sources

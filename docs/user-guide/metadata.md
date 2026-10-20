@@ -61,10 +61,11 @@ A multiscale group (see `multiscale_settings` in {doc}`settings`) lists the
 [Multiscales Zarr convention](https://github.com/zarr-conventions/multiscales)
 and the DGGS Zarr convention in its `zarr_conventions` attribute. Its
 `multiscales` attribute lists its groups, one per refinement level (`layout`),
-with their HEALPix grid if `add_healpix_positioning` is set. As the convention
-asks, the `asset` of a layout item is a path relative to the group holding the
-metadata, e.g. `"7"` for a converted level and `"pyramids/4"` for a level
-derived in a child group (see {doc}`pyramids`).
+with their HEALPix grid if `add_healpix_positioning` is set (it is not by
+default: the attributes of a level group describe its own grid). As the
+convention asks, the `asset` of a layout item is a path relative to the group
+holding the metadata, e.g. `"7"` for a converted level and `"pyramids/4"` for a
+level derived in a child group (see {doc}`pyramids`).
 
 The layout item of a derived level also names the converted level it is
 aggregated from (`derived_from`, a path like `asset`), the transformation from
@@ -75,11 +76,19 @@ level of a pyramid uses the same method):
 ```json
 {
   "layout": [
-    {"asset": "7"},
-    {"asset": "6", "derived_from": "7", "transform": {"scale": [2.0]},
-     "resampling_method": "mean"},
-    {"asset": "4", "derived_from": "7", "transform": {"scale": [8.0]},
-     "resampling_method": "mean"}
+    { "asset": "7" },
+    {
+      "asset": "6",
+      "derived_from": "7",
+      "transform": { "scale": [2.0] },
+      "resampling_method": "mean"
+    },
+    {
+      "asset": "4",
+      "derived_from": "7",
+      "transform": { "scale": [8.0] },
+      "resampling_method": "mean"
+    }
   ],
   "resampling_method": "mean"
 }
