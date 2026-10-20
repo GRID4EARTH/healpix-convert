@@ -1,9 +1,9 @@
 # HEALPix pyramids
 
-{py:func}`~healpix_convert.generate_pyramids` is the last stage of a
-conversion: it aggregates the converted data onto the coarser HEALPix
-refinement levels given by the pyramid settings of each multiscale group, and
-writes the arrays of their groups.
+{py:func}`~healpix_convert.generate_pyramids` is the stage of a conversion
+that aggregates the converted data onto the coarser HEALPix refinement levels
+given by the pyramid settings of each multiscale group, and writes the arrays
+of their groups. Only finalizing the output dataset comes after it.
 
 Those groups, one per derived level and named after it, and the
 `multiscales` metadata describing the whole pyramid, are part of the structure
@@ -42,6 +42,7 @@ for group in ("measurements/fine", "measurements/coarse"):
     )
 
 hc.generate_pyramids(cache, settings, "converted.zarr")
+hc.finalize_healpix_dataset(cache, settings, "converted.zarr")
 ```
 
 {py:func}`~healpix_convert.create_healpix_dataset` does all of that in one

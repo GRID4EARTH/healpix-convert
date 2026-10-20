@@ -31,6 +31,18 @@ from healpix_convert.core.utils import open_datatrees
 #: writes them).
 HealpixLevelInfo: TypeAlias = tuple[Healpix, int]
 
+#: Path of the root group of the output dataset, as Zarr addresses it.
+ROOT_GROUP_PATH = ""
+
+
+def zarr_group_path(path: PurePath | str) -> str:
+    """Return the path of a group of the output dataset as Zarr addresses it:
+    relative to the root group, which is the empty path.
+    """
+    posix = PurePath(str(path).strip("/")).as_posix()
+
+    return ROOT_GROUP_PATH if posix == "." else posix
+
 
 def serialize_crss(value: list[pyproj.CRS]) -> list[dict]:
     return [crs.to_json_dict() for crs in value]
@@ -259,6 +271,21 @@ class OutputGroupInfo(BaseModel):
 
     io_path_map: dict[PurePath, PurePath] = Field(default_factory=dict)
     """Mapping input->output group paths."""
+
+    def group_paths(self) -> set[str]:
+        """Return the paths of all the groups of the output dataset, as Zarr
+        addresses them (the root group being the empty path).
+
+        The groups converted from the input dataset(s), the HEALPix ones
+        included, are the values of :py:attr:`io_path_map`; the derived levels
+        of the pyramids are groups of their own.
+        """
+        paths = {zarr_group_path(path) for path in self.io_path_map.values()}
+
+        for info in self.pyramid_multiscale_groups.values():
+            paths |= {zarr_group_path(path) for path in info.derived_levels}
+
+        return paths
 
     @field_serializer("multiscale_groups", "pyramid_multiscale_groups")
     def serialize_group_paths(self, value):

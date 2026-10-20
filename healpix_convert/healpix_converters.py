@@ -46,10 +46,10 @@ from healpix_convert.settings.common import (
     HealpixGroupSettings,
     HealpixSparseChunkSettings,
     HealpixUniformChunkSettings,
+    MetadataSettings,
     NoChunkSettings,
     broadcast_params,
 )
-from healpix_convert.settings.conventions import MetadataSettings
 
 log = structlog.get_logger()
 
@@ -163,9 +163,7 @@ def align_extra_dimensions(
             ]
         else:
             others = set().union(*(ds.dims for ds in datasets)) - {dim}
-            datasets = list(
-                xr.align(*datasets, join=dim_settings.join, exclude=others)
-            )
+            datasets = list(xr.align(*datasets, join=dim_settings.join, exclude=others))
 
     spatial = set(spatial_dims)
     dims = set().union(*(ds.dims for ds in datasets)) - spatial - set(extra_dimensions)
@@ -1025,7 +1023,7 @@ class DenseChunkConverter(UniformChunkConverter):
             chunk_cell_ids=cell_ids,
             logger=log.bind(group=self.group_path, chunk_index=chunk_index),
         )
-        
+
         writes = []
         for name, cell_data in resampled.items():
             zarray = self.output_arrays[name]
@@ -1118,7 +1116,7 @@ class SparseChunkConverter(UniformChunkConverter):
             resample_params,
             logger=log.bind(group=self.group_path, chunk_index=chunk_index),
         )
-        
+
         writes = []
         for name, cell_data in resampled.items():
             zarray = self.output_arrays[name]

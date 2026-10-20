@@ -61,7 +61,7 @@ from healpix_convert.settings.cams import (
     CAMS_PSF_THRESHOLD,
     CAMS_VARIABLE_META,
 )
-from healpix_convert.settings.conventions import MetadataSettings
+from healpix_convert.settings.common import MetadataSettings
 
 log = logging.getLogger(__name__)
 

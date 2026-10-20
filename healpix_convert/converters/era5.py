@@ -41,7 +41,7 @@ from healpix_convert.core.metadata import (
     write_root_conventions,
 )
 from healpix_convert.core.stac import StacItem
-from healpix_convert.settings.conventions import MetadataSettings
+from healpix_convert.settings.common import MetadataSettings
 from healpix_convert.settings.era5 import (
     CDS_DATASET,
     CDS_URL,

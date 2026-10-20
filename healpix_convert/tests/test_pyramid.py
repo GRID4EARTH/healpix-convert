@@ -17,6 +17,7 @@ from healpix_convert import (
     convert_group_to_healpix,
     create_healpix_dataset,
     create_staging_cache,
+    finalize_healpix_dataset,
     generate_pyramids,
     prepare_healpix_dataset,
 )
@@ -40,7 +41,7 @@ from healpix_convert.core.metadata import (
 )
 from healpix_convert.core.multiscales_conventions import HealpixMultiscales
 from healpix_convert.pyramid import create_derived_level_groups
-from healpix_convert.settings.conventions import MetadataSettings
+from healpix_convert.settings.common import MetadataSettings
 from healpix_convert.tests.test_batch_resample import STAC_ITEM
 
 GROUP = "measurements"
@@ -270,9 +271,10 @@ def _settings(
 
 
 def _generate_pyramids(cache, settings, path):
-    """The two stages that write a pyramid of a hand-written dataset: creating
-    its groups and metadata (as preparing the output dataset does), then
-    aggregating the converted data onto them.
+    """The stages that write a pyramid of a hand-written dataset: creating its
+    groups and metadata (as preparing the output dataset does), aggregating the
+    converted data onto them, then finalizing the output dataset (which
+    consolidates its Zarr metadata).
     """
     store = zarr.open_group(path, mode="a").store
 
@@ -285,8 +287,9 @@ def _generate_pyramids(cache, settings, path):
         group.attrs.update(get_multiscale_group_attrs(multiscales, settings.metadata))
 
     create_derived_level_groups(store, cache, settings)
+    generate_pyramids(cache, settings, path)
 
-    return generate_pyramids(cache, settings, path)
+    return finalize_healpix_dataset(cache, settings, path)
 
 
 @pytest.fixture
@@ -375,13 +378,21 @@ def test_derived_levels_and_metadata(converted):
 
 
 def test_consolidated_metadata_is_up_to_date(converted):
-    path, *_ = converted
+    path, cell_ids, *_ = converted
+    cache, settings = _cache_and_settings([3], {"derived_levels": [2, 1]})
 
-    _generate_pyramids(*_cache_and_settings([3], {"derived_levels": [2, 1]}), path)
+    generate_pyramids(cache, settings, path)
 
-    # the stage consolidates what it wrote: a reader that uses the consolidated
-    # metadata of the dataset sees the derived levels (the stage itself never
-    # reads it, since it is not up to date while the dataset is written)
+    # the derived levels are written next to the consolidated metadata of the
+    # hand-written dataset, which is then stale: the stage does not refresh it
+    # (and never reads it either)
+    dt = xr.open_datatree(path, engine="zarr", consolidated=True)
+    assert set(dt[GROUP].children) == {"3"}
+
+    finalize_healpix_dataset(cache, settings, path)
+
+    # the last stage of the conversion does: a reader that uses the
+    # consolidated metadata of the dataset then sees the derived levels
     dt = xr.open_datatree(path, engine="zarr", consolidated=True)
     assert set(dt[GROUP].children) == {"3", "2", "1"}
 
@@ -972,7 +983,9 @@ def test_pyramid_structure_comes_from_the_staging_cache(converted_workflow):
     """
     cache, settings, output_path = converted_workflow
     info = cache.output_groups.pyramid_multiscale_groups[PurePath(GROUP)]
-    dt = utils.open_datatrees([output_path], chunks={})[0]
+    # the output dataset is not finalized here, so its metadata is not
+    # consolidated yet
+    dt = utils.open_datatrees([output_path], chunks={}, consolidated=False)[0]
 
     # the multiscales metadata of the group describes the whole pyramid
     multiscales = cache.output_groups.multiscale_groups[PurePath(GROUP)]

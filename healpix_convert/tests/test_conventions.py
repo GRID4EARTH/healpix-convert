@@ -16,11 +16,11 @@ from healpix_convert.core.multiscales_conventions import (
     HealpixMultiscales,
     HealpixMultiscalesLayoutItem,
 )
+from healpix_convert.settings.common import MetadataSettings
 from healpix_convert.settings.conventions import (
     CF_MIN_VERSION,
     CFConventionSelector,
     DGGSConventionSelector,
-    MetadataSettings,
     MultiscalesConventionSelector,
 )
 
