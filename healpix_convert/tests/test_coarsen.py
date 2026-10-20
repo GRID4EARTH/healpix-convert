@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import healpix_geo.nested as hpn
 import numpy as np
+import pytest
 import xarray as xr
 
-from healpix_convert.core.coarsen import coarsen_healpix_group
+from healpix_convert.core.coarsen import coarsen_healpix_group, nanmode
 from healpix_convert.core.healpix_conventions import Healpix
 from healpix_convert.core.metadata import get_healpix_group_attrs
 from healpix_convert.settings.conventions import MetadataSettings
@@ -113,3 +114,51 @@ def test_coarsen_healpix_group_keeps_data_type():
     # the mean is rounded, not truncated
     assert coarsened["a"].dtype == np.dtype("int16")
     np.testing.assert_array_equal(coarsened["a"].values, [2])
+
+
+class TestNanmode:
+    @pytest.mark.parametrize(
+        ["values", "expected"],
+        [
+            pytest.param([3.0, 1.0, 3.0, 2.0], 3.0, id="most-frequent"),
+            # a tie goes to the smallest value, whatever the order of the cells
+            pytest.param([5.0, 2.0, 2.0, 5.0], 2.0, id="tie"),
+            pytest.param([5.0, 5.0, 2.0, 2.0], 2.0, id="tie-other-order"),
+            # missing values are skipped, even when they are the majority
+            pytest.param([np.nan, np.nan, np.nan, 4.0], 4.0, id="missing-skipped"),
+            pytest.param([np.nan] * 4, np.nan, id="all-missing"),
+        ],
+    )
+    def test_values(self, values, expected):
+        np.testing.assert_array_equal(nanmode(np.array([values]), axis=-1), [expected])
+
+    def test_integers(self):
+        values = np.array([[7, 7, 1, 2], [0, 3, 3, 0]], dtype="uint8")
+
+        np.testing.assert_array_equal(nanmode(values, axis=(1,)), [7, 0])
+
+    def test_axis(self):
+        values = np.array([[1.0, 2.0], [1.0, 3.0], [4.0, 3.0]])
+
+        np.testing.assert_array_equal(nanmode(values, axis=0), [1.0, 3.0])
+
+
+def test_coarsen_healpix_group_mode():
+    # a classification: two level-6 cells, the second one partly without data
+    classes = np.array([4, 4, 9, 1, 8, np.nan, np.nan, 2])
+    ds = _group(_dense_cells(5, [100])[:8], a=classes).chunk({"cells": 4})
+
+    coarsened = coarsen_healpix_group(ds, 6, healpix=HEALPIX, reduce="mode")
+
+    # blockwise, hence lazy, like the other reductions
+    assert coarsened["a"].chunks is not None
+    np.testing.assert_array_equal(coarsened["a"].values, [4.0, 2.0])
+
+
+def test_coarsen_healpix_group_mode_keeps_data_type():
+    ds = _group(_dense_cells(6, [25]), a=np.array([3, 1, 3, 2], dtype="uint8"))
+
+    coarsened = coarsen_healpix_group(ds, 6, healpix=HEALPIX, reduce="mode")
+
+    assert coarsened["a"].dtype == np.dtype("uint8")
+    np.testing.assert_array_equal(coarsened["a"].values, [3])

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- New `"mode"` reduction for the pyramids (the `reduce` pyramid setting): the
+  most frequent value of the cells of a block, for categorical variables such
+  as masks and classifications.
 - New `codecs` pyramid setting: the Zarr codecs of the aggregated variables of
   the derived levels (Zarr's defaults if not set), e.g. a serializer of
   `healpix-compress` coding one HEALPix cell per chunk. It is checked when the
