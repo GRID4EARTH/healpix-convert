@@ -57,3 +57,31 @@ def test_compute_output_chunk_info_regional():
     ids, full = compute_output_chunk_info(shapely.box(2, 48, 2.01, 48.01), 2, "wgs84")
     assert 0 < ids.size < 192
     assert ids.size == full.size
+
+
+def test_extract_spatial_info_stac_2d_xy() -> None:
+    from healpix_convert.core.utils import (
+        extract_spatial_info_cf,
+        extract_spatial_info_stac,
+    )
+
+    # no proj:* attributes, 2-D x/y image coordinates and 2-D lat/lon coordinates
+    shape = (3, 4)
+    dims = ("rows", "columns")
+    xx, yy = np.meshgrid(np.arange(4) * 500.0, np.arange(3) * 500.0)
+    ds = xr.Dataset(
+        {"var": (dims, np.zeros(shape))},
+        coords={
+            "x": (dims, xx),
+            "y": (dims, yy),
+            "longitude": (dims, xx / 1e5, {"standard_name": "longitude"}),
+            "latitude": (dims, 45 + yy / 1e5, {"standard_name": "latitude"}),
+        },
+    )
+
+    assert extract_spatial_info_stac(ds, pyproj.CRS.from_epsg(4326)) is None
+
+    info = extract_spatial_info_cf(ds)
+    assert info is not None
+    assert info["spatial_dimensions"] == {"rows": 3, "columns": 4}
+    assert not info["is_rectilinear"]
