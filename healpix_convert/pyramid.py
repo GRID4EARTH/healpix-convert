@@ -38,6 +38,7 @@ import zarr.api.synchronous as zarr
 import healpix_convert.core.utils as utils
 from healpix_convert.core.coarsen import (
     coarsen_healpix_group,
+    codecs_encoding,
     encode_like,
     select_source_levels,
 )
@@ -291,6 +292,13 @@ def _build_derived_level(
         )
 
     ds = encode_like(ds, templates)
+
+    if pyramid.codecs is not None:
+        # the aggregated variables only (not the cell ids coordinate)
+        encoding = codecs_encoding(pyramid.codecs)
+        for name, var in ds.data_vars.items():
+            if healpix.spatial_dimension in var.dims:
+                var.encoding.update(encoding)
 
     return ds.chunk({healpix.spatial_dimension: chunk_size})
 

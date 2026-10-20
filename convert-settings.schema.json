@@ -705,15 +705,32 @@
         },
         "reduce": {
           "default": "mean",
-          "description": "How the values of the children cells are aggregated.\n\nMissing (NaN) values are skipped. The mean does not suit categorical data\n(masks, classifications): aggregate those with, e.g., \"max\", which keeps a\nvalue that the data actually has.",
+          "description": "How the values of the children cells are aggregated.\n\nMissing (NaN) values are skipped. The mean does not suit categorical data\n(masks, classifications): aggregate those with \"mode\", the most frequent\nvalue of the cells of a block (the smallest of them in case of a tie).",
           "enum": [
             "mean",
             "min",
             "max",
-            "sum"
+            "sum",
+            "mode"
           ],
           "title": "Reduce",
           "type": "string"
+        },
+        "codecs": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodecSettings"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Zarr codecs of the aggregated data variables of every derived level\n(Zarr's defaults if None), e.g. a serializer that codes the cells of one\nHEALPix cell per chunk, which the chunks of the derived levels are.\n\nAs for the ``codecs`` group setting, each codec is looked up by name in\nZarr's codec registry where the settings are created. The converted levels\nkeep the codecs they were written with.",
+          "title": "Codecs"
         },
         "coarsen_from": {
           "default": "nearest",
