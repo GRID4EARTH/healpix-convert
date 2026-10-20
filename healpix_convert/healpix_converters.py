@@ -859,16 +859,27 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         # - convert to lat/lon (wgs84) if needed
         # - flatten spatial dimensions
         prepared_datasets = []
-        for ds, crs, poly in zip(self.datasets, self.spatial_info.crs, overlap_polys):
+        transforms = self.spatial_info.transform or [None] * len(self.datasets)
+        for ds, crs, poly, transform in zip(
+            self.datasets, self.spatial_info.crs, overlap_polys, transforms
+        ):
             if poly.is_empty:
                 continue
 
             xmin, ymin, xmax, ymax = shapely.bounds(poly)
 
+            # slice bounds follow the direction of the x/y coordinates
+            # (y is usually decreasing, i.e., north-up rasters)
+            xslice = slice(xmin, xmax)
+            yslice = slice(ymax, ymin)
+            if transform is not None:
+                if transform.a < 0:
+                    xslice = slice(xmax, xmin)
+                if transform.e > 0:
+                    yslice = slice(ymin, ymax)
+
             ds_clipped = (
-                ds
-                # TODO: check slice bounds for north vs. south hemisphere?
-                .sel(x=slice(xmin, xmax), y=slice(ymax, ymin))
+                ds.sel(x=xslice, y=yslice)
                 .compute()
                 .pipe(lambda ds: utils.assign_transform_coords(ds, crs, crs_wgs84))
                 # note: the Xarray stack operation below already broadcasts

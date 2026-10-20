@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Projected input datasets whose x or y coordinates run the other way than
+  usual (increasing y, i.e. a bottom-up raster, or decreasing x) are now
+  converted: the input points of a chunk are selected with slice bounds that
+  follow the signs of the transform. Before, the selection was empty for every
+  chunk of such a dataset.
 - A chunk whose (buffered) polygon only grazes the extent of a projected input
   dataset, with no pixel centre in the overlap, no longer gives the resampler
   zero points: that dataset is skipped for the chunk, and a chunk left without
