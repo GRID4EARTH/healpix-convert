@@ -81,6 +81,9 @@ jsonschema = "*"
 
 [feature.tests.pypi-dependencies]
 pytest-structlog = "*"
+# the healpix-compress serializers (with JPEG XL), so that the tests of the
+# codecs settings and of the pyramid codecs are not skipped
+healpix-compress = { version = ">=0.3.1", extras = ["jpegxl"] }
 
 # the converter extras, so that the ERA5 / CAMS / ClimateDT tests are not skipped
 [feature.tests.pypi-dependencies.healpix-convert]
