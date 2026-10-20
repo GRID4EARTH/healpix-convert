@@ -122,7 +122,7 @@ DEM_GLO30_CONVERT_SETTINGS: dict = {
                 },
             },
             # the source heights are float32: float64 would add no precision
-            "dtype": "float32",
+            "output_dtype": "float32",
             "codecs": _SHARDED_ZSTD_CODECS,
             # the cell ids of a shard are one contiguous range: with a delta
             # filter they take about 12 kB per shard instead of 17 MB
