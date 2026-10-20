@@ -821,6 +821,8 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
           - maybe exclude input dataset with overlapping zone is empty
           - slice input dataset (in projected coordinates) using the bounding box of the
             overlapping zone.
+          - select the data points inside the overlapping zone, exclude input dataset
+            if none is found (e.g., overlapping zone is a sliver with no pixel center).
         - flatten (stack) input datasets and convert x/y coordinates to lat-lon.
 
         """
@@ -893,6 +895,12 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
             y = ds_clipped.y.values
             points = shapely.points(x, y)
             in_poly = shapely.within(points, poly)
+
+            if not in_poly.any():
+                # no pixel centre in the overlapping zone, e.g., the (buffered)
+                # chunk polygon only grazes the dataset extent (pixel edges):
+                # no input data from this dataset
+                continue
 
             ds_clipped = ds_clipped.isel(points=in_poly)
 

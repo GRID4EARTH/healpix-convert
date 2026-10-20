@@ -543,10 +543,21 @@
           "type": "array"
         },
         "add_healpix_positioning": {
-          "default": true,
-          "description": "If True, add HEALPix grid settings as absolute positioning\ninformation in each multiscale layout entry.",
+          "default": false,
+          "description": "If True, add HEALPix grid settings as absolute positioning\ninformation in each multiscale layout entry.\n\nFalse by default: it repeats the whole grid of a level in every entry of\nthat level, which one entry per array (see :py:attr:`asset_type`) makes\nparticularly verbose. The HEALPix grid info of a level can be read from the\nattributes of its group (easily accessible if metadata is consolidated for\nthe multiscale group), and the refinement level corresponds to the name of\na level group.",
           "title": "Add Healpix Positioning",
           "type": "boolean"
+        },
+        "asset_type": {
+          "default": "auto",
+          "description": "What a layout item of the multiscales metadata refers to:\n\n- \"group\": one item per level, its asset the path of the level group. A\n  pyramid whose derived levels cannot be described that way is rejected,\n  i.e. one whose derived level holds variables aggregated from different\n  native levels.\n- \"array\": one item per array of a level, its asset the path of the array\n  (e.g. \"7/band1\"), which describes what every array is aggregated\n  from.\n- \"auto\" (default): \"group\" when every level can be described by a single\n  item, \"array\" otherwise.",
+          "enum": [
+            "group",
+            "array",
+            "auto"
+          ],
+          "title": "Asset Type",
+          "type": "string"
         },
         "pyramid_groups": {
           "additionalProperties": {
@@ -694,15 +705,32 @@
         },
         "reduce": {
           "default": "mean",
-          "description": "How the values of the children cells are aggregated.\n\nMissing (NaN) values are skipped. The mean does not suit categorical data\n(masks, classifications): aggregate those with, e.g., \"max\", which keeps a\nvalue that the data actually has.",
+          "description": "How the values of the children cells are aggregated.\n\nMissing (NaN) values are skipped. The mean does not suit categorical data\n(masks, classifications): aggregate those with \"mode\", the most frequent\nvalue of the cells of a block (the smallest of them in case of a tie).",
           "enum": [
             "mean",
             "min",
             "max",
-            "sum"
+            "sum",
+            "mode"
           ],
           "title": "Reduce",
           "type": "string"
+        },
+        "codecs": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodecSettings"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Zarr codecs of the aggregated data variables of every derived level\n(Zarr's defaults if None), e.g. a serializer that codes the cells of one\nHEALPix cell per chunk, which the chunks of the derived levels are.\n\nAs for the ``codecs`` group setting, each codec is looked up by name in\nZarr's codec registry where the settings are created. The converted levels\nkeep the codecs they were written with.",
+          "title": "Codecs"
         },
         "coarsen_from": {
           "default": "nearest",

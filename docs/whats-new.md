@@ -7,6 +7,18 @@
   converted: the input points of a chunk are selected with slice bounds that
   follow the signs of the transform. Before, the selection was empty for every
   chunk of such a dataset.
+- A chunk whose (buffered) polygon only grazes the extent of a projected input
+  dataset, with no pixel centre in the overlap, no longer gives the resampler
+  zero points: that dataset is skipped for the chunk, and a chunk left without
+  input is not written ({issue}`23`). The conversion of a tile stopped there
+  with `nearest` and with healpix-resample < 2026.10.1 for `psf`.
+- New `"mode"` reduction for the pyramids (the `reduce` pyramid setting): the
+  most frequent value of the cells of a block, for categorical variables such
+  as masks and classifications.
+- New `codecs` pyramid setting: the Zarr codecs of the aggregated variables of
+  the derived levels (Zarr's defaults if not set), e.g. a serializer of
+  `healpix-compress` coding one HEALPix cell per chunk. It is checked when the
+  settings are created, like the `codecs` group setting.
 - The chunks of a derived level always hold all the children of one HEALPix
   cell: on a partial spatial extent, their cells are no longer coarser than the
   coarsest level the converted cells cover entirely. Before, the chunks of the
@@ -25,6 +37,25 @@
   from it (`transform`, whose `scale` is how much longer a cell is) and the
   method its cells are aggregated with
   (`resampling_method`, also given for the whole group).
+- A derived level whose variables are aggregated from different native levels
+  is described by one layout item per array, whose assets are the paths of the
+  arrays (e.g. `"1/a"` aggregated from `"3/a"` and `"1/b"` from `"2/b"`)
+  instead of the paths of the level groups. Before, such a level was described
+  by a single item naming one of those native levels, which misdescribed the
+  variables aggregated from the others (`derived_from`) and how much their
+  cells were aggregated (`transform`). The Multiscales Zarr convention asks
+  for the same referencing style throughout a layout, so the whole multiscale
+  group is then described array by array, the native levels included.
+- The HEALPix grid of a level is no longer added to its multiscales layout
+  items by default (`add_healpix_positioning`): it repeats the whole grid in
+  every item of that level, which one item per array makes particularly
+  verbose, while the attributes of a level group already describe its grid and
+  the `asset` of an item names its refinement level.
+- New `asset_type` multiscale setting: what a layout item refers to, a level
+  group (`"group"`) or one array of a level (`"array"`). With `"auto"` (the
+  default), the level groups are the assets where they describe every level
+  and the arrays otherwise; `"group"` rejects a pyramid whose derived level
+  would aggregate its arrays from different native levels.
 - New `generate_pyramids` conversion stage, which aggregates the converted
   data onto the coarser HEALPix refinement levels (the derived levels) given by
   the new `pyramid_groups` multiscale settings. One group per derived level,

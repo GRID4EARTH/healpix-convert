@@ -374,6 +374,30 @@ class ExtraDimensionSettings(BaseModel):
         return self
 
 
+def check_codecs_available(
+    value: list[CodecSettings] | None,
+) -> list[CodecSettings] | None:
+    """Check that every codec of a codec pipeline is registered with zarr, so
+    that a missing package fails when the settings are created rather than
+    mid-conversion."""
+    if value is None:
+        return value
+
+    from zarr.registry import get_codec_class
+
+    for codec in value:
+        try:
+            get_codec_class(codec["name"])
+        except (KeyError, ValueError):
+            # zarr raises KeyError (zarr < 3.2) or UnknownCodecError, a ValueError
+            raise ValueError(
+                f"zarr codec {codec['name']!r} is not available: install the package "
+                "that registers it with zarr"
+            ) from None
+
+    return value
+
+
 class HealpixGroupSettings(BaseModel):
     """Settings for converting a single Zarr group onto HEALPix."""
 
@@ -430,22 +454,7 @@ class HealpixGroupSettings(BaseModel):
     def validate_codecs(
         cls, value: list[CodecSettings] | None
     ) -> list[CodecSettings] | None:
-        if value is None:
-            return value
-
-        from zarr.registry import get_codec_class
-
-        for codec in value:
-            try:
-                get_codec_class(codec["name"])
-            except (KeyError, ValueError):
-                # zarr raises KeyError (zarr < 3.2) or UnknownCodecError, a ValueError
-                raise ValueError(
-                    f"zarr codec {codec['name']!r} is not available: install the package "
-                    "that registers it with zarr"
-                ) from None
-
-        return value
+        return check_codecs_available(value)
 
     @model_validator(mode="after")
     def validate_extra_dimensions(self) -> HealpixGroupSettings:
@@ -553,9 +562,26 @@ class PyramidSettings(BaseModel):
     """How the values of the children cells are aggregated.
 
     Missing (NaN) values are skipped. The mean does not suit categorical data
-    (masks, classifications): aggregate those with, e.g., "max", which keeps a
-    value that the data actually has.
+    (masks, classifications): aggregate those with "mode", the most frequent
+    value of the cells of a block (the smallest of them in case of a tie).
     """
+
+    codecs: list[CodecSettings] | None = Field(default=None)
+    """Zarr codecs of the aggregated data variables of every derived level
+    (Zarr's defaults if None), e.g. a serializer that codes the cells of one
+    HEALPix cell per chunk, which the chunks of the derived levels are.
+
+    As for the ``codecs`` group setting, each codec is looked up by name in
+    Zarr's codec registry where the settings are created. The converted levels
+    keep the codecs they were written with.
+    """
+
+    @field_validator("codecs")
+    @classmethod
+    def validate_codecs(
+        cls, value: list[CodecSettings] | None
+    ) -> list[CodecSettings] | None:
+        return check_codecs_available(value)
 
     coarsen_from: Literal["nearest", "finest"] = "nearest"
     """Which native level a variable converted at several levels is aggregated
@@ -580,9 +606,30 @@ class MultiscaleSettings(BaseModel):
     is compliant with the "multiscales" Zarr convention.
     """
 
-    add_healpix_positioning: bool = True
+    add_healpix_positioning: bool = False
     """If True, add HEALPix grid settings as absolute positioning
     information in each multiscale layout entry.
+
+    False by default: it repeats the whole grid of a level in every entry of
+    that level, which one entry per array (see :py:attr:`asset_type`) makes
+    particularly verbose. The HEALPix grid info of a level can be read from the
+    attributes of its group (easily accessible if metadata is consolidated for
+    the multiscale group), and the refinement level corresponds to the name of
+    a level group.
+    """
+
+    asset_type: Literal["group", "array", "auto"] = "auto"
+    """What a layout item of the multiscales metadata refers to:
+
+    - "group": one item per level, its asset the path of the level group. A
+      pyramid whose derived levels cannot be described that way is rejected,
+      i.e. one whose derived level holds variables aggregated from different
+      native levels.
+    - "array": one item per array of a level, its asset the path of the array
+      (e.g. "7/band1"), which describes what every array is aggregated
+      from.
+    - "auto" (default): "group" when every level can be described by a single
+      item, "array" otherwise.
     """
 
     pyramid_groups: dict[PurePath, PyramidSettings] = Field(default_factory=dict)
