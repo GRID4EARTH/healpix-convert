@@ -18,6 +18,9 @@
   was consolidated. A `groups` path that names no group of the output dataset
   is reported with a warning when the staging cache is created, and skipped
   when the metadata is consolidated.
+- Minimum versions raised to healpix-resample 2026.10.2 (its `batch_size`
+  option, used by the `"dem-glo30"` settings), healpix-geo 0.4.1 and, for
+  development, healpix-plot 2026.7.0.
 - New `output_dtype` group setting, the floating-point data type of the resampled
   data variables (e.g. `"float16"`): before, the `"bilinear"` and `"psf"`
   resamplers always wrote `float64`. The derived levels of a pyramid follow the
