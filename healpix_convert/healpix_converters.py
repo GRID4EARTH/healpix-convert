@@ -377,8 +377,8 @@ class HealpixGroupConverter(ABC):
                     shape = (self.cell_dim_size,)
                     chunks = (self.cell_dim_chunk_size,)
 
-                if self.settings.dtype is not None:
-                    dtype = np.dtype(self.settings.dtype)
+                if self.settings.output_dtype is not None:
+                    dtype = np.dtype(self.settings.output_dtype)
                 elif self.settings.resampler.name in ["bilinear", "psf"]:
                     dtype = np.float64
                 else:

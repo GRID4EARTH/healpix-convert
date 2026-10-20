@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- New `dtype` group setting, the floating-point data type of the resampled
+- New `output_dtype` group setting, the floating-point data type of the resampled
   data variables (e.g. `"float16"`): before, the `"bilinear"` and `"psf"`
   resamplers always wrote `float64`. The derived levels of a pyramid follow the
   data type of the converted level.

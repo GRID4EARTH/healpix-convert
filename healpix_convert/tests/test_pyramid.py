@@ -927,7 +927,7 @@ def test_derived_levels_have_the_dtype_of_the_converted_level(tmp_path):
 
     dt = create_healpix_dataset(
         [input_path],
-        _workflow_settings(derived_levels=[1], dtype="float16"),
+        _workflow_settings(derived_levels=[1], output_dtype="float16"),
         output_path,
     )
 

@@ -46,9 +46,9 @@ def _group_settings(**kwargs) -> dict:
     [(None, None), ("float16", "float16"), ("f4", "float32"), ("float64", "float64")],
 )
 def test_dtype_setting(dtype, expected) -> None:
-    actual = HealpixGroupSettings.model_validate(_group_settings(dtype=dtype))
+    actual = HealpixGroupSettings.model_validate(_group_settings(output_dtype=dtype))
 
-    assert actual.dtype == expected
+    assert actual.output_dtype == expected
 
 
 @pytest.mark.parametrize(
@@ -60,7 +60,7 @@ def test_dtype_setting(dtype, expected) -> None:
 )
 def test_dtype_setting_refused(dtype, match) -> None:
     with pytest.raises(ValidationError, match=match):
-        HealpixGroupSettings.model_validate(_group_settings(dtype=dtype))
+        HealpixGroupSettings.model_validate(_group_settings(output_dtype=dtype))
 
 
 def _convert(tmp_path, name: str, **group_settings) -> zarr.Array:
@@ -92,7 +92,7 @@ def _convert(tmp_path, name: str, **group_settings) -> zarr.Array:
 def test_resampled_variables_are_written_with_the_dtype(tmp_path, resampler) -> None:
     default = _convert(tmp_path, "default", resampler={"name": resampler})
     actual = _convert(
-        tmp_path, "float16", resampler={"name": resampler}, dtype="float16"
+        tmp_path, "float16", resampler={"name": resampler}, output_dtype="float16"
     )
 
     # bilinear writes float64 by default, nearest the data type of the input

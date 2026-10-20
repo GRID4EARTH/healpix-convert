@@ -450,20 +450,20 @@ class HealpixGroupSettings(BaseModel):
     ``healpix-compress`` for ``hcc-sentinel2-pyramid``.
     """
 
-    dtype: str | None = Field(default=None)
-    """Floating-point data type of the group's resampled data variables, e.g.
+    output_dtype: str | None = Field(default=None)
+    """Data type of the group's resampled data variables, e.g.
     ``"float16"`` or ``"float32"``.
 
     If None, the variables are written as ``float64`` with the ``"bilinear"``
     and ``"psf"`` resamplers, and with the data type of the input variables
-    with the other resamplers. The resampling itself is not changed: its
-    results are cast when they are written. The derived levels of a pyramid
-    have the data type of the converted level they are aggregated from.
+    with the other resamplers (note: data type is coerced after resampling,
+    just before writing data). The derived levels of a pyramid have the data
+    type of the converted level they are aggregated from.
     """
 
-    @field_validator("dtype")
+    @field_validator("output_dtype")
     @classmethod
-    def validate_dtype(cls, value: str | None) -> str | None:
+    def validate_output_dtype(cls, value: str | None) -> str | None:
         if value is None:
             return value
 
@@ -473,7 +473,9 @@ class HealpixGroupSettings(BaseModel):
             raise ValueError(f"{value!r} is not a data type") from None
 
         if dtype.kind != "f":
-            raise ValueError(f"dtype must be a floating-point data type, got {value!r}")
+            raise ValueError(
+                f"output_dtype must be a floating-point data type, got {value!r}"
+            )
 
         # one spelling per data type, e.g. "f4" -> "float32"
         return dtype.name
