@@ -4,8 +4,8 @@ Aggregating HEALPix data onto the cells of a coarser refinement level.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Literal, TypeAlias
+from collections.abc import Mapping, Sequence
+from typing import Any, Literal, TypeAlias
 
 import numpy as np
 import xarray as xr
@@ -18,6 +18,11 @@ from healpix_convert.core.healpix_conventions import Healpix
 #: at once (unlike, e.g., the median). ``"mode"`` (the most frequent value) is
 #: for categorical variables: masks, classifications.
 ReduceMethod: TypeAlias = Literal["mean", "min", "max", "sum", "mode"]
+
+#: Encoding of an input variable reused for the aggregated ones: how the values
+#: are stored (data type, fill value, CF packing), not how the chunks are
+#: encoded.
+VALUE_ENCODING = ("dtype", "fill_value", "_FillValue", "scale_factor", "add_offset")
 
 
 def nanmode(values: np.ndarray, axis: int | tuple[int, ...] = -1) -> np.ndarray:
@@ -56,10 +61,26 @@ def nanmode(values: np.ndarray, axis: int | tuple[int, ...] = -1) -> np.ndarray:
     return mode
 
 
-#: Encoding of an input variable reused for the aggregated ones: how the values
-#: are stored (data type, fill value, CF packing), not how the chunks are
-#: encoded.
-VALUE_ENCODING = ("dtype", "fill_value", "_FillValue", "scale_factor", "add_offset")
+def _blocks_mode(var: xr.DataArray, dim: str, window: int) -> xr.DataArray:
+    """Most frequent value of each block of ``window`` consecutive cells,
+    computed blockwise (lazily on Dask arrays), like Xarray's own reductions.
+    """
+    var = var.reset_coords(drop=True)
+    windows = var.coarsen({dim: window}).construct(
+        {dim: (dim, "window")}, keep_attrs=True
+    )
+    if windows.chunks is not None:
+        windows = windows.chunk({"window": -1})
+
+    return xr.apply_ufunc(
+        nanmode,
+        windows,
+        input_core_dims=[["window"]],
+        kwargs={"axis": -1},
+        dask="parallelized",
+        output_dtypes=[var.dtype],
+        keep_attrs=True,
+    )
 
 
 def coarsen_healpix_group(
@@ -147,26 +168,39 @@ def coarsen_healpix_group(
     return encode_like(coarsened, ds.variables)
 
 
-def _blocks_mode(var: xr.DataArray, dim: str, window: int) -> xr.DataArray:
-    """Most frequent value of each block of ``window`` consecutive cells,
-    computed blockwise (lazily on Dask arrays), like Xarray's own reductions.
-    """
-    var = var.reset_coords(drop=True)
-    windows = var.coarsen({dim: window}).construct(
-        {dim: (dim, "window")}, keep_attrs=True
-    )
-    if windows.chunks is not None:
-        windows = windows.chunk({"window": -1})
+def codecs_encoding(codecs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Xarray's Zarr encoding of a codec pipeline given as codec settings.
 
-    return xr.apply_ufunc(
-        nanmode,
-        windows,
-        input_core_dims=[["window"]],
-        kwargs={"axis": -1},
-        dask="parallelized",
-        output_dtypes=[var.dtype],
-        keep_attrs=True,
-    )
+    ``to_zarr`` takes a pipeline as ``filters`` (array to array codecs), one
+    ``serializer`` (array to bytes) and ``compressors`` (bytes to bytes), not
+    as one list: each codec is created from Zarr's codec registry and goes to
+    its part.
+
+    """
+    from zarr.abc.codec import ArrayArrayCodec, ArrayBytesCodec, BytesBytesCodec
+    from zarr.registry import get_codec_class
+
+    encoding: dict[str, Any] = {"filters": [], "compressors": []}
+
+    for codec_settings in codecs:
+        cls = get_codec_class(codec_settings["name"])
+        # an empty configuration gives the codec's defaults (e.g. the byte
+        # order of the "bytes" serializer)
+        codec = (
+            cls.from_dict(dict(codec_settings))
+            if codec_settings.get("configuration")
+            else cls()
+        )
+        if isinstance(codec, ArrayArrayCodec):
+            encoding["filters"].append(codec)
+        elif isinstance(codec, ArrayBytesCodec):
+            encoding["serializer"] = codec
+        elif isinstance(codec, BytesBytesCodec):
+            encoding["compressors"].append(codec)
+        else:
+            raise TypeError(f"unknown kind of zarr codec: {codec!r}")
+
+    return encoding
 
 
 def encode_like(ds: xr.Dataset, templates: Mapping[str, xr.Variable]) -> xr.Dataset:
@@ -178,8 +212,9 @@ def encode_like(ds: xr.Dataset, templates: Mapping[str, xr.Variable]) -> xr.Data
     has no value.
 
     The codecs of the input are not reused: the derived levels have their own
-    cells and chunks, which codecs like the healpix-compress ones (dense chunks
-    of one parent cell) could not encode.
+    cells and chunks, and the codecs of a lossy serializer would code the
+    aggregated values a second time. They are set by the ``codecs`` pyramid
+    setting (see :py:func:`codecs_encoding`).
 
     """
     ds = ds.copy()
