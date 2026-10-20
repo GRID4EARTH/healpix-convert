@@ -20,6 +20,7 @@ from healpix_convert.core.conversion_models import (
     OutputGroupInfo,
     OutputSpatialInfo,
     PyramidMultiscaleGroupInfo,
+    zarr_group_path,
 )
 from healpix_convert.core.healpix_conventions import Healpix
 from healpix_convert.core.multiscales_conventions import HealpixMultiscales
@@ -559,6 +560,28 @@ def _set_output_groups(
     )
 
 
+def _check_consolidate_groups(
+    output_groups: OutputGroupInfo, settings: ConvertSettings
+) -> None:
+    """Warn about the groups named by the ``groups`` consolidate metadata
+    setting that the output dataset does not hold.
+
+    """
+    paths = output_groups.group_paths()
+    missing = [
+        path
+        for path in settings.metadata.consolidate.groups
+        if zarr_group_path(path) not in paths
+    ]
+
+    if missing:
+        log.warning(
+            f"the 'consolidate' metadata settings name {len(missing)} group(s) "
+            "that the output dataset does not hold (will be ignored)\n"
+            + "\n".join(f"  - {path}" for path in missing)
+        )
+
+
 def _set_output_spatial_info(
     input_spatial: InputSpatialInfo,
     output_extent: dict | shapely.Polygon | None,
@@ -694,6 +717,8 @@ def create_staging_cache(
         "output HEALPix dataset groups:\n"
         + "\n".join(f"  - {path}" for path in cache.output_groups.io_path_map.values())
     )
+
+    _check_consolidate_groups(cache.output_groups, settings)
 
     log.info("••• finished creating conversion staging cache.")
 

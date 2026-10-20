@@ -10,7 +10,7 @@ import xarray as xr
 from healpix_convert.core.coarsen import coarsen_healpix_group, nanmode
 from healpix_convert.core.healpix_conventions import Healpix
 from healpix_convert.core.metadata import get_healpix_group_attrs
-from healpix_convert.settings.conventions import MetadataSettings
+from healpix_convert.settings.common import MetadataSettings
 
 LEVEL = 7
 HEALPIX = Healpix.model_validate(

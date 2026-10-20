@@ -27,6 +27,7 @@ from healpix_convert.core.stac import (
     format_stac_processing,
     merge_stac_items,
 )
+from healpix_convert.finalize import consolidate_output_metadata
 from healpix_convert.healpix_converters import (
     HealpixGroupConverter,
     init_converter,
@@ -227,21 +228,32 @@ def _create_and_process_output(
                 output_storage_options=output_storage_options,
             )
 
-    # --- consolidate Zarr metadata
-    log.info("••• consolidating output Zarr metadata...")
-    zarr.consolidate_metadata(output_store)
-    # TODO: consolidate metadata for each group/node
+    # --- finalize the output dataset
+    if convert_data:
+        # the whole conversion runs in one call: the output dataset is complete
+        # here, so its last stage (finalize_healpix_dataset) runs here too
+        consolidate_output_metadata(output_store, cache, settings)
 
     log.info("••• done!")
 
+    # the metadata of a prepared (or dry run) output dataset is not
+    # consolidated yet: the last stage of the conversion writes it
+    consolidated = convert_data and settings.metadata.consolidate.root_group
+
     if dry_run:
-        dt_out = xr.open_datatree(output_store, engine="zarr", chunks="auto")  # type: ignore
+        dt_out = xr.open_datatree(
+            output_store,  # type: ignore
+            engine="zarr",
+            chunks="auto",
+            consolidated=consolidated,
+        )
     else:
         dt_out = xr.open_datatree(
             output_path,
             storage_options=output_storage_options,
             engine="zarr",
             chunks="auto",
+            consolidated=consolidated,
         )
 
     return dt_out
@@ -271,8 +283,10 @@ def prepare_healpix_dataset(
     - Use :py:func:`convert_group_to_healpix` later (maybe multiple times)
       to resample data on HEALPix and write it to the output dataset
       (fill arrays with data values).
-    - Use :py:func:`generate_pyramids` last to aggregate the converted data
+    - Use :py:func:`generate_pyramids` then to aggregate the converted data
       onto the coarser levels of the pyramids.
+    - Use :py:func:`finalize_healpix_dataset` last to consolidate the Zarr
+      metadata of the output dataset.
 
     Parameters
     ----------
@@ -304,6 +318,7 @@ def prepare_healpix_dataset(
     --------
     create_staging_cache
     convert_group_to_healpix
+    finalize_healpix_dataset
 
     """
     log.info("••• reading conversion settings...")
@@ -401,6 +416,10 @@ def generate_pyramids(
     :py:attr:`~healpix_convert.ConvertSettings.multiscale_settings`). It does
     nothing if no group has pyramid settings.
 
+    The derived levels written here are not in the consolidated Zarr metadata
+    of the output dataset: :py:func:`finalize_healpix_dataset`, the last stage
+    of the conversion, writes it.
+
     Parameters
     ----------
     cache : :py:class:`ConvertStagingCache`
@@ -426,6 +445,7 @@ def generate_pyramids(
     create_staging_cache
     prepare_healpix_dataset
     convert_group_to_healpix
+    finalize_healpix_dataset
 
     """
     log.info("••• reading conversion settings...")
@@ -444,16 +464,86 @@ def generate_pyramids(
             output_storage_options=output_storage_options,
         )
 
-        log.info("••• consolidating output Zarr metadata...")
-        zarr.consolidate_metadata(root_group.store)
-
         log.info("••• done!")
+
+    # the consolidated metadata of the output dataset, if it has any, does not
+    # describe the derived levels written here: the last stage of the
+    # conversion (finalize_healpix_dataset) writes it
+    return xr.open_datatree(
+        output_path,
+        storage_options=output_storage_options,
+        engine="zarr",
+        chunks="auto",
+        consolidated=False,
+    )
+
+
+def finalize_healpix_dataset(
+    cache: ConvertStagingCache,
+    settings: dict | ConvertSettings,
+    output_path: str,
+    *,
+    output_storage_options: dict[str, Any] | None = None,
+) -> xr.DataTree:
+    """Finalize the converted output dataset.
+
+    The last stage of the conversion, run once every group of the output
+    dataset has been written (the pyramids included). It consolidates the Zarr
+    metadata of the output dataset: the metadata of all the descendants of a
+    group is copied into its own metadata document, so that a reader opens the
+    whole hierarchy below it with a single read. The ``consolidate`` metadata
+    settings select the groups it is written for (see
+    :py:attr:`~healpix_convert.ConvertSettings.metadata`).
+
+    No other stage writes consolidated metadata, since such a copy is stale as
+    soon as a node is written next to it. Converting the data does not make it
+    stale, though: it only writes array chunks.
+
+    Parameters
+    ----------
+    cache : :py:class:`ConvertStagingCache`
+        A data cache containing information extracted from the input dataset(s)
+        and/or pre-computed for the output dataset, as returned by
+        :py:func:`create_staging_cache` for the same ``settings``.
+    settings : dict or object
+        Healpix conversion settings.
+    output_path : str
+        Path to the converted HEALPix output Zarr dataset, updated in place.
+    output_storage_options : dict, optional
+        Storage options passed to Zarr for reading the converted dataset and
+        writing its consolidated metadata (useful for, e.g., writing on S3
+        object store).
+
+    Returns
+    -------
+    :py:class:`xarray.DataTree`
+        The finalized output Zarr dataset, returned as an Xarray DataTree
+        object.
+
+    See Also
+    --------
+    create_staging_cache
+    prepare_healpix_dataset
+    convert_group_to_healpix
+    generate_pyramids
+
+    """
+    log.info("••• reading conversion settings...")
+    settings = validate_convert_settings(settings)
+
+    root_group = zarr.open_group(
+        output_path, mode="a", storage_options=output_storage_options
+    )
+    consolidate_output_metadata(root_group.store, cache, settings)
+
+    log.info("••• done!")
 
     return xr.open_datatree(
         output_path,
         storage_options=output_storage_options,
         engine="zarr",
         chunks="auto",
+        consolidated=settings.metadata.consolidate.root_group,
     )
 
 
@@ -507,8 +597,9 @@ def create_healpix_dataset(
     -----
     This function is meant for quick conversions of small inputs and for test
     cases. For production conversions of large datasets, prefer the staged API
-    (:py:func:`create_staging_cache`, :py:func:`prepare_healpix_dataset` and
-    :py:func:`convert_group_to_healpix`) and run the stages as the tasks of a
+    (:py:func:`create_staging_cache`, :py:func:`prepare_healpix_dataset`,
+    :py:func:`convert_group_to_healpix`, :py:func:`generate_pyramids` and
+    :py:func:`finalize_healpix_dataset`) and run the stages as the tasks of a
     workflow orchestration tool (Prefect, Airflow, Argo Workflows, etc.), which
     handles resource management, task failures and retries.
 

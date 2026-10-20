@@ -6,7 +6,7 @@ the documentation is built: replace the paths with your own datasets.
 
 ## Overview
 
-A conversion runs in five steps:
+A conversion runs in six steps:
 
 1. **Settings** describe how each input Zarr group is resampled onto HEALPix
    ({py:class}`~healpix_convert.ConvertSettings`).
@@ -24,6 +24,9 @@ A conversion runs in five steps:
    settings, whose groups and metadata the third step has already created
    ({py:func}`~healpix_convert.generate_pyramids`, see
    {doc}`../user-guide/pyramids`). It does nothing without such settings.
+6. **Finalize** the output dataset: consolidate its Zarr metadata
+   ({py:func}`~healpix_convert.finalize_healpix_dataset`, see
+   {doc}`../user-guide/metadata`).
 
 {py:func}`~healpix_convert.create_healpix_dataset` runs all these steps in a
 single call:
@@ -195,10 +198,29 @@ hc.convert_group_to_healpix(
 Within one job, the chunks can also be converted in parallel on a Dask
 cluster: see {doc}`../user-guide/dask`.
 
-{py:func}`~healpix_convert.prepare_healpix_dataset` already consolidates the
-metadata of the output dataset, and converting the data only writes array
-chunks: there is no need to consolidate the metadata again once the jobs are
-done, unless you add or change metadata yourself.
+## 5. Generate the pyramids
+
+```python
+hc.generate_pyramids(cache, settings, output_path)
+```
+
+This aggregates the converted data onto the coarser HEALPix refinement levels
+of the multiscale groups that have pyramid settings, and does nothing without
+such settings. See {doc}`../user-guide/pyramids`.
+
+## 6. Finalize the output dataset
+
+```python
+hc.finalize_healpix_dataset(cache, settings, output_path)
+```
+
+This consolidates the Zarr metadata of the output dataset, which the previous
+stages leave alone: consolidated metadata is a copy, stale as soon as a group
+or an array is written next to it. The `metadata.consolidate` settings select
+the groups it is written for (see {doc}`../user-guide/metadata`).
+
+Run it last, once every group of the output dataset has been written, i.e.
+after the parallel conversion jobs are done.
 
 ## Open the output dataset
 

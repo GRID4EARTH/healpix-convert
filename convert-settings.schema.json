@@ -125,6 +125,46 @@
       "title": "CodecSettings",
       "type": "object"
     },
+    "ConsolidateMetadataSettings": {
+      "additionalProperties": false,
+      "description": "Settings for the consolidated Zarr metadata written in the output dataset.\n\nConsolidating the metadata of a Zarr group copies the metadata of all its\ndescendants into its own metadata document, so that a reader opens the whole\nhierarchy below it with a single read instead of one read per node. It is\nwritten by the last stage of the conversion (see\n:py:func:`~healpix_convert.finalize_healpix_dataset`), since such a copy is\nstale as soon as a node is written next to it.\n\nThe settings below select the groups it is written for: the root group (the\nwhole output dataset) and, by default, every group a reader is expected to\nopen on its own, i.e., a group converted to HEALPix, a multiscale group and\na derived level group of a pyramid. The consolidated metadata of the root\ngroup may describe much more than what such a reader needs.",
+      "properties": {
+        "root_group": {
+          "default": true,
+          "description": "If True (the default), consolidate all the metadata of the output\ndataset in its root group.",
+          "title": "Root Group",
+          "type": "boolean"
+        },
+        "healpix_groups": {
+          "default": true,
+          "description": "If True (the default), consolidate the metadata of each group converted\nto HEALPix.",
+          "title": "Healpix Groups",
+          "type": "boolean"
+        },
+        "multiscale_groups": {
+          "default": true,
+          "description": "If True (the default), consolidate the metadata of each multiscale\ngroup, i.e., of all the levels it holds.",
+          "title": "Multiscale Groups",
+          "type": "boolean"
+        },
+        "derived_level_groups": {
+          "default": true,
+          "description": "If True (the default), consolidate the metadata of each group holding a\nderived level of a pyramid.",
+          "title": "Derived Level Groups",
+          "type": "boolean"
+        },
+        "groups": {
+          "description": "Paths of other groups of the output dataset to consolidate the metadata\nof (none by default).\n\nThe paths are those of the output dataset, not of the input dataset(s); the\npath of the root group is ``\"/\"``. A group that the output dataset does not\nhold is reported when the staging cache is created and then skipped.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Groups",
+          "type": "array"
+        }
+      },
+      "title": "ConsolidateMetadataSettings",
+      "type": "object"
+    },
     "ConventionConfiguration": {
       "additionalProperties": false,
       "description": "Base class for the configuration (options) of a convention.\n\nConventions that define no option are configured by this class, which\naccepts none.",
@@ -497,7 +537,7 @@
       "description": "Settings for the metadata written in the output Zarr dataset.",
       "properties": {
         "zarr_conventions": {
-          "description": "Conventions followed by the output Zarr dataset.\n\nEach item is either a convention name (e.g., ``\"dggs\"``) or a mapping with\na ``name`` and, optionally, a ``version`` and a ``configuration``\n(see :py:obj:`ConventionSelector`).",
+          "description": "Conventions followed by the output Zarr dataset.\n\nEach item is either a convention name (e.g., ``\"dggs\"``) or a mapping with\na ``name`` and, optionally, a ``version`` and a ``configuration``\n(see :py:obj:`~healpix_convert.settings.conventions.ConventionSelector`).",
           "items": {
             "discriminator": {
               "mapping": {
@@ -525,6 +565,10 @@
         "stac": {
           "$ref": "#/$defs/STACSettings",
           "description": "Settings for the STAC metadata written in the root group of the output\ndataset (see :py:class:`~healpix_convert.settings.stac.STACSettings`)."
+        },
+        "consolidate": {
+          "$ref": "#/$defs/ConsolidateMetadataSettings",
+          "description": "Settings for the consolidated Zarr metadata of the output dataset, i.e.,\nwhich of its groups it is written for (see\n:py:class:`ConsolidateMetadataSettings`)."
         }
       },
       "title": "MetadataSettings",

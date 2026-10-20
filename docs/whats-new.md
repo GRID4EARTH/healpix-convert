@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- New `finalize_healpix_dataset` conversion stage, the last one, run once every
+  group of the output dataset has been written: it consolidates the Zarr
+  metadata of the output dataset. No other stage writes consolidated metadata
+  anymore (`prepare_healpix_dataset` and `generate_pyramids` did): such a copy
+  of the metadata of a whole hierarchy is stale as soon as a group or an array
+  is written next to it. A conversion run in one call with
+  `create_healpix_dataset` runs that stage as well.
+- New `consolidate` metadata settings, which select the groups the consolidated
+  Zarr metadata is written for: the root group (`root_group`), each group
+  converted to HEALPix (`healpix_groups`), each multiscale group
+  (`multiscale_groups`), each group holding a derived level of a pyramid
+  (`derived_level_groups`) and any other group of the output dataset
+  (`groups`). All four flags are set by default; before, only the root group
+  was consolidated. A `groups` path that names no group of the output dataset
+  is reported with a warning when the staging cache is created, and skipped
+  when the metadata is consolidated.
 - Projected input datasets whose x or y coordinates run the other way than
   usual (increasing y, i.e. a bottom-up raster, or decreasing x) are now
   converted: the input points of a chunk are selected with slice bounds that

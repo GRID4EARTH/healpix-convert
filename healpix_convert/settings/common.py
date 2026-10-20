@@ -29,8 +29,14 @@ from healpix_convert.core.healpix_conventions import Healpix
 from healpix_convert.core.utils import check_patterns, matches_any
 from healpix_convert.settings.cams import CAMS_CONVERT_SETTINGS
 from healpix_convert.settings.climatedt import CDT_SFC_CONVERT_SETTINGS
-from healpix_convert.settings.conventions import MetadataSettings
+from healpix_convert.settings.conventions import (
+    CFConventionSelector,
+    ConventionSelector,
+    DGGSConventionSelector,
+    MultiscalesConventionSelector,
+)
 from healpix_convert.settings.era5 import ERA5_CONVERT_SETTINGS
+from healpix_convert.settings.stac import STACSettings
 
 log = structlog.get_logger()
 
@@ -662,6 +668,120 @@ class MultiscaleSettings(BaseModel):
             )
 
         return self
+
+
+class ConsolidateMetadataSettings(BaseModel):
+    """Settings for the consolidated Zarr metadata written in the output dataset.
+
+    Consolidating the metadata of a Zarr group copies the metadata of all its
+    descendants into its own metadata document, so that a reader opens the whole
+    hierarchy below it with a single read instead of one read per node. It is
+    written by the last stage of the conversion (see
+    :py:func:`~healpix_convert.finalize_healpix_dataset`), since such a copy is
+    stale as soon as a node is written next to it.
+
+    The settings below select the groups it is written for: the root group (the
+    whole output dataset) and, by default, every group a reader is expected to
+    open on its own, i.e., a group converted to HEALPix, a multiscale group and
+    a derived level group of a pyramid. The consolidated metadata of the root
+    group may describe much more than what such a reader needs.
+
+    """
+
+    model_config = ConfigDict(
+        frozen=True, use_attribute_docstrings=True, extra="forbid"
+    )
+
+    root_group: bool = True
+    """If True (the default), consolidate all the metadata of the output
+    dataset in its root group.
+    """
+
+    healpix_groups: bool = True
+    """If True (the default), consolidate the metadata of each group converted
+    to HEALPix.
+    """
+
+    multiscale_groups: bool = True
+    """If True (the default), consolidate the metadata of each multiscale
+    group, i.e., of all the levels it holds.
+    """
+
+    derived_level_groups: bool = True
+    """If True (the default), consolidate the metadata of each group holding a
+    derived level of a pyramid.
+    """
+
+    groups: list[str] = Field(default_factory=list)
+    """Paths of other groups of the output dataset to consolidate the metadata
+    of (none by default).
+
+    The paths are those of the output dataset, not of the input dataset(s); the
+    path of the root group is ``"/"``. A group that the output dataset does not
+    hold is reported when the staging cache is created and then skipped.
+    """
+
+
+def _default_zarr_conventions() -> list[Any]:
+    return [
+        DGGSConventionSelector(),
+        MultiscalesConventionSelector(),
+        CFConventionSelector(),
+    ]
+
+
+class MetadataSettings(BaseModel):
+    """Settings for the metadata written in the output Zarr dataset."""
+
+    model_config = ConfigDict(
+        frozen=True, use_attribute_docstrings=True, extra="forbid"
+    )
+
+    zarr_conventions: list[ConventionSelector] = Field(
+        default_factory=_default_zarr_conventions
+    )
+    """Conventions followed by the output Zarr dataset.
+
+    Each item is either a convention name (e.g., ``"dggs"``) or a mapping with
+    a ``name`` and, optionally, a ``version`` and a ``configuration``
+    (see :py:obj:`~healpix_convert.settings.conventions.ConventionSelector`).
+    """
+
+    stac: STACSettings = Field(default_factory=STACSettings)
+    """Settings for the STAC metadata written in the root group of the output
+    dataset (see :py:class:`~healpix_convert.settings.stac.STACSettings`).
+    """
+
+    consolidate: ConsolidateMetadataSettings = Field(
+        default_factory=ConsolidateMetadataSettings
+    )
+    """Settings for the consolidated Zarr metadata of the output dataset, i.e.,
+    which of its groups it is written for (see
+    :py:class:`ConsolidateMetadataSettings`).
+    """
+
+    @model_validator(mode="after")
+    def validate_unique_conventions(self) -> MetadataSettings:
+        names = [selector.name for selector in self.zarr_conventions]
+        duplicates = {name for name in names if names.count(name) > 1}
+        if duplicates:
+            raise ValueError(f"duplicate convention(s) {sorted(duplicates)}")
+
+        return self
+
+    def get(self, name: str) -> ConventionSelector | None:
+        """Return the selected convention with the given name, or None if that
+        convention is not selected.
+        """
+        for selector in self.zarr_conventions:
+            if selector.name == name.lower():
+                return selector
+
+        return None
+
+    def has(self, name: str) -> bool:
+        """Returns True if the convention with the given name is selected."""
+        return self.get(name) is not None
 
 
 class ConvertSettings(BaseModel):
