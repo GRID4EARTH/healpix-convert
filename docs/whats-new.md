@@ -18,6 +18,10 @@
   was consolidated. A `groups` path that names no group of the output dataset
   is reported with a warning when the staging cache is created, and skipped
   when the metadata is consolidated.
+- New `output_dtype` group setting, the floating-point data type of the resampled
+  data variables (e.g. `"float16"`): before, the `"bilinear"` and `"psf"`
+  resamplers always wrote `float64`. The derived levels of a pyramid follow the
+  data type of the converted level.
 - Projected input datasets whose x or y coordinates run the other way than
   usual (increasing y, i.e. a bottom-up raster, or decreasing x) are now
   converted: the input points of a chunk are selected with slice bounds that
