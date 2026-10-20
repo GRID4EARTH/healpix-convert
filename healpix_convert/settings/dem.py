@@ -112,9 +112,10 @@ DEM_GLO30_CONVERT_SETTINGS: dict = {
             "resampler": {
                 "name": "bilinear",
                 # ring_weight 2 instead of 3: the same cells and values, with
-                # about 30% less memory. batch_size bounds the memory of the
-                # neighbour search: a level-6 shard (about 32 million input
-                # points) peaks near 31 GiB instead of more than 115 GiB
+                # about 30% less memory. batch_size (healpix-resample >=
+                # 2026.10.2) bounds the memory of the neighbour search: a
+                # level-6 shard (about 32 million input points) peaks near
+                # 15 GiB instead of more than 115 GiB
                 "init_params": {
                     "threshold": 0.05,
                     "ring_weight": 2,
