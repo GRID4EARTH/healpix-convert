@@ -796,9 +796,10 @@ def _write_input(path):
     return str(path)
 
 
-def _workflow_settings(derived_levels=(1, 0)) -> ConvertSettings:
+def _workflow_settings(derived_levels=(1, 0), **group_kwargs) -> ConvertSettings:
     """Convert two input groups at the levels 3 and 2, with dense chunks of one
-    level-1 cell each, and a pyramid with the given derived levels.
+    level-1 cell each, and a pyramid with the given derived levels (other group
+    settings given as keyword arguments).
     """
     chunk = {
         "method": "healpix_cell_dense",
@@ -812,6 +813,7 @@ def _workflow_settings(derived_levels=(1, 0)) -> ConvertSettings:
             "healpix": {"refinement_level": level, **HEALPIX},
             "chunk": chunk,
             "resampler": {"name": "nearest"},
+            **group_kwargs,
         }
 
     return ConvertSettings.model_validate(
@@ -917,6 +919,24 @@ def test_create_healpix_dataset_fills_the_pyramids(tmp_path):
     parents = converted["cell_ids"].values >> np.uint64(4)
     expected = _block_means(converted["a"].values, parents)
     np.testing.assert_allclose(dt[GROUP]["1"]["a"].values, expected, atol=1e-12)
+
+
+def test_derived_levels_have_the_dtype_of_the_converted_level(tmp_path):
+    input_path = _write_input(tmp_path / "input.zarr")
+    output_path = str(tmp_path / "converted.zarr")
+
+    dt = create_healpix_dataset(
+        [input_path],
+        _workflow_settings(derived_levels=[1], output_dtype="float16"),
+        output_path,
+    )
+
+    converted = dt[GROUP]["3"].to_dataset()
+    assert converted["a"].dtype == "float16"
+    assert dt[GROUP]["1"]["a"].dtype == "float16"
+    parents = converted["cell_ids"].values >> np.uint64(4)
+    expected = _block_means(converted["a"].values.astype("float64"), parents)
+    np.testing.assert_allclose(dt[GROUP]["1"]["a"].values, expected, rtol=1e-3)
 
 
 def test_conversion_workflow(converted_workflow):
