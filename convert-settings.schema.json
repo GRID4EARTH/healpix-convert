@@ -155,6 +155,55 @@
       "title": "DGGSConventionSelector",
       "type": "object"
     },
+    "ExtraDimensionSettings": {
+      "description": "How the input datasets of a group are aligned along one of their\nnon-spatial dimensions, e.g. the ``detector`` dimension of the Sentinel-2\n``conditions/geometry`` group, whose labels differ from one tile to the\nnext.\n\nThe dimension needs a coordinate variable in every input dataset: its\nlabels are what the inputs are aligned on.",
+      "properties": {
+        "join": {
+          "description": "How the labels of the input datasets are combined:\n\n- ``\"outer\"``: the union of their labels;\n- ``\"inner\"``: the labels they all have;\n- ``\"exact\"``: they must all have the same labels (error otherwise);\n- ``\"reindex\"``: the fixed :py:attr:`labels`, the same for every\n  conversion; an input label not in that list is an error.\n\nWhere an input has no value for a label of the output, its values are\nmissing (NaN), which turns an integer variable into a floating point one.",
+          "enum": [
+            "outer",
+            "inner",
+            "exact",
+            "reindex"
+          ],
+          "title": "Join",
+          "type": "string"
+        },
+        "labels": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Labels of the dimension in the output (``join=\"reindex\"`` only), e.g. the\ndetectors of an instrument.",
+          "title": "Labels"
+        }
+      },
+      "required": [
+        "join"
+      ],
+      "title": "ExtraDimensionSettings",
+      "type": "object"
+    },
     "Healpix": {
       "description": "HEALPix grid.\n\nCompliant with the DGGS Zarr convention.",
       "properties": {
@@ -327,6 +376,14 @@
           "default": null,
           "description": "Zarr codecs of the HEALPix cell ids coordinate (zarr's defaults if None).\n\nThe cell ids of a chunk are sorted, and one contiguous range with\n``healpix_cell_dense`` chunks, which zstd alone keeps at about one byte per\ncell. A delta filter before the compressor brings them to almost nothing,\ne.g. ``[{\"name\": \"numcodecs.delta\", \"configuration\": {\"dtype\": \"<u8\"}},\n{\"name\": \"bytes\"}, {\"name\": \"zstd\"}]``; readers then need an implementation\nof that codec. The delta filter is meant for plain cell ids: with\n``healpix.compression`` set to ``\"compacted\"`` or ``\"ranges\"`` the ids are\nalready compressed and it brings no further gain.",
           "title": "Healpix Coordinate Codecs"
+        },
+        "extra_dimensions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ExtraDimensionSettings"
+          },
+          "description": "How the input datasets are aligned along their non-spatial dimensions\n(dimension name -> settings), when the group is converted from several\ninput datasets.\n\nThe input datasets must otherwise agree on every non-spatial dimension\n(same size and, where there is a coordinate, same labels): a dimension\nalong which they differ and that has no entry here is an error.",
+          "title": "Extra Dimensions",
+          "type": "object"
         },
         "codecs": {
           "anyOf": [

@@ -478,6 +478,57 @@ def test_derived_chunk_level():
     # a conversion with small chunks still gets reasonably sized ones
     assert _derived_chunk_level(18, 20, 19) == 18 - MIN_CHUNK_DEPTH
 
+    # a partial extent: the chunk cells stay at or below the coarsest level the
+    # converted cells cover entirely (here the conversion chunk level, 12)
+    assert _derived_chunk_level(19, 20, 12, coarsest_level=12) == 12
+    assert _derived_chunk_level(13, 20, 12, coarsest_level=12) == 12
+
+
+@pytest.mark.parametrize(
+    ["extent", "native", "derived"],
+    [
+        # 2 of the 4 level-1 chunk cells of a level-0 cell
+        pytest.param(
+            shapely.box(0.0, 0.0, 20.0, 20.0), 6, [4, 2, 1], id="part-of-a-base-cell"
+        ),
+        # parts of several base cells
+        pytest.param(
+            shapely.box(-60.0, -10.0, 60.0, 10.0), 7, [6, 5], id="several-base-cells"
+        ),
+    ],
+)
+def test_derived_chunks_are_healpix_cells_on_a_partial_extent(
+    tmp_path, extent, native, derived
+):
+    cell_ids = _dense_cells(native, extent)
+    path = _write_converted(
+        tmp_path / "converted.zarr",
+        {
+            native: _level_dataset(
+                native, cell_ids, a=np.arange(cell_ids.size, dtype="f8")
+            )
+        },
+    )
+    cache, settings = _cache_and_settings([native], {"derived_levels": derived}, extent)
+
+    dt = _generate_pyramids(cache, settings, path)
+
+    # each chunk holds all the children of one HEALPix cell, and those only
+    info = cache.output_groups.pyramid_multiscale_groups[PurePath(GROUP)]
+    for level_path, (healpix, chunk_level) in info.derived_levels.items():
+        assert chunk_level >= CHUNK_LEVEL
+        depth = healpix.refinement_level - chunk_level
+        level = dt[level_path.as_posix()]
+        assert level["a"].encoding["chunks"] == (4**depth,)
+
+        ids = level["cell_ids"].values.reshape(-1, 4**depth)
+        parents = ids >> np.uint64(2 * depth)
+        assert (parents == parents[:, :1]).all()
+        np.testing.assert_array_equal(
+            ids - (parents[:, :1] << np.uint64(2 * depth)),
+            np.broadcast_to(np.arange(4**depth, dtype="uint64"), ids.shape),
+        )
+
 
 class TestPyramidCodecs:
     def test_derived_variables_use_the_codecs(self, converted):

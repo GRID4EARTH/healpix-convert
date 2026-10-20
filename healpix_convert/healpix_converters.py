@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import PurePath
 from typing import Any, NotRequired, TypedDict, Unpack, cast
 
@@ -41,6 +41,7 @@ from healpix_convert.core.metadata import (
 )
 from healpix_convert.settings.common import (
     ConvertSettings,
+    ExtraDimensionSettings,
     HealpixDenseChunkSettings,
     HealpixGroupSettings,
     HealpixSparseChunkSettings,
@@ -111,6 +112,83 @@ class ZarrCreateArrayKwargs(TypedDict):
     attributes: NotRequired[dict[str, JSON] | None]
 
 
+def align_extra_dimensions(
+    datasets: list[xr.Dataset],
+    extra_dimensions: Mapping[str, ExtraDimensionSettings],
+    spatial_dims: Iterable[str],
+) -> list[xr.Dataset]:
+    """Align the input datasets of a group along their non-spatial dimensions.
+
+    Each dimension of ``extra_dimensions`` is aligned on the labels of its
+    coordinate, as its settings say (union, intersection, same labels, or fixed
+    labels). The inputs must agree on every other non-spatial dimension: same
+    size and, where they have a coordinate, same labels. Without that check,
+    inputs with different labels of the same size would be concatenated
+    position by position, mixing e.g. the values of different detectors.
+
+    """
+    if len(datasets) < 2 and not extra_dimensions:
+        return datasets
+
+    datasets = list(datasets)
+
+    for dim, dim_settings in extra_dimensions.items():
+        present = [ds for ds in datasets if dim in ds.dims]
+        if not present:
+            continue
+        if any(dim not in ds.coords for ds in present):
+            raise ValueError(
+                f"extra dimension {dim!r} has no coordinate in some input dataset: "
+                "its labels are needed to align the inputs"
+            )
+
+        datasets = [
+            ds.set_xindex(dim) if dim in ds.dims and dim not in ds.xindexes else ds
+            for ds in datasets
+        ]
+
+        if dim_settings.join == "reindex":
+            labels = list(dim_settings.labels or [])
+            for ds in datasets:
+                if dim not in ds.dims:
+                    continue
+                unknown = sorted(set(ds[dim].values.tolist()) - set(labels))
+                if unknown:
+                    raise ValueError(
+                        f"extra dimension {dim!r}: input labels {unknown} are not in "
+                        f"the labels of the settings {labels}"
+                    )
+            datasets = [
+                ds.reindex({dim: labels}) if dim in ds.dims else ds for ds in datasets
+            ]
+        else:
+            others = set().union(*(ds.dims for ds in datasets)) - {dim}
+            datasets = list(
+                xr.align(*datasets, join=dim_settings.join, exclude=others)
+            )
+
+    spatial = set(spatial_dims)
+    dims = set().union(*(ds.dims for ds in datasets)) - spatial - set(extra_dimensions)
+
+    for dim in sorted(dims, key=str):
+        present = [ds for ds in datasets if dim in ds.dims]
+        sizes = {ds.sizes[dim] for ds in present}
+        differ = len(sizes) > 1
+        if not differ and all(dim in ds.coords for ds in present):
+            first = present[0][dim].values
+            differ = any(
+                not np.array_equal(ds[dim].values, first) for ds in present[1:]
+            )
+        if differ:
+            raise ValueError(
+                f"the input datasets differ along the non-spatial dimension {dim!r} "
+                f"(sizes {sorted(sizes)}): set 'extra_dimensions' in the group "
+                "settings to align them (union, intersection or fixed labels)"
+            )
+
+    return datasets
+
+
 class HealpixGroupConverter(ABC):
     """Base (abstract) class for resampling data in a Zarr group to HEALPix."""
 
@@ -162,6 +240,14 @@ class HealpixGroupConverter(ABC):
                 utils.create_raster_index(ds, tr, *spatial_dims)
                 for ds, tr in zip(self.datasets, transforms)
             ]
+
+        # the output arrays are created from the first input dataset: align
+        # the inputs first, so it has the labels of the output
+        self.datasets = align_extra_dimensions(
+            self.datasets,
+            self.settings.extra_dimensions,
+            self.spatial_info.spatial_dimensions,
+        )
 
         if not isinstance(output_store, str):
             root_group = zarr.open_group(
@@ -357,6 +443,11 @@ class HealpixGroupConverter(ABC):
             # re-open input datasets with chunks={} -> set chunks aligned with zarr
             reopened_datasets = utils.open_datasets(
                 self.input_paths, self.group_path, chunks={}
+            )
+            reopened_datasets = align_extra_dimensions(
+                reopened_datasets,
+                self.settings.extra_dimensions,
+                self.spatial_info.spatial_dimensions,
             )
             self.datasets = [ds.persist(scheduler=client) for ds in reopened_datasets]
             # block until all data is loaded.

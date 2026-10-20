@@ -6,6 +6,19 @@
   the derived levels (Zarr's defaults if not set), e.g. a serializer of
   `healpix-compress` coding one HEALPix cell per chunk. It is checked when the
   settings are created, like the `codecs` group setting.
+- The chunks of a derived level always hold all the children of one HEALPix
+  cell: on a partial spatial extent, their cells are no longer coarser than the
+  coarsest level the converted cells cover entirely. Before, the chunks of the
+  derived levels whose chunk cells were partly covered were cut along the array
+  and mixed the cells of several HEALPix cells.
+- New `extra_dimensions` group setting, to align several input datasets along
+  a non-spatial dimension whose labels differ between them (e.g. the
+  `detector` dimension of the Sentinel-2 `conditions/geometry` group): union,
+  intersection, same labels, or fixed labels for every conversion
+  ({issue}`17`, {issue}`54`). Input datasets that differ along a non-spatial
+  dimension without such a setting are now refused with a message pointing to
+  it; before, inputs of the same size were concatenated position by position
+  even when their labels differed.
 - The multiscales metadata describes each derived level of a pyramid: the
   converted level it is aggregated from (`derived_from`), the transformation
   from it (`transform`, whose `scale` is how much longer a cell is) and the

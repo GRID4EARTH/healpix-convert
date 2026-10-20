@@ -329,6 +329,51 @@ class InputMetadataSettings(BaseModel):
         return attrs
 
 
+class ExtraDimensionSettings(BaseModel):
+    """How the input datasets of a group are aligned along one of their
+    non-spatial dimensions, e.g. the ``detector`` dimension of the Sentinel-2
+    ``conditions/geometry`` group, whose labels differ from one tile to the
+    next.
+
+    The dimension needs a coordinate variable in every input dataset: its
+    labels are what the inputs are aligned on.
+
+    """
+
+    model_config = ConfigDict(frozen=True, use_attribute_docstrings=True)
+
+    join: Literal["outer", "inner", "exact", "reindex"]
+    """How the labels of the input datasets are combined:
+
+    - ``"outer"``: the union of their labels;
+    - ``"inner"``: the labels they all have;
+    - ``"exact"``: they must all have the same labels (error otherwise);
+    - ``"reindex"``: the fixed :py:attr:`labels`, the same for every
+      conversion; an input label not in that list is an error.
+
+    Where an input has no value for a label of the output, its values are
+    missing (NaN), which turns an integer variable into a floating point one.
+    """
+
+    labels: list[str] | list[int] | list[float] | None = None
+    """Labels of the dimension in the output (``join="reindex"`` only), e.g. the
+    detectors of an instrument."""
+
+    @model_validator(mode="after")
+    def validate_labels(self) -> ExtraDimensionSettings:
+        if self.join == "reindex":
+            if not self.labels:
+                raise ValueError("join='reindex' requires a non-empty list of labels")
+            if len(set(self.labels)) != len(self.labels):
+                raise ValueError(f"duplicate labels in {self.labels}")
+        elif self.labels is not None:
+            raise ValueError(
+                f"labels are only used with join='reindex' (got join={self.join!r})"
+            )
+
+        return self
+
+
 def check_codecs_available(
     value: list[CodecSettings] | None,
 ) -> list[CodecSettings] | None:
@@ -385,6 +430,16 @@ class HealpixGroupSettings(BaseModel):
     already compressed and it brings no further gain.
     """
 
+    extra_dimensions: dict[str, ExtraDimensionSettings] = Field(default_factory=dict)
+    """How the input datasets are aligned along their non-spatial dimensions
+    (dimension name -> settings), when the group is converted from several
+    input datasets.
+
+    The input datasets must otherwise agree on every non-spatial dimension
+    (same size and, where there is a coordinate, same labels): a dimension
+    along which they differ and that has no entry here is an error.
+    """
+
     codecs: list[CodecSettings] | None = Field(default=None)
     """Zarr codecs of the group's resampled data variables (other arrays use
     zarr's defaults).
@@ -400,6 +455,16 @@ class HealpixGroupSettings(BaseModel):
         cls, value: list[CodecSettings] | None
     ) -> list[CodecSettings] | None:
         return check_codecs_available(value)
+
+    @model_validator(mode="after")
+    def validate_extra_dimensions(self) -> HealpixGroupSettings:
+        if self.healpix.spatial_dimension in self.extra_dimensions:
+            raise ValueError(
+                f"extra_dimensions: {self.healpix.spatial_dimension!r} is the HEALPix "
+                "cell dimension of the output, not an extra dimension"
+            )
+
+        return self
 
     @model_validator(mode="after")
     def validate_cell_point_resampler_level(self) -> HealpixGroupSettings:
