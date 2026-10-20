@@ -452,6 +452,30 @@ def test_reduce_method(converted):
     np.testing.assert_allclose(level2["temperature"].values, expected)
 
 
+def test_reduce_mode(tmp_path):
+    # a classification at the level 3, aggregated onto the level 2
+    cell_ids = _dense_cells(3)
+    classes = np.random.default_rng(0).integers(0, 4, cell_ids.size).astype("uint8")
+    path = _write_converted(
+        tmp_path / "converted.zarr", {3: _level_dataset(3, cell_ids, scl=classes)}
+    )
+
+    dt = _generate_pyramids(
+        *_cache_and_settings([3], {"derived_levels": [2], "reduce": "mode"}), path
+    )
+
+    level2 = dt[f"{GROUP}/2"]["scl"]
+    assert level2.dtype == np.dtype("uint8")
+    # the most frequent class of the 4 children, the smallest one on a tie
+    expected = [
+        min(np.flatnonzero(counts == counts.max()))
+        for counts in (
+            np.bincount(block, minlength=4) for block in classes.reshape(-1, 4)
+        )
+    ]
+    np.testing.assert_array_equal(level2.values, expected)
+
+
 def test_derived_chunks_are_healpix_cells(converted):
     path, *_ = converted
     cache, settings = _cache_and_settings([3], {"derived_levels": [2, 1]})
@@ -477,6 +501,127 @@ def test_derived_chunk_level():
 
     # a conversion with small chunks still gets reasonably sized ones
     assert _derived_chunk_level(18, 20, 19) == 18 - MIN_CHUNK_DEPTH
+
+    # a partial extent: the chunk cells stay at or below the coarsest level the
+    # converted cells cover entirely (here the conversion chunk level, 12)
+    assert _derived_chunk_level(19, 20, 12, coarsest_level=12) == 12
+    assert _derived_chunk_level(13, 20, 12, coarsest_level=12) == 12
+
+
+@pytest.mark.parametrize(
+    ["extent", "native", "derived"],
+    [
+        # 2 of the 4 level-1 chunk cells of a level-0 cell
+        pytest.param(
+            shapely.box(0.0, 0.0, 20.0, 20.0), 6, [4, 2, 1], id="part-of-a-base-cell"
+        ),
+        # parts of several base cells
+        pytest.param(
+            shapely.box(-60.0, -10.0, 60.0, 10.0), 7, [6, 5], id="several-base-cells"
+        ),
+    ],
+)
+def test_derived_chunks_are_healpix_cells_on_a_partial_extent(
+    tmp_path, extent, native, derived
+):
+    cell_ids = _dense_cells(native, extent)
+    path = _write_converted(
+        tmp_path / "converted.zarr",
+        {
+            native: _level_dataset(
+                native, cell_ids, a=np.arange(cell_ids.size, dtype="f8")
+            )
+        },
+    )
+    cache, settings = _cache_and_settings([native], {"derived_levels": derived}, extent)
+
+    dt = _generate_pyramids(cache, settings, path)
+
+    # each chunk holds all the children of one HEALPix cell, and those only
+    info = cache.output_groups.pyramid_multiscale_groups[PurePath(GROUP)]
+    for level_path, (healpix, chunk_level) in info.derived_levels.items():
+        assert chunk_level >= CHUNK_LEVEL
+        depth = healpix.refinement_level - chunk_level
+        level = dt[level_path.as_posix()]
+        assert level["a"].encoding["chunks"] == (4**depth,)
+
+        ids = level["cell_ids"].values.reshape(-1, 4**depth)
+        parents = ids >> np.uint64(2 * depth)
+        assert (parents == parents[:, :1]).all()
+        np.testing.assert_array_equal(
+            ids - (parents[:, :1] << np.uint64(2 * depth)),
+            np.broadcast_to(np.arange(4**depth, dtype="uint64"), ids.shape),
+        )
+
+
+class TestPyramidCodecs:
+    def test_derived_variables_use_the_codecs(self, converted):
+        path, cell_ids, temperature, _ = converted
+        codecs = [
+            {"name": "bytes", "configuration": {}},
+            {"name": "zstd", "configuration": {"level": 5}},
+        ]
+
+        dt = _generate_pyramids(
+            *_cache_and_settings([3], {"derived_levels": [2], "codecs": codecs}), path
+        )
+
+        level2 = zarr.open_group(path, mode="r")[f"{GROUP}/2"]
+        written = level2["temperature"].metadata.to_dict()["codecs"]
+        assert [c["name"] for c in written] == ["bytes", "zstd"]
+        assert written[1]["configuration"]["level"] == 5
+        # the cell ids keep Zarr's defaults, the converted level its own codecs
+        assert level2["cell_ids"].metadata.to_dict()["codecs"] != written
+        native = zarr.open_group(path, mode="r")[f"{GROUP}/3"]["temperature"]
+        assert native.metadata.to_dict()["codecs"] != written
+        # same values as without codecs
+        parents = cell_ids >> np.uint64(2)
+        np.testing.assert_allclose(
+            dt[f"{GROUP}/2"]["temperature"].values,
+            _block_means(temperature, parents),
+        )
+
+    def test_unknown_codec(self):
+        with pytest.raises(
+            ValueError, match="zarr codec 'no-such-codec' is not available"
+        ):
+            _settings(
+                [3],
+                {
+                    "derived_levels": [2],
+                    "codecs": [{"name": "no-such-codec", "configuration": {}}],
+                },
+            )
+
+    def test_healpix_compress_serializer(self, tmp_path):
+        """A serializer that codes the cells of one HEALPix cell per chunk, as the
+        chunks of a derived level are."""
+        pytest.importorskip("hcc.codecs.sentinel2")
+        cell_ids = _dense_cells(3)
+        values = np.random.default_rng(0).uniform(0.0, 0.5, cell_ids.size)
+        values[:64] = np.nan  # a whole level-0 cell without data
+        path = _write_converted(
+            tmp_path / "converted.zarr", {3: _level_dataset(3, cell_ids, a=values)}
+        )
+        # digital numbers DN = round(1e4 * a + 1000), lossless on that lattice
+        codecs = [
+            {
+                "name": "hcc-sentinel2",
+                "configuration": {"quantification_value": 1e4, "add_offset": -1000.0},
+            }
+        ]
+
+        dt = _generate_pyramids(
+            *_cache_and_settings([3], {"derived_levels": [2], "codecs": codecs}), path
+        )
+
+        level2 = zarr.open_group(path, mode="r")[f"{GROUP}/2"]["a"]
+        assert level2.metadata.to_dict()["codecs"][0]["name"] == "hcc-sentinel2"
+        expected = np.array(_block_means(values, cell_ids >> np.uint64(2)))
+        written = dt[f"{GROUP}/2"]["a"].values
+        np.testing.assert_array_equal(np.isnan(written), np.isnan(expected))
+        valid = ~np.isnan(expected)
+        assert np.abs(written[valid] - expected[valid]).max() <= 0.5e-4 + 1e-9
 
 
 def test_pyramid_in_a_child_group(converted):

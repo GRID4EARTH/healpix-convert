@@ -7,6 +7,18 @@
   zero points: that dataset is skipped for the chunk, and a chunk left without
   input is not written ({issue}`23`). The conversion of a tile stopped there
   with `nearest` and with healpix-resample < 2026.10.1 for `psf`.
+- New `"mode"` reduction for the pyramids (the `reduce` pyramid setting): the
+  most frequent value of the cells of a block, for categorical variables such
+  as masks and classifications.
+- New `codecs` pyramid setting: the Zarr codecs of the aggregated variables of
+  the derived levels (Zarr's defaults if not set), e.g. a serializer of
+  `healpix-compress` coding one HEALPix cell per chunk. It is checked when the
+  settings are created, like the `codecs` group setting.
+- The chunks of a derived level always hold all the children of one HEALPix
+  cell: on a partial spatial extent, their cells are no longer coarser than the
+  coarsest level the converted cells cover entirely. Before, the chunks of the
+  derived levels whose chunk cells were partly covered were cut along the array
+  and mixed the cells of several HEALPix cells.
 - New `extra_dimensions` group setting, to align several input datasets along
   a non-spatial dimension whose labels differ between them (e.g. the
   `detector` dimension of the Sentinel-2 `conditions/geometry` group): union,

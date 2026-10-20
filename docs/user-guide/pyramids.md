@@ -72,67 +72,115 @@ Every child group of a pyramid multiscale group must be converted with the
 `healpix_cell_dense` chunk method. The cells of such a chunk are all the
 children of one HEALPix cell at a coarser (chunk) level, in ascending (nested)
 order, so the cells of a coarser cell are `4 ** delta` **consecutive** cells of
-the converted arrays: aggregating them is a matter of position.
+the converted arrays: aggregating them is a matter of implicit position (array
+indices).
 
 Each derived level is one `Dataset.coarsen` reduction over the converted
 cells:
 
 - nothing is grouped and no cell id is read, so nothing proportional to the
-  number of cells is held in memory: the ids of a densely covered 800 x 800 km
-  area at the level 20 (16.6 billion cells) would be 132 GB on their own;
+  number of cells is held in memory;
 - the aggregation is blockwise, hence lazy: all the derived levels of all the
   pyramids are written in a single Dask computation, so a native level is read
   once and feeds every level aggregated from it. Run it on a Dask distributed
   cluster (see {doc}`dask`) to parallelize it;
 - each cell of a derived level aggregates **all** the converted cells it
-  contains, not the cells of the level just above it: the default `mean` is a
-  block mean and not a mean of means, which differ as soon as some cells have
-  no data.
+  contains, picked at the corresponding native level: the default `mean` is a
+  block mean and not a mean of means, which differ as soon as some cells have no
+  data.
 
 Missing (NaN) values are skipped. The `reduce` pyramid setting selects another
 reduction (`"min"`, `"max"`, `"sum"`): these are the reductions that give, for
 a whole block of cells, the same result as aggregating all its cells at once.
-The mean does not suit categorical data such as masks or classifications.
+The mean does not suit categorical data such as masks or classifications:
+aggregate those with `"mode"`, the most frequent value of the cells of a block
+(the smallest of them in case of a tie).
 
 The data type and the fill value of each variable are preserved, an integer
 variable being rounded instead of truncated.
 
-A cell of a level coarser than the chunk level is covered entirely only if all
-its chunk cells have been converted, which is not the case at the edges of a
-partial spatial extent: the levels of `derived_levels` that are coarser than
-the coarsest level whose cells are covered entirely are then rejected, and the
-staging cache says which level that is. With a full-earth extent, every level
-down to 0 can be derived.
+A derived level may only hold cells that are entirely covered by converted data:
+a cell coarser than the chunk level is entirely covered only if all its chunk
+cells have been converted, which is not the case at the edges of a partial
+spatial extent. The levels of `derived_levels` that are coarser than the
+coarsest entirely covered level are therefore rejected. For example, with one
+satellite tile converted at level 17 with level-11 chunks, if no level-10 cell
+has all its four level-11 chunk cells converted, the coarsest entirely covered
+level is 11: the derived levels 16 to 11 are accepted, 10 and coarser are
+rejected. With a full-earth extent, every level down to 0 can be derived.
 
 ## Chunks of the derived levels
 
-The chunks of a derived level are HEALPix cells as well: a chunk holds the
-`4 ** depth` cells of one HEALPix cell `depth` levels above, whose refinement
-level the staging cache records next to the HEALPix grid of every level. The depth is the one of the converted chunks, so that the chunks of a
-derived level hold as many cells as the ones of the level they are aggregated
-from; following the chunk level of the converted data instead would divide that
-number by four at every level. The depth is at least 4 (256 cells per chunk)
-and the chunk cells are never finer than the base cells, so the coarsest levels
-hold one chunk per base cell.
+Like the chunks of a native level, the chunks of a derived level are
+HEALPix-aligned, but on a coarser refinement level than the one used for the
+associated native level. That chunk level is set so that both levels keep the
+same depth (data level minus chunk level), hence chunks of the same size: with a
+native level 17 chunked at level 11 (depth 6, i.e., 4096 cells per chunk), a
+derived level 15 is chunked at level 9, also 4096 cells per chunk. The minimum
+depth is set to 4 (256 cells per chunk).
+
+To ensure HEALPix-aligned chunks for all derived levels, that chunk level is
+also bounded by the coarsest level that is entirely covered by converted data (0
+for a full-earth extent). Below that level threshold, some of the chunk cells
+would be only partly covered, such that the actual chunks would be cut along the
+array (i.e., not HEALPix-aligned). A partial extent (e.g., one tile of a
+satellite product) raises that threshold, hence smaller chunks for the derived
+levels near it.
+
+All in all, the chunk refinement level $l_c$ of a derived level is
+
+$$l_c = \max(l - \max(l_n - l_{n_c}, 4), l_\text{cov})$$
+
+where $l$ is the refinement level of the derived level, $l_n$ and $l_{n_c}$
+those of the associated native level and of its chunk cells, and
+$l_\text{cov}$ the coarsest level entirely covered by converted data.
+
+## Codecs of the derived levels
+
+The aggregated variables are written with Zarr's default codecs, unless the
+`codecs` pyramid setting gives a codec pipeline, applied to the data variables
+of every derived level (not to their cell ids). It takes the same form as the
+`codecs` group setting:
+
+```python
+"pyramid_groups": {
+    "measurements/reflectance": {
+        "derived_levels": [18, 16, 15, 14, 13, 12],
+        "codecs": [
+            {
+                "name": "hcc-sentinel2-pyramid",
+                "configuration": {"quantification_value": 10000.0, "add_offset": -1000.0},
+            }
+        ],
+    },
+}
+```
+
+Since a chunk of a derived level holds the cells of one HEALPix cell, codecs
+that code one parent cell per chunk, like the Sentinel-2 serializers of
+`healpix-compress`, can encode them. The converted levels keep the codecs they
+were written with: the codecs of a lossy serializer are not reused implicitly,
+as they would code the aggregated values a second time.
 
 ## Groups converted at several levels
 
-The native levels of a multiscale group, e.g., the bands of a multi-resolution
-product converted each at its native resolution (see `multiscale_settings` in
-{doc}`settings`), are kept as they are and:
+The native levels of a multiscale group are kept as they are. Generating
+pyramids only creates down-sampled (aggregated) derived levels, by default from
+the nearest native level found. Set `coarsen_from="finest"` to always aggregate
+from the finest native level instead.
 
-- a variable never appears at a level finer than its own native level (it is
-  not upsampled);
-- a variable converted at several native levels, e.g., the copies of the finest
-  bands that the data provider resampled itself, is aggregated from the nearest
-  native level at or finer than the derived level. Set
-  `coarsen_from="finest"` to ignore those copies and always aggregate from the
-  finest native level instead;
-- the levels must be chunked with HEALPix cells of the same refinement level,
-  so that a derived level holds the same cells whichever level its variables
-  are aggregated from;
-- the cells of a derived level are the union of the cells of its variables, a
-  variable having its fill value where it has no data.
+That native level is selected per variable, so one derived level may hold
+variables aggregated from different native levels, e.g., the bands of a
+multi-resolution product. Since all the variables of a derived level share the
+same cell ids, the cells of the level are the union of the cells of its
+variables (no data cells filled with the variable's fill value).
+
+This is also why all the native levels of a multiscale group must be chunked
+with HEALPix cells of the same refinement level, which is enforced when the
+conversion settings are validated: the cells are aggregated by position and the
+variables of a derived level are merged without reading any cell id, so the
+native levels must cover exactly the same cells for those variables to be
+aligned with each other.
 
 ## Where the levels are written
 
@@ -157,14 +205,6 @@ measurements        (multiscale group)
     ├── 5           (derived)
     └── 4           (derived)
 ```
-
-Either way the multiscale group describes the whole pyramid in its
-`multiscales` metadata, whose assets are paths relative to that group
-(`"7"`, `"6"`, `"5"`, `"4"` above, or `"pyramids/5"` with a subgroup name),
-and the levels converted from the input data are neither moved nor copied. They
-are
-not rewritten either, so the codecs they were written with, lossy ones
-included, are left untouched.
 
 `prepare_healpix_dataset(..., dry_run=True)` shows the derived level groups and
 their metadata, like the rest of the structure of the output dataset, without
