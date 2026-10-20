@@ -530,6 +530,76 @@ def test_derived_chunks_are_healpix_cells_on_a_partial_extent(
         )
 
 
+class TestPyramidCodecs:
+    def test_derived_variables_use_the_codecs(self, converted):
+        path, cell_ids, temperature, _ = converted
+        codecs = [
+            {"name": "bytes", "configuration": {}},
+            {"name": "zstd", "configuration": {"level": 5}},
+        ]
+
+        dt = _generate_pyramids(
+            *_cache_and_settings([3], {"derived_levels": [2], "codecs": codecs}), path
+        )
+
+        level2 = zarr.open_group(path, mode="r")[f"{GROUP}/2"]
+        written = level2["temperature"].metadata.to_dict()["codecs"]
+        assert [c["name"] for c in written] == ["bytes", "zstd"]
+        assert written[1]["configuration"]["level"] == 5
+        # the cell ids keep Zarr's defaults, the converted level its own codecs
+        assert level2["cell_ids"].metadata.to_dict()["codecs"] != written
+        native = zarr.open_group(path, mode="r")[f"{GROUP}/3"]["temperature"]
+        assert native.metadata.to_dict()["codecs"] != written
+        # same values as without codecs
+        parents = cell_ids >> np.uint64(2)
+        np.testing.assert_allclose(
+            dt[f"{GROUP}/2"]["temperature"].values,
+            _block_means(temperature, parents),
+        )
+
+    def test_unknown_codec(self):
+        with pytest.raises(
+            ValueError, match="zarr codec 'no-such-codec' is not available"
+        ):
+            _settings(
+                [3],
+                {
+                    "derived_levels": [2],
+                    "codecs": [{"name": "no-such-codec", "configuration": {}}],
+                },
+            )
+
+    def test_healpix_compress_serializer(self, tmp_path):
+        """A serializer that codes the cells of one HEALPix cell per chunk, as the
+        chunks of a derived level are."""
+        pytest.importorskip("hcc.codecs.sentinel2")
+        cell_ids = _dense_cells(3)
+        values = np.random.default_rng(0).uniform(0.0, 0.5, cell_ids.size)
+        values[:64] = np.nan  # a whole level-0 cell without data
+        path = _write_converted(
+            tmp_path / "converted.zarr", {3: _level_dataset(3, cell_ids, a=values)}
+        )
+        # digital numbers DN = round(1e4 * a + 1000), lossless on that lattice
+        codecs = [
+            {
+                "name": "hcc-sentinel2",
+                "configuration": {"quantification_value": 1e4, "add_offset": -1000.0},
+            }
+        ]
+
+        dt = _generate_pyramids(
+            *_cache_and_settings([3], {"derived_levels": [2], "codecs": codecs}), path
+        )
+
+        level2 = zarr.open_group(path, mode="r")[f"{GROUP}/2"]["a"]
+        assert level2.metadata.to_dict()["codecs"][0]["name"] == "hcc-sentinel2"
+        expected = np.array(_block_means(values, cell_ids >> np.uint64(2)))
+        written = dt[f"{GROUP}/2"]["a"].values
+        np.testing.assert_array_equal(np.isnan(written), np.isnan(expected))
+        valid = ~np.isnan(expected)
+        assert np.abs(written[valid] - expected[valid]).max() <= 0.5e-4 + 1e-9
+
+
 def test_pyramid_in_a_child_group(converted):
     path, cell_ids, temperature, _ = converted
 

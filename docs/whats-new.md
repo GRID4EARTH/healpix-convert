@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- New `codecs` pyramid setting: the Zarr codecs of the aggregated variables of
+  the derived levels (Zarr's defaults if not set), e.g. a serializer of
+  `healpix-compress` coding one HEALPix cell per chunk. It is checked when the
+  settings are created, like the `codecs` group setting.
 - The chunks of a derived level always hold all the children of one HEALPix
   cell: on a partial spatial extent, their cells are no longer coarser than the
   coarsest level the converted cells cover entirely. Before, the chunks of the

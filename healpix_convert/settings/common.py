@@ -374,6 +374,30 @@ class ExtraDimensionSettings(BaseModel):
         return self
 
 
+def check_codecs_available(
+    value: list[CodecSettings] | None,
+) -> list[CodecSettings] | None:
+    """Check that every codec of a codec pipeline is registered with zarr, so
+    that a missing package fails when the settings are created rather than
+    mid-conversion."""
+    if value is None:
+        return value
+
+    from zarr.registry import get_codec_class
+
+    for codec in value:
+        try:
+            get_codec_class(codec["name"])
+        except (KeyError, ValueError):
+            # zarr raises KeyError (zarr < 3.2) or UnknownCodecError, a ValueError
+            raise ValueError(
+                f"zarr codec {codec['name']!r} is not available: install the package "
+                "that registers it with zarr"
+            ) from None
+
+    return value
+
+
 class HealpixGroupSettings(BaseModel):
     """Settings for converting a single Zarr group onto HEALPix."""
 
@@ -430,22 +454,7 @@ class HealpixGroupSettings(BaseModel):
     def validate_codecs(
         cls, value: list[CodecSettings] | None
     ) -> list[CodecSettings] | None:
-        if value is None:
-            return value
-
-        from zarr.registry import get_codec_class
-
-        for codec in value:
-            try:
-                get_codec_class(codec["name"])
-            except (KeyError, ValueError):
-                # zarr raises KeyError (zarr < 3.2) or UnknownCodecError, a ValueError
-                raise ValueError(
-                    f"zarr codec {codec['name']!r} is not available: install the package "
-                    "that registers it with zarr"
-                ) from None
-
-        return value
+        return check_codecs_available(value)
 
     @model_validator(mode="after")
     def validate_extra_dimensions(self) -> HealpixGroupSettings:
@@ -556,6 +565,23 @@ class PyramidSettings(BaseModel):
     (masks, classifications): aggregate those with, e.g., "max", which keeps a
     value that the data actually has.
     """
+
+    codecs: list[CodecSettings] | None = Field(default=None)
+    """Zarr codecs of the aggregated data variables of every derived level
+    (Zarr's defaults if None), e.g. a serializer that codes the cells of one
+    HEALPix cell per chunk, which the chunks of the derived levels are.
+
+    As for the ``codecs`` group setting, each codec is looked up by name in
+    Zarr's codec registry where the settings are created. The converted levels
+    keep the codecs they were written with.
+    """
+
+    @field_validator("codecs")
+    @classmethod
+    def validate_codecs(
+        cls, value: list[CodecSettings] | None
+    ) -> list[CodecSettings] | None:
+        return check_codecs_available(value)
 
     coarsen_from: Literal["nearest", "finest"] = "nearest"
     """Which native level a variable converted at several levels is aggregated
