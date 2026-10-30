@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
@@ -377,7 +378,11 @@ class HealpixGroupConverter(ABC):
 
                 if self.settings.output_dtype is not None:
                     dtype = np.dtype(self.settings.output_dtype)
-                elif self.settings.resampler.name in ["bilinear", "psf"]:
+                elif self.settings.resampler.name in [
+                    "bilinear",
+                    "grid-bilinear",
+                    "psf",
+                ]:
                     dtype = np.float64
                 else:
                     dtype = var.dtype
@@ -588,6 +593,39 @@ _RESAMPLER_NAME_CLS: dict[str, type] = {
     "psf": healpix_resample.PSFResampler,
     "cell-point": healpix_resample.CellPointResampler,
 }
+# not in the healpix-resample releases older than its GridBilinearResampler
+if hasattr(healpix_resample, "GridBilinearResampler"):
+    _RESAMPLER_NAME_CLS["grid-bilinear"] = healpix_resample.GridBilinearResampler
+
+# resamplers built from the 1-D axes of a rectilinear lon/lat grid instead of
+# the input points (see `_grid_resampler_axes`)
+_GRID_RESAMPLERS = {"grid-bilinear"}
+
+# attribute of the input points of a chunk holding the 1-D axes of each input
+# dataset of a rectilinear lon/lat grid, in the order of the points
+_GRID_AXES_ATTR = "_healpix_convert_grid_axes"
+
+
+def _get_resampler_cls(name: str) -> type:
+    try:
+        return _RESAMPLER_NAME_CLS[name]
+    except KeyError:
+        raise ValueError(
+            f"resampler {name!r} is not available in the installed healpix-resample "
+            f"version {importlib.metadata.version('healpix-resample')}"
+        ) from None
+
+
+def _grid_resampler_axes(ds_input_points: xr.Dataset) -> tuple[list, list]:
+    """Longitude and latitude axes (one per input dataset) of the input points of
+    a chunk, for the resamplers that take the grid axes (``_GRID_RESAMPLERS``)."""
+    axes = ds_input_points.attrs.get(_GRID_AXES_ATTR)
+    if axes is None:
+        raise ValueError(
+            "the 'grid-bilinear' resampler needs input data on a rectilinear "
+            "longitude/latitude grid (1-D coordinates)"
+        )
+    return [lon for lon, _ in axes], [lat for _, lat in axes]
 
 
 class UniformChunkConverter(HealpixGroupConverter, ABC):
@@ -779,6 +817,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         west, east = relative_lon.min() - lon_padding, relative_lon.max() + lon_padding
 
         prepared = []
+        axes = []
         for ds in self.datasets:
             x, y = ds[lon_name], ds[lat_name]
             if x.ndim != 1 or y.ndim != 1 or x.dims == y.dims:
@@ -804,7 +843,19 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
                 lat=clipped[lat_name],
             )
             prepared.append(clipped)
-        return xr.concat(prepared, dim="points") if prepared else None
+            # the points are stacked in C order of (lat, lon): the grid
+            # resamplers take these axes and values in that order
+            axes.append(
+                (
+                    (x.values[xidx] + 180.0) % 360.0 - 180.0,
+                    np.asarray(y.values[yidx]),
+                )
+            )
+        if not prepared:
+            return None
+        ds_input_points = xr.concat(prepared, dim="points")
+        ds_input_points.attrs[_GRID_AXES_ATTR] = axes
+        return ds_input_points
 
     def _query_chunk_input_points_projected(
         self, chunk_cell_id: int
@@ -983,20 +1034,30 @@ class DenseChunkConverter(UniformChunkConverter):
         resampler_settings = self.settings.resampler
 
         # For the "nearest" resample method: give output cell ids the resampler (forcing)
+        # For the grid resamplers too: they interpolate at the given cell centres
         # For the other methods: best to let the resampler algorithm do the lookup
-        if resampler_settings.name == "nearest":
+        if (
+            resampler_settings.name == "nearest"
+            or resampler_settings.name in _GRID_RESAMPLERS
+        ):
             out_cell_ids = cell_ids
         else:
             out_cell_ids = None
 
-        resampler_cls = _RESAMPLER_NAME_CLS[resampler_settings.name]
+        resampler_cls = _get_resampler_cls(resampler_settings.name)
         # TODO: pass array dtype to resampler
         # in case all arrays to resample have the same dtype
 
+        if resampler_settings.name in _GRID_RESAMPLERS:
+            lon_deg, lat_deg = _grid_resampler_axes(ds_input_points)
+        else:
+            lon_deg = ds_input_points.lon.values
+            lat_deg = ds_input_points.lat.values
+
         log.debug("initialize resampler")
         resampler = resampler_cls(
-            lon_deg=ds_input_points.lon.values,
-            lat_deg=ds_input_points.lat.values,
+            lon_deg=lon_deg,
+            lat_deg=lat_deg,
             level=self.healpix.refinement_level,
             verbose=False,
             out_cell_ids=out_cell_ids,
@@ -1077,7 +1138,7 @@ class SparseChunkConverter(UniformChunkConverter):
         log.debug("initialize resampler")
         resampler_settings = self.settings.resampler
 
-        resampler_cls = _RESAMPLER_NAME_CLS[resampler_settings.name]
+        resampler_cls = _get_resampler_cls(resampler_settings.name)
         # TODO: pass array dtype to resampler
         # in case all arrays to resample have the same dtype
 
@@ -1186,7 +1247,8 @@ class NoChunkConverter(HealpixGroupConverter):
         prepared_datasets = []
         for ds, crs in zip(self.datasets, self.spatial_info.crs):
             ds_latlon_flat = (
-                ds.compute().pipe(lambda ds: maybe_convert_to_latlon(ds, crs))
+                ds.compute()
+                .pipe(lambda ds: maybe_convert_to_latlon(ds, crs))
                 # note: the Xarray stack operation below already broadcasts
                 # the Dataset variables that only have a subset of the spatial dimensions
                 .stack(
@@ -1220,7 +1282,7 @@ class NoChunkConverter(HealpixGroupConverter):
         else:
             out_cell_ids = None
 
-        resampler_cls = _RESAMPLER_NAME_CLS[resampler_settings.name]
+        resampler_cls = _get_resampler_cls(resampler_settings.name)
         # TODO: pass array dtype to resampler
         # in case all arrays to resample have the same dtype
 
