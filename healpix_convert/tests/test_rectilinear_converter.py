@@ -2,6 +2,7 @@ from pathlib import PurePath
 
 import dask.array as da
 import healpix_geo
+import healpix_resample
 import numpy as np
 import pytest
 import xarray as xr
@@ -17,7 +18,15 @@ from healpix_convert.healpix_converters import DenseChunkConverter
 from healpix_convert.settings.common import ConvertSettings
 
 
-def make_converter(monkeypatch, datasets, cell, chunk_level=3, level=5, buffer=100_000):
+def make_converter(
+    monkeypatch,
+    datasets,
+    cell,
+    chunk_level=3,
+    level=5,
+    buffer=100_000,
+    resampler="nearest",
+):
     path = PurePath("measurements/land_cover")
     grid = {"indexing_scheme": "nested", "ellipsoid": {"name": "wgs84"}}
     settings = ConvertSettings.from_dict(
@@ -30,7 +39,7 @@ def make_converter(monkeypatch, datasets, cell, chunk_level=3, level=5, buffer=1
                         "healpix": {**grid, "refinement_level": chunk_level},
                         "chunk_buffer_width": buffer,
                     },
-                    "resampler": {"name": "nearest"},
+                    "resampler": {"name": resampler},
                 }
             }
         }
@@ -155,3 +164,139 @@ def test_nearest_level15_preserves_classes_and_metadata(monkeypatch):
     assert metadata["ellipsoid"]["name"] == "WGS84"
     assert metadata["indexing_scheme"] == "nested"
     assert metadata["refinement_level"] == 15
+
+
+needs_grid_bilinear = pytest.mark.skipif(
+    not hasattr(healpix_resample, "GridBilinearResampler"),
+    reason="healpix-resample without GridBilinearResampler",
+)
+
+
+def plane(lon, lat):
+    # linear in longitude and latitude: exact for a bilinear interpolation
+    return 100.0 + 3.0 * lon - 2.0 * lat
+
+
+def plane_grid(lon, lat):
+    values = plane(np.asarray(lon)[None, :], np.asarray(lat)[:, None])
+    return xr.Dataset(
+        {"height": (("row", "column"), da.from_array(values, chunks=(16, 16)))},
+        coords={
+            "longitude": ("column", lon, {"standard_name": "longitude"}),
+            "latitude": ("row", lat, {"standard_name": "latitude"}),
+        },
+    )
+
+
+def converted_cells(converter, cell, chunk_level, level):
+    converter.convert(0)
+    cell_ids = converter.output_arrays["cell_ids"][:]
+    np.testing.assert_array_equal(
+        cell_ids, healpix_geo.nested.zoom_to(cell, chunk_level, level).ravel()
+    )
+    lon, lat = healpix_geo.nested.healpix_to_lonlat(cell_ids, level, ellipsoid="WGS84")
+    return converter.output_arrays["height"][:], lon, lat
+
+
+@needs_grid_bilinear
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("positive_lon", [False, True])
+def test_grid_bilinear_exact_on_plane(monkeypatch, reverse, positive_lon):
+    # a cell across the antimeridian, with the longitudes in either convention
+    cell = healpix_geo.nested.lonlat_to_healpix(179.99, 30.0, 8, ellipsoid="WGS84")[0]
+    lon = np.arange(179.5, 180.5, 1 / 120)
+    lat = np.arange(29.5, 30.5, 1 / 120)
+    if positive_lon:
+        lon = lon % 360.0
+    else:
+        lon = (lon + 180.0) % 360.0 - 180.0
+    if reverse:
+        lon, lat = lon[::-1], lat[::-1]
+
+    # longitude from the antimeridian: the plane is continuous across it
+    def from_180(x):
+        return (np.asarray(x) % 360.0) - 180.0
+
+    ds = plane_grid(lon, lat)
+    ds["height"] = (("row", "column"), plane(from_180(lon)[None, :], lat[:, None]))
+    converter = make_converter(
+        monkeypatch,
+        [ds],
+        cell,
+        chunk_level=8,
+        level=12,
+        buffer=1000,
+        resampler="grid-bilinear",
+    )
+    actual, outlon, outlat = converted_cells(converter, cell, 8, 12)
+    assert actual.dtype == np.float64
+    np.testing.assert_allclose(actual, plane(from_180(outlon), outlat), atol=1e-6)
+
+
+@needs_grid_bilinear
+def test_grid_bilinear_bands_with_different_longitude_spacing(monkeypatch):
+    # two input datasets with their own longitude axes, one above and one below
+    # 50°N (as the 1" and 1.5" tiles of the Copernicus DEM): the cells between
+    # the last row of one and the first row of the other get a value too
+    cell = healpix_geo.nested.lonlat_to_healpix(6.0, 50.0, 8, ellipsoid="WGS84")[0]
+    south = plane_grid(np.arange(5.5, 6.5, 1 / 120), np.arange(49.5, 50.0, 1 / 120))
+    north = plane_grid(np.arange(5.5, 6.5, 1 / 80), np.arange(50.0, 50.5, 1 / 120))
+    converter = make_converter(
+        monkeypatch,
+        [south, north],
+        cell,
+        chunk_level=8,
+        level=12,
+        buffer=1000,
+        resampler="grid-bilinear",
+    )
+    actual, outlon, outlat = converted_cells(converter, cell, 8, 12)
+    assert ((outlat > 50.0 - 1 / 120) & (outlat < 50.0)).any()
+    np.testing.assert_allclose(actual, plane(outlon, outlat), atol=1e-6)
+
+
+@needs_grid_bilinear
+def test_grid_bilinear_nan_and_outside(monkeypatch):
+    # cells outside the grid, or next to NaN nodes, are written as the fill value
+    cell = healpix_geo.nested.lonlat_to_healpix(2.0, 45.0, 8, ellipsoid="WGS84")[0]
+    lon = np.arange(1.5, 2.0, 1 / 120)  # covers only the west of the cell
+    lat = np.arange(44.5, 45.5, 1 / 120)
+    ds = plane_grid(lon, lat)
+    values = plane(lon[None, :], lat[:, None])
+    values[lat > 45.0, :] = np.nan
+    ds["height"] = (("row", "column"), values)
+    converter = make_converter(
+        monkeypatch,
+        [ds],
+        cell,
+        chunk_level=8,
+        level=12,
+        buffer=1000,
+        resampler="grid-bilinear",
+    )
+    actual, outlon, outlat = converted_cells(converter, cell, 8, 12)
+    inside = (outlon < lon[-1]) & (outlat < 45.0 - 1 / 120)
+    outside = (outlon > lon[-1]) | (outlat > 45.0 + 1 / 120)
+    assert inside.any() and outside.any()
+    np.testing.assert_allclose(actual[inside], plane(outlon, outlat)[inside], atol=1e-6)
+    assert np.isnan(actual[outside]).all()
+
+
+def test_grid_bilinear_needs_dense_chunks():
+    grid = {"indexing_scheme": "nested", "ellipsoid": {"name": "wgs84"}}
+    with pytest.raises(ValueError, match="needs dense chunks"):
+        ConvertSettings.from_dict(
+            {
+                "group_settings": {
+                    "dem": {
+                        "healpix": {**grid, "refinement_level": 12},
+                        "chunk": {
+                            "method": "healpix_cell_sparse",
+                            "healpix": {**grid, "refinement_level": 8},
+                            "chunk_size": 4**4,
+                        },
+                        "resampler": {"name": "grid-bilinear"},
+                    }
+                }
+            }
+        )

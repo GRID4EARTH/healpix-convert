@@ -94,21 +94,30 @@ an `ellipsoid` in both the output and the chunk grids (`healpix`), e.g.,
 `name` selects the resampling method of
 [healpix-resample](https://grid4earth.eu/healpix-resample/):
 
-| `name`         | healpix-resample class | Method                                    |
-| -------------- | ---------------------- | ----------------------------------------- |
-| `"nearest"`    | `NearestResampler`     | Nearest neighbor (k = 1)                  |
-| `"bilinear"`   | `BilinearResampler`    | Bilinear interpolation (k = 4)            |
-| `"k-nearest"`  | `KNeighborsResampler`  | k-nearest neighbors interpolation         |
-| `"psf"`        | `PSFResampler`         | Point spread function (PSF) interpolation |
-| `"cell-point"` | `CellPointResampler`   | Cell points (refinement level 29 only)    |
+| `name`            | healpix-resample class  | Method                                                   |
+| ----------------- | ----------------------- | -------------------------------------------------------- |
+| `"nearest"`       | `NearestResampler`      | Nearest neighbor (k = 1)                                 |
+| `"bilinear"`      | `BilinearResampler`     | Bilinear interpolation (k = 4)                           |
+| `"grid-bilinear"` | `GridBilinearResampler` | Bilinear interpolation of a lon/lat grid at cell centres |
+| `"k-nearest"`     | `KNeighborsResampler`   | k-nearest neighbors interpolation                        |
+| `"psf"`           | `PSFResampler`          | Point spread function (PSF) interpolation                |
+| `"cell-point"`    | `CellPointResampler`    | Cell points (refinement level 29 only)                   |
 
 `init_params` are passed to the constructor of the resampler class and
 `resample_params` to its `resample()` method. Each value of `resample_params`
 is either used for all the data variables of the group, or given per variable
 as a dictionary keyed by variable name.
 
-With the `"bilinear"` and `"psf"` methods, the resampled variables are written
-as `float64`. The other methods keep the data type of the input variables. The
+`"grid-bilinear"` is for input groups with rectilinear (1-D) longitude and
+latitude coordinates, converted by dense chunks (`healpix_cell_dense`). Each
+cell is interpolated from the 4 grid nodes around its centre, so the result is
+exact for a field linear in longitude and latitude. Input datasets with their
+own longitude axes, one above the other (for example tiles of different
+longitude spacing), are interpolated across the gap between them. It needs a
+healpix-resample version that provides `GridBilinearResampler`.
+
+With the `"bilinear"`, `"grid-bilinear"` and `"psf"` methods, the resampled
+variables are written as `float64`. The other methods keep the data type of the input variables. The
 `output_dtype` group setting (below) chooses another floating-point data type.
 
 ### Other group settings
