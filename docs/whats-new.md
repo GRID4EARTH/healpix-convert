@@ -94,8 +94,9 @@
   processes use the device at once, for the resamplers and the lon/lat
   computation alike ({pull}`100`).
 - New `"dem-glo30"` settings and example notebook for the Copernicus DEM
-  GLO-30: bilinear resampling to level 18 in float32, sharded (one shard per level-6 cell,
-  inner chunks of one level-8 cell), a pyramid of block means down to level 8,
+  GLO-30: bilinear interpolation of the grid nodes (`"grid-bilinear"`) to
+  level 18 in float32, sharded (one shard per level-6 cell, inner chunks of
+  one level-8 cell), a pyramid of block means down to level 8,
   and the licence of the data in the output STAC item. The notebook reads the
   heights from Earth Data Hub or from the CDSE COG tiles (`SOURCE`). Based on
   the GLO-30 notebook by Pablo Richard.
