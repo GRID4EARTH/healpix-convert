@@ -108,6 +108,18 @@ class BilinearResamplerSettings(BaseResamplerSettings):
     name: Literal["bilinear"] = "bilinear"
 
 
+class GridBilinearResamplerSettings(BaseResamplerSettings):
+    """Settings for resampling a regular longitude/latitude grid onto HEALPix by
+    bilinear interpolation of the 4 grid nodes around each cell centre.
+
+    Only for groups with rectilinear (1-D) longitude/latitude coordinates,
+    converted by dense chunks. Needs a healpix-resample version that provides
+    ``GridBilinearResampler``.
+    """
+
+    name: Literal["grid-bilinear"] = "grid-bilinear"
+
+
 class PSFResamplerSettings(BaseResamplerSettings):
     """Settings for resampling data onto HEALPix using PSF interpolation."""
 
@@ -126,6 +138,7 @@ ResamplerSettings: TypeAlias = (
     KNearestNeighborsResamplerSettings
     | NearestResamplerSettings
     | BilinearResamplerSettings
+    | GridBilinearResamplerSettings
     | PSFResamplerSettings
     | CellPointResamplerSettings
 )
@@ -510,6 +523,18 @@ class HealpixGroupSettings(BaseModel):
             raise ValueError(
                 "HEALPix refinement level must be equal to 29 when the 'cell-point' resampler "
                 "is used."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_grid_bilinear_resampler_chunk(self) -> HealpixGroupSettings:
+        if self.resampler.name == "grid-bilinear" and not isinstance(
+            self.chunk, HealpixDenseChunkSettings
+        ):
+            raise ValueError(
+                "the 'grid-bilinear' resampler needs dense chunks "
+                "(chunk method 'healpix_cell_dense')"
             )
 
         return self
