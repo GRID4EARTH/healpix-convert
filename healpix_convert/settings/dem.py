@@ -2,9 +2,12 @@
 Copernicus DEM GLO-30 default conversion settings.
 
 Copernicus DEM GLO-30 (COP-DEM_GLO-30-DGED) surface heights on their native
-1 arc-second lon/lat grid, projected to HEALPix level 18 (~25 m/pixel) using
-bilinear resampling, with a pyramid of block means down to level 8 (~25 km)
-so that a viewer can show the whole area before zooming in.
+1 arc-second lon/lat grid, projected to HEALPix level 18 (~25 m/pixel) by
+bilinear interpolation of the grid nodes at the cell centres, with a pyramid
+of block means down to level 8 (~25 km) so that a viewer can show the whole
+area before zooming in. Level 18 holds the height at the cell centre (the input
+heights are values at the grid nodes), the coarser levels the mean height of
+their cells.
 
 Input group layout (one area of interest staged from the source dataset, see
 the example notebook):
@@ -101,7 +104,7 @@ DEM_GLO30_CONVERT_SETTINGS: dict = {
         },
     },
     "group_settings": {
-        # ── DSM, 1 arc-second input – bilinear resampling at level 18 (~25 m) ─
+        # ── DSM, 1 arc-second input – bilinear interpolation at level 18 (~25 m)
         "dem/glo30": {
             "healpix": _HEALPIX_L18_WGS84,
             "chunk": {
@@ -109,19 +112,13 @@ DEM_GLO30_CONVERT_SETTINGS: dict = {
                 "healpix": _HEALPIX_L6_SHARDS,
                 "chunk_buffer_width": 300.0,  # metres: a few input pixels
             },
-            "resampler": {
-                "name": "bilinear",
-                # ring_weight 2 instead of 3: the same cells and values, with
-                # about 30% less memory. batch_size (healpix-resample >=
-                # 2026.10.2) bounds the memory of the neighbour search: a
-                # level-6 shard (about 32 million input points) peaks near
-                # 15 GiB instead of more than 115 GiB
-                "init_params": {
-                    "threshold": 0.05,
-                    "ring_weight": 2,
-                    "batch_size": 2_000_000,
-                },
-            },
+            # each cell from the 4 grid nodes around its centre: exact on a
+            # plane, while the inverse-distance mean of "bilinear" is off by
+            # about 3 m rms times the slope; a level-8 cell takes 0.3 s and
+            # under 1 GiB instead of 7 s and 6.5 GiB. Cells with less than
+            # half of the corner weight on valid nodes are NaN (min_weight,
+            # default 0.5)
+            "resampler": {"name": "grid-bilinear"},
             # the source heights are float32: float64 would add no precision
             "output_dtype": "float32",
             "codecs": _SHARDED_ZSTD_CODECS,
