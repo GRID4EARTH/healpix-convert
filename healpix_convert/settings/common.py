@@ -36,6 +36,7 @@ from healpix_convert.settings.conventions import (
     DGGSConventionSelector,
     MultiscalesConventionSelector,
 )
+from healpix_convert.settings.dem import DEM_GLO30_CONVERT_SETTINGS
 from healpix_convert.settings.era5 import ERA5_CONVERT_SETTINGS
 from healpix_convert.settings.stac import STACSettings
 
@@ -1006,6 +1007,8 @@ def get_settings(name: str) -> ConvertSettings:
         return ConvertSettings.model_validate(CAMS_CONVERT_SETTINGS)
     elif name == "climatedt-sfc":
         return ConvertSettings.model_validate(CDT_SFC_CONVERT_SETTINGS)
+    elif name == "dem-glo30":
+        return ConvertSettings.model_validate(DEM_GLO30_CONVERT_SETTINGS)
 
     else:
         raise ValueError(f"settings not found for {name!r}")
