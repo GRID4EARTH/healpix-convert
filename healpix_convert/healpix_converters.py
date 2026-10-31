@@ -625,6 +625,20 @@ def _grid_resampler_axes(ds_input_points: xr.Dataset) -> tuple[list, list]:
             "the 'grid-bilinear' resampler needs input data on a rectilinear "
             "longitude/latitude grid (1-D coordinates)"
         )
+    # the input datasets are bands of rows, one above the other: two inputs at
+    # the same latitudes (e.g. tiles side by side) cannot be interpolated
+    # across their seam
+    spans = sorted((float(np.min(lat)), float(np.max(lat))) for _, lat in axes)
+    north = -np.inf
+    for south, top in spans:
+        if south <= north:
+            raise ValueError(
+                "the 'grid-bilinear' resampler needs input datasets that do not "
+                "overlap in latitude (one per band of rows), but two inputs of "
+                f"this chunk cover the same latitudes ({south} to {min(top, north)}): "
+                "mosaic the inputs that lie side by side into one dataset"
+            )
+        north = max(north, top)
     return [lon for lon, _ in axes], [lat for _, lat in axes]
 
 
@@ -818,19 +832,31 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
 
         prepared = []
         axes = []
+        grid_resampler = self.settings.resampler.name in _GRID_RESAMPLERS
         for ds in self.datasets:
             x, y = ds[lon_name], ds[lat_name]
             if x.ndim != 1 or y.ndim != 1 or x.dims == y.dims:
                 raise ValueError(
                     "rectilinear longitude/latitude must have distinct 1D dimensions"
                 )
+            # The grid resamplers need the 2 nodes on each side of every cell
+            # centre; near the chunk edges they can lie outside the buffered
+            # window, so the window grows by one grid step of this input.
+            step_x = step_y = 0.0
+            if grid_resampler:
+                step_x = np.abs((np.diff(x.values) + 180.0) % 360.0 - 180.0).max(
+                    initial=0.0
+                )
+                step_y = np.abs(np.diff(y.values)).max(initial=0.0)
             xvalues = (x.values - centre_lon + 180.0) % 360.0 - 180.0
             xidx = np.flatnonzero(
                 np.ones(x.size, dtype=bool)
                 if polar
-                else (xvalues >= west) & (xvalues <= east)
+                else (xvalues >= west - step_x) & (xvalues <= east + step_x)
             )
-            yidx = np.flatnonzero((y.values >= south) & (y.values <= north))
+            yidx = np.flatnonzero(
+                (y.values >= south - step_y) & (y.values <= north + step_y)
+            )
             if not xidx.size or not yidx.size:
                 continue
             # Keep the data lazy until after spatial selection. Stack broadcasts

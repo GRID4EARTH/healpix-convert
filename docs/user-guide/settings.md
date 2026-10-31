@@ -111,9 +111,14 @@ as a dictionary keyed by variable name.
 `"grid-bilinear"` is for input groups with rectilinear (1-D) longitude and
 latitude coordinates, converted by dense chunks (`healpix_cell_dense`). Each
 cell is interpolated from the 4 grid nodes around its centre, so the result is
-exact for a field linear in longitude and latitude. Input datasets with their
-own longitude axes, one above the other (for example tiles of different
-longitude spacing), are interpolated across the gap between them. It needs a
+exact for a field linear in longitude and latitude. The input window of each
+chunk is widened by one grid step, whatever `chunk_buffer_width`. Input
+datasets with their own longitude axes, one above the other (for example tiles
+of different longitude spacing), are interpolated across the gap between them
+when it is about one row; inputs that lie side by side at the same latitudes
+must be mosaicked into one dataset first. `init_params` take `min_weight`, the
+share of a cell's corner weight that must be on valid (non-NaN) nodes: 0.5 by
+default, `{"min_weight": 1.0}` to require all 4 nodes. It needs a
 healpix-resample version that provides `GridBilinearResampler`.
 
 With the `"bilinear"`, `"grid-bilinear"` and `"psf"` methods, the resampled
