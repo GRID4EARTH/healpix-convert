@@ -56,7 +56,10 @@ def make_converter(
     )
     monkeypatch.setattr(
         "healpix_convert.core.utils.compute_output_chunk_info",
-        lambda *args: (np.array([cell], dtype=np.uint64), np.array([True])),
+        lambda *args: (
+            np.atleast_1d(np.asarray(cell, dtype=np.uint64)),
+            np.ones(np.size(cell), dtype=bool),
+        ),
     )
     return DenseChunkConverter(
         path, cache=cache, settings=settings, output_store=zarr.storage.MemoryStore()
@@ -280,6 +283,81 @@ def test_grid_bilinear_nan_and_outside(monkeypatch):
     assert inside.any() and outside.any()
     np.testing.assert_allclose(actual[inside], plane(outlon, outlat)[inside], atol=1e-6)
     assert np.isnan(actual[outside]).all()
+
+
+@needs_grid_bilinear
+def test_grid_bilinear_window_does_not_need_a_buffer(monkeypatch):
+    # a 0.25 deg grid with level-6 chunks and no buffer (as the era5 and cams
+    # settings): the nodes beyond the cells near the chunk edges are outside
+    # the chunk, the window still has to include them
+    cell = healpix_geo.nested.lonlat_to_healpix(10.0, 45.0, 6, ellipsoid="WGS84")[0]
+    lon = np.arange(0.0, 20.0, 0.25)
+    lat = np.arange(55.0, 35.0, -0.25)
+    converter = make_converter(
+        monkeypatch,
+        [plane_grid(lon, lat)],
+        cell,
+        chunk_level=6,
+        level=9,
+        buffer=0.0,
+        resampler="grid-bilinear",
+    )
+    actual, outlon, outlat = converted_cells(converter, cell, 6, 9)
+    np.testing.assert_allclose(actual, plane(outlon, outlat), atol=1e-6)
+
+
+@needs_grid_bilinear
+def test_grid_bilinear_chunks_match_one_resampler_call(monkeypatch):
+    # two adjacent chunks give the values of one call on the whole grid: no seam
+    parent = healpix_geo.nested.lonlat_to_healpix(6.0, 45.0, 7, ellipsoid="WGS84")[0]
+    cells = healpix_geo.nested.zoom_to(parent, 7, 8).ravel()[:2]
+    lon = np.arange(5.0, 7.0, 1 / 60)
+    lat = np.arange(46.0, 44.0, -1 / 60)
+    ds = plane_grid(lon, lat)
+    values = np.sin(lon[None, :] * 30.0) * np.cos(lat[:, None] * 20.0) * 100.0
+    ds["height"] = (("row", "column"), values)
+    converter = make_converter(
+        monkeypatch,
+        [ds],
+        cells,
+        chunk_level=8,
+        level=12,
+        buffer=0.0,
+        resampler="grid-bilinear",
+    )
+    converter.convert(0)
+    converter.convert(1)
+    cell_ids = converter.output_arrays["cell_ids"][:]
+    actual = converter.output_arrays["height"][:]
+    expected = (
+        healpix_resample.GridBilinearResampler(
+            lon, lat, 12, out_cell_ids=cell_ids.astype(np.int64)
+        )
+        .resample(values.astype("f").ravel())
+        .cell_data
+    )
+    # the query writes the longitudes as (x + 180) % 360 - 180: rounding only
+    np.testing.assert_allclose(actual, expected, rtol=0, atol=1e-9)
+
+
+@needs_grid_bilinear
+def test_grid_bilinear_inputs_side_by_side(monkeypatch):
+    # two inputs at the same latitudes, west and east of the chunk centre
+    cell = healpix_geo.nested.lonlat_to_healpix(6.0, 45.0, 8, ellipsoid="WGS84")[0]
+    lat = np.arange(44.5, 45.5, 1 / 120)
+    west = plane_grid(np.arange(5.5, 6.0, 1 / 120), lat)
+    east = plane_grid(np.arange(6.0, 6.5, 1 / 120), lat)
+    converter = make_converter(
+        monkeypatch,
+        [west, east],
+        cell,
+        chunk_level=8,
+        level=12,
+        buffer=1000,
+        resampler="grid-bilinear",
+    )
+    with pytest.raises(ValueError, match="do not overlap in latitude"):
+        converter.convert(0)
 
 
 def test_grid_bilinear_needs_dense_chunks():
