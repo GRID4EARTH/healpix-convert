@@ -4,6 +4,7 @@ from healpix_convert.cache import create_staging_cache
 from healpix_convert.convert import (
     convert_group_to_healpix,
     create_healpix_dataset,
+    finalize_healpix_dataset,
     generate_pyramids,
     prepare_healpix_dataset,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "convert_group_to_healpix",
     "create_healpix_dataset",
     "create_staging_cache",
+    "finalize_healpix_dataset",
     "generate_pyramids",
     "get_settings",
     "prepare_healpix_dataset",

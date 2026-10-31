@@ -125,6 +125,46 @@
       "title": "CodecSettings",
       "type": "object"
     },
+    "ConsolidateMetadataSettings": {
+      "additionalProperties": false,
+      "description": "Settings for the consolidated Zarr metadata written in the output dataset.\n\nConsolidating the metadata of a Zarr group copies the metadata of all its\ndescendants into its own metadata document, so that a reader opens the whole\nhierarchy below it with a single read instead of one read per node. It is\nwritten by the last stage of the conversion (see\n:py:func:`~healpix_convert.finalize_healpix_dataset`), since such a copy is\nstale as soon as a node is written next to it.\n\nThe settings below select the groups it is written for: the root group (the\nwhole output dataset) and, by default, every group a reader is expected to\nopen on its own, i.e., a group converted to HEALPix, a multiscale group and\na derived level group of a pyramid. The consolidated metadata of the root\ngroup may describe much more than what such a reader needs.",
+      "properties": {
+        "root_group": {
+          "default": true,
+          "description": "If True (the default), consolidate all the metadata of the output\ndataset in its root group.",
+          "title": "Root Group",
+          "type": "boolean"
+        },
+        "healpix_groups": {
+          "default": true,
+          "description": "If True (the default), consolidate the metadata of each group converted\nto HEALPix.",
+          "title": "Healpix Groups",
+          "type": "boolean"
+        },
+        "multiscale_groups": {
+          "default": true,
+          "description": "If True (the default), consolidate the metadata of each multiscale\ngroup, i.e., of all the levels it holds.",
+          "title": "Multiscale Groups",
+          "type": "boolean"
+        },
+        "derived_level_groups": {
+          "default": true,
+          "description": "If True (the default), consolidate the metadata of each group holding a\nderived level of a pyramid.",
+          "title": "Derived Level Groups",
+          "type": "boolean"
+        },
+        "groups": {
+          "description": "Paths of other groups of the output dataset to consolidate the metadata\nof (none by default).\n\nThe paths are those of the output dataset, not of the input dataset(s); the\npath of the root group is ``\"/\"``. A group that the output dataset does not\nhold is reported when the staging cache is created and then skipped.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Groups",
+          "type": "array"
+        }
+      },
+      "title": "ConsolidateMetadataSettings",
+      "type": "object"
+    },
     "ConventionConfiguration": {
       "additionalProperties": false,
       "description": "Base class for the configuration (options) of a convention.\n\nConventions that define no option are configured by this class, which\naccepts none.",
@@ -400,6 +440,19 @@
           "default": null,
           "description": "Zarr codecs of the group's resampled data variables (other arrays use\nzarr's defaults).\n\nEach codec is looked up by name in zarr's codec registry, so the package\nthat provides it must be installed where the settings are created, e.g.\n``healpix-compress`` for ``hcc-sentinel2-pyramid``.",
           "title": "Codecs"
+        },
+        "output_dtype": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Data type of the group's resampled data variables, e.g.\n``\"float16\"`` or ``\"float32\"``.\n\nIf None, the variables are written as ``float64`` with the ``\"bilinear\"``\nand ``\"psf\"`` resamplers, and with the data type of the input variables\nwith the other resamplers (note: data type is coerced after resampling,\njust before writing data). The derived levels of a pyramid have the data\ntype of the converted level they are aggregated from.",
+          "title": "Output Dtype"
         }
       },
       "required": [
@@ -497,7 +550,7 @@
       "description": "Settings for the metadata written in the output Zarr dataset.",
       "properties": {
         "zarr_conventions": {
-          "description": "Conventions followed by the output Zarr dataset.\n\nEach item is either a convention name (e.g., ``\"dggs\"``) or a mapping with\na ``name`` and, optionally, a ``version`` and a ``configuration``\n(see :py:obj:`ConventionSelector`).",
+          "description": "Conventions followed by the output Zarr dataset.\n\nEach item is either a convention name (e.g., ``\"dggs\"``) or a mapping with\na ``name`` and, optionally, a ``version`` and a ``configuration``\n(see :py:obj:`~healpix_convert.settings.conventions.ConventionSelector`).",
           "items": {
             "discriminator": {
               "mapping": {
@@ -525,6 +578,10 @@
         "stac": {
           "$ref": "#/$defs/STACSettings",
           "description": "Settings for the STAC metadata written in the root group of the output\ndataset (see :py:class:`~healpix_convert.settings.stac.STACSettings`)."
+        },
+        "consolidate": {
+          "$ref": "#/$defs/ConsolidateMetadataSettings",
+          "description": "Settings for the consolidated Zarr metadata of the output dataset, i.e.,\nwhich of its groups it is written for (see\n:py:class:`ConsolidateMetadataSettings`)."
         }
       },
       "title": "MetadataSettings",
@@ -543,10 +600,21 @@
           "type": "array"
         },
         "add_healpix_positioning": {
-          "default": true,
-          "description": "If True, add HEALPix grid settings as absolute positioning\ninformation in each multiscale layout entry.",
+          "default": false,
+          "description": "If True, add HEALPix grid settings as absolute positioning\ninformation in each multiscale layout entry.\n\nFalse by default: it repeats the whole grid of a level in every entry of\nthat level, which one entry per array (see :py:attr:`asset_type`) makes\nparticularly verbose. The HEALPix grid info of a level can be read from the\nattributes of its group (easily accessible if metadata is consolidated for\nthe multiscale group), and the refinement level corresponds to the name of\na level group.",
           "title": "Add Healpix Positioning",
           "type": "boolean"
+        },
+        "asset_type": {
+          "default": "auto",
+          "description": "What a layout item of the multiscales metadata refers to:\n\n- \"group\": one item per level, its asset the path of the level group. A\n  pyramid whose derived levels cannot be described that way is rejected,\n  i.e. one whose derived level holds variables aggregated from different\n  native levels.\n- \"array\": one item per array of a level, its asset the path of the array\n  (e.g. \"7/band1\"), which describes what every array is aggregated\n  from.\n- \"auto\" (default): \"group\" when every level can be described by a single\n  item, \"array\" otherwise.",
+          "enum": [
+            "group",
+            "array",
+            "auto"
+          ],
+          "title": "Asset Type",
+          "type": "string"
         },
         "pyramid_groups": {
           "additionalProperties": {
@@ -694,15 +762,32 @@
         },
         "reduce": {
           "default": "mean",
-          "description": "How the values of the children cells are aggregated.\n\nMissing (NaN) values are skipped. The mean does not suit categorical data\n(masks, classifications): aggregate those with, e.g., \"max\", which keeps a\nvalue that the data actually has.",
+          "description": "How the values of the children cells are aggregated.\n\nMissing (NaN) values are skipped. The mean does not suit categorical data\n(masks, classifications): aggregate those with \"mode\", the most frequent\nvalue of the cells of a block (the smallest of them in case of a tie).",
           "enum": [
             "mean",
             "min",
             "max",
-            "sum"
+            "sum",
+            "mode"
           ],
           "title": "Reduce",
           "type": "string"
+        },
+        "codecs": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CodecSettings"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Zarr codecs of the aggregated data variables of every derived level\n(Zarr's defaults if None), e.g. a serializer that codes the cells of one\nHEALPix cell per chunk, which the chunks of the derived levels are.\n\nAs for the ``codecs`` group setting, each codec is looked up by name in\nZarr's codec registry where the settings are created. The converted levels\nkeep the codecs they were written with.",
+          "title": "Codecs"
         },
         "coarsen_from": {
           "default": "nearest",

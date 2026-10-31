@@ -35,10 +35,14 @@ generated from the model, e.g., to get completion and validation in an editor.
 - `exclude_groups`: the paths of the input groups left out of the output
   dataset.
 - `multiscale_settings`: the input groups (`groups`) converted as multiscale
-  groups. Their children groups are converted at different refinement levels
-  and written as `<group>/<refinement level>` in the output, with metadata
-  following the Multiscales Zarr convention. `add_healpix_positioning`
-  (default `True`) adds the HEALPix grid of each level to that metadata.
+  groups. Their children groups are converted at different refinement levels and
+  written as `<group>/<refinement level>` in the output, with metadata following
+  the Multiscales Zarr convention. `add_healpix_positioning` (default `False`)
+  adds the HEALPix grid of each level to that metadata, which repeats it in
+  every item of that level. `asset_type` says what a layout item of that
+  metadata refers to: a level group (`"group"`), one array of a level
+  (`"array"`), or the level groups where they describe every level and the
+  arrays otherwise (`"auto"`, the default; see {doc}`pyramids`).
   `pyramid_groups` gives the pyramid settings of (some of) those groups, see
   below.
 - `metadata`: the conventions followed by the output dataset and the STAC
@@ -104,7 +108,8 @@ is either used for all the data variables of the group, or given per variable
 as a dictionary keyed by variable name.
 
 With the `"bilinear"` and `"psf"` methods, the resampled variables are written
-as `float64`. The other methods keep the data type of the input variables.
+as `float64`. The other methods keep the data type of the input variables. The
+`output_dtype` group setting (below) chooses another floating-point data type.
 
 ### Other group settings
 
@@ -116,6 +121,10 @@ as `float64`. The other methods keep the data type of the input variables.
   created.
 - `healpix_coordinate_codecs`: the Zarr codecs of the cell ids coordinate
   (Zarr's defaults if not set).
+- `output_dtype`: the floating-point data type of the resampled data variables, e.g.
+  `"float16"` or `"float32"` (see above if not set). The results of the
+  resampling are cast when they are written, and the derived levels of a
+  pyramid have the data type of the converted level.
 - `extra_dimensions`: how several input datasets are aligned along a
   non-spatial dimension (see below).
 

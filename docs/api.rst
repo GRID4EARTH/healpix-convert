@@ -28,10 +28,15 @@ data in parallel jobs (see :doc:`tutorials/quickstart`).
    healpix_convert.prepare_healpix_dataset
    healpix_convert.convert_group_to_healpix
    healpix_convert.generate_pyramids
+   healpix_convert.finalize_healpix_dataset
 
-:py:func:`~healpix_convert.generate_pyramids` is the last stage, run after the
-data has been converted; it does nothing if no group has pyramid settings (see
+:py:func:`~healpix_convert.generate_pyramids` is run after the data has been
+converted; it does nothing if no group has pyramid settings (see
 :doc:`user-guide/pyramids`).
+
+:py:func:`~healpix_convert.finalize_healpix_dataset` is the last stage, run
+once every group of the output dataset has been written: it consolidates the
+Zarr metadata of the output dataset (see :doc:`user-guide/metadata`).
 
 Settings
 --------

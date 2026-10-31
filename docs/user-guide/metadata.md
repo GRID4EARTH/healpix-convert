@@ -61,10 +61,11 @@ A multiscale group (see `multiscale_settings` in {doc}`settings`) lists the
 [Multiscales Zarr convention](https://github.com/zarr-conventions/multiscales)
 and the DGGS Zarr convention in its `zarr_conventions` attribute. Its
 `multiscales` attribute lists its groups, one per refinement level (`layout`),
-with their HEALPix grid if `add_healpix_positioning` is set. As the convention
-asks, the `asset` of a layout item is a path relative to the group holding the
-metadata, e.g. `"7"` for a converted level and `"pyramids/4"` for a level
-derived in a child group (see {doc}`pyramids`).
+with their HEALPix grid if `add_healpix_positioning` is set (it is not by
+default: the attributes of a level group describe its own grid). As the
+convention asks, the `asset` of a layout item is a path relative to the group
+holding the metadata, e.g. `"7"` for a converted level and `"pyramids/4"` for a
+level derived in a child group (see {doc}`pyramids`).
 
 The layout item of a derived level also names the converted level it is
 aggregated from (`derived_from`, a path like `asset`), the transformation from
@@ -75,11 +76,19 @@ level of a pyramid uses the same method):
 ```json
 {
   "layout": [
-    {"asset": "7"},
-    {"asset": "6", "derived_from": "7", "transform": {"scale": [2.0]},
-     "resampling_method": "mean"},
-    {"asset": "4", "derived_from": "7", "transform": {"scale": [8.0]},
-     "resampling_method": "mean"}
+    { "asset": "7" },
+    {
+      "asset": "6",
+      "derived_from": "7",
+      "transform": { "scale": [2.0] },
+      "resampling_method": "mean"
+    },
+    {
+      "asset": "4",
+      "derived_from": "7",
+      "transform": { "scale": [8.0] },
+      "resampling_method": "mean"
+    }
   ],
   "resampling_method": "mean"
 }
@@ -212,4 +221,53 @@ are recorded.
 The output item is not validated against the extensions it lists: keeping the
 properties and the extensions consistent with each other is left to the data
 provider.
+:::
+
+## Consolidated metadata
+
+Consolidating the metadata of a Zarr group copies the metadata of all its
+descendants into its own metadata document, so that a reader opens the whole
+hierarchy below it with a single read instead of one read per node (a lot
+faster on an object store).
+
+{py:func}`~healpix_convert.finalize_healpix_dataset`, the last stage of the
+conversion, writes it, and no other stage does: such a copy is stale as soon as
+a group or an array is written next to it. Converting the data does not make it
+stale, though, since it only writes array chunks.
+
+The `metadata.consolidate` settings select the groups it is written for:
+
+```python
+"metadata": {
+    "consolidate": {
+        "root_group": True,
+        "healpix_groups": True,
+        "multiscale_groups": True,
+        "derived_level_groups": True,
+        "groups": ["provenance"],
+    }
+}
+```
+
+| Setting                | Consolidates the metadata of                        |
+| ---------------------- | --------------------------------------------------- |
+| `root_group`           | the root group, i.e. the whole output dataset       |
+| `healpix_groups`       | each group converted to HEALPix                     |
+| `multiscale_groups`    | each multiscale group, i.e. all the levels it holds |
+| `derived_level_groups` | each group holding a derived level of a pyramid     |
+| `groups`               | the given paths, in the output dataset              |
+
+The four flags are set by default, so every group a reader is expected to open
+on its own is consolidated: the consolidated metadata of the root group can
+describe much more than what such a reader needs. `groups` is empty by default,
+and its paths are those of the output dataset, not of the input dataset(s), the
+root group being `"/"`. A path that names no group of the output dataset is
+reported with a warning when the staging cache is created (its structure is
+known there, before anything is converted) and skipped when the metadata is
+consolidated.
+
+:::{note}
+Consolidated metadata is not part of the Zarr v3 specification (it is an
+extension that Zarr-Python writes and reads). A reader that ignores it opens
+the output dataset all the same, group by group.
 :::

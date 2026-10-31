@@ -1,9 +1,9 @@
 # HEALPix pyramids
 
-{py:func}`~healpix_convert.generate_pyramids` is the last stage of a
-conversion: it aggregates the converted data onto the coarser HEALPix
-refinement levels given by the pyramid settings of each multiscale group, and
-writes the arrays of their groups.
+{py:func}`~healpix_convert.generate_pyramids` is the stage of a conversion
+that aggregates the converted data onto the coarser HEALPix refinement levels
+given by the pyramid settings of each multiscale group, and writes the arrays
+of their groups. Only finalizing the output dataset comes after it.
 
 Those groups, one per derived level and named after it, and the
 `multiscales` metadata describing the whole pyramid, are part of the structure
@@ -42,6 +42,7 @@ for group in ("measurements/fine", "measurements/coarse"):
     )
 
 hc.generate_pyramids(cache, settings, "converted.zarr")
+hc.finalize_healpix_dataset(cache, settings, "converted.zarr")
 ```
 
 {py:func}`~healpix_convert.create_healpix_dataset` does all of that in one
@@ -92,7 +93,9 @@ cells:
 Missing (NaN) values are skipped. The `reduce` pyramid setting selects another
 reduction (`"min"`, `"max"`, `"sum"`): these are the reductions that give, for
 a whole block of cells, the same result as aggregating all its cells at once.
-The mean does not suit categorical data such as masks or classifications.
+The mean does not suit categorical data such as masks or classifications:
+aggregate those with `"mode"`, the most frequent value of the cells of a block
+(the smallest of them in case of a tie).
 
 The data type and the fill value of each variable are preserved, an integer
 variable being rounded instead of truncated.
@@ -133,6 +136,33 @@ where $l$ is the refinement level of the derived level, $l_n$ and $l_{n_c}$
 those of the associated native level and of its chunk cells, and
 $l_\text{cov}$ the coarsest level entirely covered by converted data.
 
+## Codecs of the derived levels
+
+The aggregated variables are written with Zarr's default codecs, unless the
+`codecs` pyramid setting gives a codec pipeline, applied to the data variables
+of every derived level (not to their cell ids). It takes the same form as the
+`codecs` group setting:
+
+```python
+"pyramid_groups": {
+    "measurements/reflectance": {
+        "derived_levels": [18, 16, 15, 14, 13, 12],
+        "codecs": [
+            {
+                "name": "hcc-sentinel2-pyramid",
+                "configuration": {"quantification_value": 10000.0, "add_offset": -1000.0},
+            }
+        ],
+    },
+}
+```
+
+Since a chunk of a derived level holds the cells of one HEALPix cell, codecs
+that code one parent cell per chunk, like the Sentinel-2 serializers of
+`healpix-compress`, can encode them. The converted levels keep the codecs they
+were written with: the codecs of a lossy serializer are not reused implicitly,
+as they would code the aggregated values a second time.
+
 ## Groups converted at several levels
 
 The native levels of a multiscale group are kept as they are. Generating
@@ -152,6 +182,33 @@ conversion settings are validated: the cells are aggregated by position and the
 variables of a derived level are merged without reading any cell id, so the
 native levels must cover exactly the same cells for those variables to be
 aligned with each other.
+
+A layout item of the multiscales metadata describes one level, so it can only
+name one `derived_from` source: a derived level whose variables come from
+different native levels needs one item per array instead, so the whole group is
+then described array by array, the native levels included. For a group holding
+"a" at the level 3, "b" at the level 2 and a derived level 1 aggregating each of
+them from its own native level:
+
+```json
+"layout": [
+  { "asset": "3/a" },
+  { "asset": "2/b" },
+  { "asset": "1/a", "derived_from": "3/a", "transform": { "scale": [4.0] } },
+  { "asset": "1/b", "derived_from": "2/b", "transform": { "scale": [2.0] } }
+]
+```
+
+Each item then carries the transformation from the native level of that array
+alone, with the aggregation method like any other item. The level group of an
+array is the parent path of its asset (`1` for `1/a` above), the group that
+holds the cell ids coordinate the arrays of the level share.
+
+The `asset_type` multiscale setting chooses the style: `"auto"` (default)
+describes the level groups where that describes every level and switches the
+whole layout to the arrays otherwise, `"array"` always describes the arrays, and
+`"group"` always describes the level groups (raises an error when a derived
+level would aggregate its arrays from different native levels).
 
 ## Where the levels are written
 

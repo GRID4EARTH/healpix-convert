@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 import pytest
 import zarr.api.synchronous as zarr
 
-from healpix_convert.settings.conventions import MetadataSettings
+from healpix_convert.settings.common import MetadataSettings
 
 START = datetime(2024, 1, 1, tzinfo=UTC)
 END = datetime(2024, 1, 2, tzinfo=UTC)

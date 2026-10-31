@@ -9,8 +9,7 @@ from pydantic import ValidationError
 
 from healpix_convert import create_healpix_dataset
 from healpix_convert.core.stac import STAC_PROCESSING_SCHEMA_URL
-from healpix_convert.settings.common import ConvertSettings
-from healpix_convert.settings.conventions import MetadataSettings
+from healpix_convert.settings.common import ConvertSettings, MetadataSettings
 from healpix_convert.settings.stac import STACSettings
 
 PROJ_SCHEMA_URL = "https://stac-extensions.github.io/projection/v1.1.0/schema.json"

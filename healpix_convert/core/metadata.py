@@ -21,10 +21,8 @@ from healpix_convert.core.multiscales_conventions import (
     HealpixMultiscales,
     MultiscalesZarrConvention,
 )
-from healpix_convert.settings.conventions import (
-    CFConventionSelector,
-    MetadataSettings,
-)
+from healpix_convert.settings.common import MetadataSettings
+from healpix_convert.settings.conventions import CFConventionSelector
 
 if TYPE_CHECKING:
     import zarr

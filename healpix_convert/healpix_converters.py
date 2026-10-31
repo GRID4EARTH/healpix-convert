@@ -46,10 +46,10 @@ from healpix_convert.settings.common import (
     HealpixGroupSettings,
     HealpixSparseChunkSettings,
     HealpixUniformChunkSettings,
+    MetadataSettings,
     NoChunkSettings,
     broadcast_params,
 )
-from healpix_convert.settings.conventions import MetadataSettings
 
 log = structlog.get_logger()
 
@@ -163,9 +163,7 @@ def align_extra_dimensions(
             ]
         else:
             others = set().union(*(ds.dims for ds in datasets)) - {dim}
-            datasets = list(
-                xr.align(*datasets, join=dim_settings.join, exclude=others)
-            )
+            datasets = list(xr.align(*datasets, join=dim_settings.join, exclude=others))
 
     spatial = set(spatial_dims)
     dims = set().union(*(ds.dims for ds in datasets)) - spatial - set(extra_dimensions)
@@ -377,7 +375,9 @@ class HealpixGroupConverter(ABC):
                     shape = (self.cell_dim_size,)
                     chunks = (self.cell_dim_chunk_size,)
 
-                if self.settings.resampler.name in ["bilinear", "psf"]:
+                if self.settings.output_dtype is not None:
+                    dtype = np.dtype(self.settings.output_dtype)
+                elif self.settings.resampler.name in ["bilinear", "psf"]:
                     dtype = np.float64
                 else:
                     dtype = var.dtype
@@ -821,6 +821,8 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
           - maybe exclude input dataset with overlapping zone is empty
           - slice input dataset (in projected coordinates) using the bounding box of the
             overlapping zone.
+          - select the data points inside the overlapping zone, exclude input dataset
+            if none is found (e.g., overlapping zone is a sliver with no pixel center).
         - flatten (stack) input datasets and convert x/y coordinates to lat-lon.
 
         """
@@ -857,16 +859,27 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         # - convert to lat/lon (wgs84) if needed
         # - flatten spatial dimensions
         prepared_datasets = []
-        for ds, crs, poly in zip(self.datasets, self.spatial_info.crs, overlap_polys):
+        transforms = self.spatial_info.transform or [None] * len(self.datasets)
+        for ds, crs, poly, transform in zip(
+            self.datasets, self.spatial_info.crs, overlap_polys, transforms
+        ):
             if poly.is_empty:
                 continue
 
             xmin, ymin, xmax, ymax = shapely.bounds(poly)
 
+            # slice bounds follow the direction of the x/y coordinates
+            # (y is usually decreasing, i.e., north-up rasters)
+            xslice = slice(xmin, xmax)
+            yslice = slice(ymax, ymin)
+            if transform is not None:
+                if transform.a < 0:
+                    xslice = slice(xmax, xmin)
+                if transform.e > 0:
+                    yslice = slice(ymin, ymax)
+
             ds_clipped = (
-                ds
-                # TODO: check slice bounds for north vs. south hemisphere?
-                .sel(x=slice(xmin, xmax), y=slice(ymax, ymin))
+                ds.sel(x=xslice, y=yslice)
                 .compute()
                 .pipe(lambda ds: utils.assign_transform_coords(ds, crs, crs_wgs84))
                 # note: the Xarray stack operation below already broadcasts
@@ -882,6 +895,12 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
             y = ds_clipped.y.values
             points = shapely.points(x, y)
             in_poly = shapely.within(points, poly)
+
+            if not in_poly.any():
+                # no pixel centre in the overlapping zone, e.g., the (buffered)
+                # chunk polygon only grazes the dataset extent (pixel edges):
+                # no input data from this dataset
+                continue
 
             ds_clipped = ds_clipped.isel(points=in_poly)
 
@@ -1004,15 +1023,13 @@ class DenseChunkConverter(UniformChunkConverter):
             chunk_cell_ids=cell_ids,
             logger=log.bind(group=self.group_path, chunk_index=chunk_index),
         )
-        
+
         writes = []
         for name, cell_data in resampled.items():
             zarray = self.output_arrays[name]
             # cells without data (TODO: get the right fill_value and dtype)
             cell_data[np.isnan(cell_data)] = zarray.fill_value
-            writes.append(
-                (zarray, (..., chunk_slice), cell_data.astype(cell_data.dtype))
-            )
+            writes.append((zarray, (..., chunk_slice), cell_data.astype(zarray.dtype)))
 
         _write_chunk_arrays(writes)
 
@@ -1099,12 +1116,11 @@ class SparseChunkConverter(UniformChunkConverter):
             resample_params,
             logger=log.bind(group=self.group_path, chunk_index=chunk_index),
         )
-        
+
         writes = []
         for name, cell_data in resampled.items():
-            dtype = ds_input_points.variables[name].dtype
             zarray = self.output_arrays[name]
-            writes.append((zarray, (..., chunk_slice), cell_data.astype(dtype)))
+            writes.append((zarray, (..., chunk_slice), cell_data.astype(zarray.dtype)))
 
         _write_chunk_arrays(writes)
 
@@ -1270,7 +1286,7 @@ class NoChunkConverter(HealpixGroupConverter):
             if len(extra_dims) > 1:
                 cell_data = cell_data.reshape(tuple(extra_dim_sizes + [cell_ids.size]))
 
-            zarray[..., :] = cell_data.astype(cell_data.dtype)
+            zarray[..., :] = cell_data.astype(zarray.dtype)
 
 
 _CONVERTER_NAME_CLS: dict[str, type[HealpixGroupConverter]] = {

@@ -327,7 +327,7 @@ def test_pyramid_settings_chunk_method() -> None:
 def test_pyramid_settings_unsupported_reduce_method() -> None:
     with pytest.raises(ValidationError, match="reduce"):
         ConvertSettings.model_validate(
-            _multiscale_settings_dict({"derived_levels": [3], "reduce": "mode"})
+            _multiscale_settings_dict({"derived_levels": [3], "reduce": "median"})
         )
 
 

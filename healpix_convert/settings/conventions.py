@@ -34,11 +34,9 @@ from pydantic import (
     ConfigDict,
     Field,
     field_validator,
-    model_validator,
 )
 
 from healpix_convert.core.pydantic_compat import MISSING
-from healpix_convert.settings.stac import STACSettings
 
 #: Oldest version of the CF conventions this package knows how to write, and the
 #: one selected by default.
@@ -169,57 +167,3 @@ ConventionSelector: TypeAlias = Annotated[
     Field(discriminator="name"),
     BeforeValidator(_expand_shorthand),
 ]
-
-
-def _default_zarr_conventions() -> list[Any]:
-    return [
-        DGGSConventionSelector(),
-        MultiscalesConventionSelector(),
-        CFConventionSelector(),
-    ]
-
-
-class MetadataSettings(BaseModel):
-    """Settings for the metadata written in the output Zarr dataset."""
-
-    model_config = ConfigDict(
-        frozen=True, use_attribute_docstrings=True, extra="forbid"
-    )
-
-    zarr_conventions: list[ConventionSelector] = Field(
-        default_factory=_default_zarr_conventions
-    )
-    """Conventions followed by the output Zarr dataset.
-
-    Each item is either a convention name (e.g., ``"dggs"``) or a mapping with
-    a ``name`` and, optionally, a ``version`` and a ``configuration``
-    (see :py:obj:`ConventionSelector`).
-    """
-
-    stac: STACSettings = Field(default_factory=STACSettings)
-    """Settings for the STAC metadata written in the root group of the output
-    dataset (see :py:class:`~healpix_convert.settings.stac.STACSettings`).
-    """
-
-    @model_validator(mode="after")
-    def validate_unique_conventions(self) -> MetadataSettings:
-        names = [selector.name for selector in self.zarr_conventions]
-        duplicates = {name for name in names if names.count(name) > 1}
-        if duplicates:
-            raise ValueError(f"duplicate convention(s) {sorted(duplicates)}")
-
-        return self
-
-    def get(self, name: str) -> ConventionSelector | None:
-        """Return the selected convention with the given name, or None if that
-        convention is not selected.
-        """
-        for selector in self.zarr_conventions:
-            if selector.name == name.lower():
-                return selector
-
-        return None
-
-    def has(self, name: str) -> bool:
-        """Returns True if the convention with the given name is selected."""
-        return self.get(name) is not None

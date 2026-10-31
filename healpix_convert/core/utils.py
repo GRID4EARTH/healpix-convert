@@ -153,6 +153,10 @@ def extract_spatial_info_stac(ds: xr.Dataset, default_crs: pyproj.CRS) -> dict |
         # x/y coordinates (rasterix assumes monotonic coordinate values)
         if "x" not in ds.variables and "y" not in ds.variables:
             return None
+        elif any(name in ds.variables and ds[name].ndim != 1 for name in ("x", "y")):
+            # 2-D x/y (e.g., curvilinear grid) skip here, best handled by corresponding
+            # lat-lon coordinates (CF decoding) if present 
+            return None
         else:
             crs = default_crs
             ds_ = rasterix.assign_index(ds, x_dim="x", y_dim="y", crs=False)

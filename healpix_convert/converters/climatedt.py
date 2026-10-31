@@ -70,7 +70,7 @@ from healpix_convert.settings.climatedt import (
     POLYTOPE_ADDRESS,
     POLYTOPE_COLLECTION,
 )
-from healpix_convert.settings.conventions import MetadataSettings
+from healpix_convert.settings.common import MetadataSettings
 
 log = logging.getLogger(__name__)
 
