@@ -270,7 +270,7 @@ def _settings(
     )
 
 
-def _generate_pyramids(cache, settings, path):
+def _generate_pyramids(cache, settings, path, **kwargs):
     """The stages that write a pyramid of a hand-written dataset: creating its
     groups and metadata (as preparing the output dataset does), aggregating the
     converted data onto them, then finalizing the output dataset (which
@@ -287,7 +287,7 @@ def _generate_pyramids(cache, settings, path):
         group.attrs.update(get_multiscale_group_attrs(multiscales, settings.metadata))
 
     create_derived_level_groups(store, cache, settings)
-    generate_pyramids(cache, settings, path)
+    generate_pyramids(cache, settings, path, **kwargs)
 
     return finalize_healpix_dataset(cache, settings, path)
 
@@ -1227,3 +1227,36 @@ def test_multiscales_of_a_group_without_a_pyramid():
         assert "derived_from" not in _layout(multiscales, asset)
         assert "transform" not in _layout(multiscales, asset)
         assert "resampling_method" not in _layout(multiscales, asset)
+
+
+@pytest.mark.parametrize(
+    ("fixture", "levels", "derived_levels"),
+    [("converted", [3], [2, 1, 0]), ("converted_multi_level", [3, 2], [1, 0])],
+)
+def test_in_memory_pyramids_same_as_on_the_store(
+    fixture, levels, derived_levels, request, tmp_path, monkeypatch
+):
+    """generate_pyramids(in_memory=True) (block means in numpy, the arrays
+    decoded and encoded in processes, written at once) gives the derived
+    levels of the default path: same arrays and metadata, same values up to
+    the order of the sums."""
+    import shutil
+
+    monkeypatch.setenv("HEALPIX_CONVERT_PYRAMID_PROCESSES", "2")
+    path = request.getfixturevalue(fixture)[0]
+    pyramid = {"derived_levels": derived_levels}
+    copy = str(tmp_path / "in_memory.zarr")
+    shutil.copytree(path, copy)
+
+    _generate_pyramids(*_cache_and_settings(levels, pyramid), path)
+    _generate_pyramids(*_cache_and_settings(levels, pyramid), copy, in_memory=True)
+
+    for level in derived_levels:
+        a = zarr.open_group(path, path=f"{GROUP}/{level}", mode="r")
+        b = zarr.open_group(copy, path=f"{GROUP}/{level}", mode="r")
+        assert sorted(a.array_keys()) == sorted(b.array_keys())
+        for name in a.array_keys():
+            assert a[name].metadata == b[name].metadata, name
+            np.testing.assert_allclose(
+                a[name][...], b[name][...], rtol=1e-12, equal_nan=True
+            )
