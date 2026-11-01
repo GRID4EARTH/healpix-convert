@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import PurePath
 from typing import Any
 
@@ -14,6 +15,7 @@ import structlog
 import xarray as xr
 import zarr.api.synchronous as zarr
 
+import healpix_convert.core.utils as utils
 from healpix_convert.cache import create_staging_cache
 from healpix_convert.core.conversion_models import ConvertStagingCache
 from healpix_convert.core.metadata import (
@@ -178,6 +180,9 @@ def _create_and_process_output(
 
     dt0 = next(iter(cache.input_datatrees.values()))
 
+    # spatial groups whose arrays are only created here (no conversion yet)
+    to_prepare: list[PurePath] = []
+
     for path in dt0.groups:
         path = PurePath(path.lstrip("/"))
 
@@ -201,11 +206,13 @@ def _create_and_process_output(
             )
         elif path in cache.input_spatial_groups:
             log.info(f"••• writing group '{group_path_rel}' to zarr")
-            converter = init_converter(
-                path, cache=cache, settings=settings, output_store=output_store
-            )
             if convert_data:
+                converter = init_converter(
+                    path, cache=cache, settings=settings, output_store=output_store
+                )
                 _convert_group_to_healpix(converter)
+            else:
+                to_prepare.append(path)
         elif not dt0[str(path)].has_data:
             zarr.create_group(output_store, path=group_path_rel)
         else:
@@ -213,6 +220,25 @@ def _create_and_process_output(
             log.warning(
                 f"••• skip writing non-spatial group '{group_path_rel}' to zarr "
                 "(not yet supported)"
+            )
+
+    # creating the arrays of a group is a few store round trips per array
+    # (about 0.5 s per array on object storage): the groups are created in
+    # threads, so that these round trips overlap
+    if to_prepare:
+        with ThreadPoolExecutor(max_workers=min(16, len(to_prepare))) as pool:
+            list(
+                pool.map(
+                    utils.retry_store_conflicts(
+                        lambda path: init_converter(
+                            path,
+                            cache=cache,
+                            settings=settings,
+                            output_store=output_store,
+                        )
+                    ),
+                    to_prepare,
+                )
             )
 
     # --- derived levels (the coarser levels of the pyramid multiscale groups)
