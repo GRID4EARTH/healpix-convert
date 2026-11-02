@@ -44,6 +44,28 @@ CACHE_DIR_ENV = "HEALPIX_CONVERT_RESAMPLER_CACHE"
 CACHE_METHODS_ENV = "HEALPIX_CONVERT_RESAMPLER_CACHE_METHODS"
 NEIGHBOUR_STORE_ENV = "HEALPIX_CONVERT_NEIGHBOUR_STORE"
 NEIGHBOUR_STORE_OPTIONS_ENV = "HEALPIX_CONVERT_NEIGHBOUR_STORE_OPTIONS"
+DEVICE_ENV = "HEALPIX_CONVERT_DEVICE"
+
+
+def default_device() -> str | None:
+    """``HEALPIX_CONVERT_DEVICE`` (e.g. ``cuda``): the torch device of the
+    resamplers that take one and whose settings set none. Unset: the defaults
+    of healpix-resample."""
+    return os.environ.get(DEVICE_ENV) or None
+
+
+def _with_device(resampler_cls: type, kwargs: dict[str, Any]) -> dict[str, Any]:
+    device = default_device()
+    if device is None or "device" in kwargs:
+        return kwargs
+    import inspect
+
+    takes_device = any(
+        "device" in inspect.signature(c.__init__).parameters
+        for c in resampler_cls.__mro__
+        if "__init__" in c.__dict__
+    )
+    return {**kwargs, "device": device} if takes_device else kwargs
 
 
 def _cache_dir(method: str) -> str | None:
@@ -59,11 +81,14 @@ def _cache_dir(method: str) -> str | None:
 def resampler_key(resampler_cls: type, kwargs: dict[str, Any]) -> str:
     """Digest of everything the resampler is built from: its class, the
     healpix-resample version, the input points, the output cells and the
-    other arguments."""
+    other arguments, except the device (the neighbour links do not depend on
+    it)."""
     h = hashlib.blake2b(digest_size=20)
     h.update(f"{resampler_cls.__module__}.{resampler_cls.__qualname__}".encode())
     h.update(importlib.metadata.version("healpix-resample").encode())
     for name in sorted(kwargs):
+        if name == "device":
+            continue
         value = kwargs[name]
         h.update(name.encode())
         if isinstance(value, np.ndarray):
@@ -177,7 +202,9 @@ def _build_with_links(resampler_cls: type, kwargs: dict[str, Any]) -> Any:
 def build_resampler(resampler_cls: type, method: str, **kwargs: Any) -> Any:
     """``resampler_cls(**kwargs)``, from the resampler cache when it is on
     for ``method``, else from the neighbour links store when it is on (see
-    the module docstring)."""
+    the module docstring). The device is ``HEALPIX_CONVERT_DEVICE`` when it is
+    set and ``kwargs`` has none."""
+    kwargs = _with_device(resampler_cls, kwargs)
     directory = _cache_dir(method)
     if directory is None:
         return _build_with_links(resampler_cls, kwargs)
