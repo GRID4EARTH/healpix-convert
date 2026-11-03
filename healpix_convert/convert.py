@@ -439,8 +439,16 @@ def generate_pyramids(
         Read the whole output dataset once (all its objects, concurrently),
         aggregate the pyramids on that copy in memory, and write the derived
         levels back at once (default: False, read and write the store as the
-        aggregation goes). Same computation, same result; on object storage
-        the aggregation otherwise waits on many small reads.
+        aggregation goes). Same computation as the default path, with the
+        sums in another order: the values can differ in the last bits
+        (float32 variables in particular), the arrays and metadata are the
+        same. On object storage the aggregation otherwise waits on many small
+        reads. The whole output dataset is held in memory, several times
+        over, and the decoding and encoding run in a pool of processes
+        (``HEALPIX_CONVERT_PYRAMID_PROCESSES``, default the CPUs available to
+        this process) started with ``spawn``: call it from a script under an
+        ``if __name__ == "__main__":`` guard, and not from a daemonic process
+        (e.g. a Dask worker task).
 
     Returns
     -------
@@ -500,6 +508,18 @@ def _tokenize_memory_store(store: MemoryStore) -> tuple[str, int]:
     return ("zarr-memory-store", id(store))
 
 
+def _available_cpus() -> int:
+    """The CPUs this process may run on (those given to the job by a batch
+    scheduler, not the whole node)."""
+    import os
+
+    if hasattr(os, "process_cpu_count"):  # Python >= 3.13
+        return os.process_cpu_count() or 1
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0)) or 1
+    return os.cpu_count() or 1
+
+
 def _write_derived_levels_in_memory(
     output_path: str,
     cache: ConvertStagingCache,
@@ -542,7 +562,7 @@ def _write_derived_levels_in_memory(
         # this package in each) costs more than a dataset's work
         _PYRAMID_POOL = ProcessPoolExecutor(
             max_workers=int(
-                os.environ.get("HEALPIX_CONVERT_PYRAMID_PROCESSES", os.cpu_count() or 1)
+                os.environ.get("HEALPIX_CONVERT_PYRAMID_PROCESSES", _available_cpus())
             ),
             mp_context=multiprocessing.get_context("spawn"),
         )

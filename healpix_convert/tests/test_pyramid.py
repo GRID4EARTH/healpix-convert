@@ -313,6 +313,35 @@ def converted(tmp_path):
 
 
 @pytest.fixture
+def converted_encoded(tmp_path):
+    """A full-earth dataset converted at the level 3 whose variables are
+    stored encoded: float32 with missing cells and exact zeros, an integer
+    variable with valid zeros and a CF ``_FillValue``, and a variable packed
+    as uint16 with ``scale_factor`` / ``add_offset``.
+    """
+    cell_ids = _dense_cells(3)
+    rng = np.random.default_rng(7)
+    single = rng.random(cell_ids.size).astype("float32")
+    single[rng.random(cell_ids.size) < 0.1] = np.nan
+    single[rng.random(cell_ids.size) < 0.1] = 0.0
+    flags = rng.integers(0, 5, cell_ids.size).astype("uint8")
+    packed = np.round(rng.random(cell_ids.size), 4)
+    packed[rng.random(cell_ids.size) < 0.1] = np.nan
+
+    ds = _level_dataset(3, cell_ids, single=single, flags=flags, packed=packed)
+    ds["flags"].encoding = {"_FillValue": 255}
+    ds["packed"].encoding = {
+        "dtype": "uint16",
+        "scale_factor": 1e-4,
+        "add_offset": -0.1,
+        "_FillValue": 65535,
+    }
+    path = _write_converted(tmp_path / "converted.zarr", {3: ds})
+
+    return (path,)
+
+
+@pytest.fixture
 def converted_multi_level(tmp_path):
     """A full-earth dataset converted at the levels 3 and 2, where "a" is also
     stored at the level 2 (a copy resampled by the data provider).
@@ -1231,7 +1260,11 @@ def test_multiscales_of_a_group_without_a_pyramid():
 
 @pytest.mark.parametrize(
     ("fixture", "levels", "derived_levels"),
-    [("converted", [3], [2, 1, 0]), ("converted_multi_level", [3, 2], [1, 0])],
+    [
+        ("converted", [3], [2, 1, 0]),
+        ("converted_encoded", [3], [2, 1, 0]),
+        ("converted_multi_level", [3, 2], [1, 0]),
+    ],
 )
 def test_in_memory_pyramids_same_as_on_the_store(
     fixture, levels, derived_levels, request, tmp_path, monkeypatch
@@ -1257,6 +1290,12 @@ def test_in_memory_pyramids_same_as_on_the_store(
         assert sorted(a.array_keys()) == sorted(b.array_keys())
         for name in a.array_keys():
             assert a[name].metadata == b[name].metadata, name
-            np.testing.assert_allclose(
-                a[name][...], b[name][...], rtol=1e-12, equal_nan=True
-            )
+            actual, expected = b[name][...], a[name][...]
+            if np.issubdtype(expected.dtype, np.integer):
+                # stored integers (incl. packed values): no rounding slack
+                np.testing.assert_array_equal(actual, expected, err_msg=name)
+            else:
+                rtol = 1e-6 if expected.dtype == np.float32 else 1e-12
+                np.testing.assert_allclose(
+                    actual, expected, rtol=rtol, equal_nan=True, err_msg=name
+                )

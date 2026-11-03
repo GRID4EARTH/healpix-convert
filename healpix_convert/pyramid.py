@@ -402,7 +402,7 @@ class _BlockMeans:
                 var = self.datasets[source][name]
                 axis = var.dims.index(self.native_healpix[source].spatial_dimension)
                 if self.loader is not None and source in self.paths:
-                    data = self.loader(f"{self.paths[source]}/{name}")
+                    data = _decode_like(var, self.loader(f"{self.paths[source]}/{name}"))
                 else:
                     data = var.values
                 values = np.moveaxis(np.asarray(data, dtype=np.float64), axis, -1)
@@ -442,6 +442,23 @@ class _BlockMeans:
         return part
 
 
+def _decode_like(var: xr.Variable, stored: np.ndarray) -> np.ndarray:
+    """The stored values of ``var`` decoded as Xarray decoded ``var`` when it
+    read the store: masked with its CF ``_FillValue`` / ``missing_value``
+    (not with the Zarr fill value) and unpacked with its ``scale_factor`` /
+    ``add_offset``, all taken from its encoding."""
+    attrs = {
+        key: var.encoding[key]
+        for key in ("_FillValue", "missing_value", "scale_factor", "add_offset")
+        if key in var.encoding
+    }
+    encoded = xr.Variable(var.dims, stored, attrs=attrs)
+    decoded = xr.conventions.decode_cf_variable(
+        "", encoded, decode_times=False, decode_timedelta=False
+    )
+    return np.asarray(decoded.values)
+
+
 def _decode_shard(meta: bytes, key: str, data: bytes) -> tuple[str, np.ndarray]:
     """The decoded values of one chunk object (a shard) of an array, from the
     array metadata and the object, through Zarr (run in another process)."""
@@ -464,12 +481,14 @@ def _decode_shard(meta: bytes, key: str, data: bytes) -> tuple[str, np.ndarray]:
 def decode_arrays_in_processes(
     objects: Mapping[str, bytes], pool: Any
 ) -> Callable[[str], np.ndarray]:
-    """A loader for :py:func:`write_derived_levels`: the decoded values of an
+    """A loader for :py:func:`write_derived_levels`: the stored values of an
     array of the in-memory dataset ``objects`` (key -> bytes), its chunk
     objects decoded by Zarr in the processes of ``pool`` (a
-    ``concurrent.futures`` executor), with the cells holding the fill value
-    as NaN, as Xarray reads them. Arrays whose chunk keys are not of the
-    default ``c/...`` form are not handled (``KeyError``)."""
+    ``concurrent.futures`` executor), in the data type of the array and with
+    the Zarr fill value in the chunks that are not stored, as Zarr reads
+    them. The CF decoding (missing values, scale and offset) is left to the
+    caller. Arrays whose chunk keys are not of the default ``c/...`` form are
+    not handled (``KeyError``)."""
 
     def load(path: str) -> np.ndarray:
         meta = objects[f"{path}/zarr.json"]
@@ -478,25 +497,19 @@ def decode_arrays_in_processes(
             raise KeyError(path)
         prefix = f"{path}/c/"
         keys = [key for key in objects if key.startswith(prefix)]
-        dtype = np.dtype(np.float64 if "float" in str(info["data_type"]) else info["data_type"])
+        dtype = np.dtype(info["data_type"])
         fill = info.get("fill_value")
         out = np.full(info["shape"], np.nan if fill in (None, "NaN") else fill, dtype=dtype)
         futures = [
             pool.submit(_decode_shard, meta, key[len(path) + 1 :], objects[key])
             for key in keys
         ]
-        shape = None
+        chunk = info["chunk_grid"]["configuration"]["chunk_shape"]
         for future in futures:
             key, values = future.result()
-            if shape is None:
-                shape = values.shape if values.ndim else ()
             coords = [int(c) for c in key.split("/")[1:]]
-            chunk = info["chunk_grid"]["configuration"]["chunk_shape"]
             out[tuple(slice(c * s, c * s + n) for c, s, n in zip(coords, chunk, values.shape))] = values
-        values = out.astype(np.float64)
-        if fill not in (None, "NaN") and np.issubdtype(out.dtype, np.number):
-            values[out == fill] = np.nan
-        return values
+        return out
 
     return load
 
