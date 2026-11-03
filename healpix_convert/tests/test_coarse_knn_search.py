@@ -92,6 +92,8 @@ def _convert(tmp_path, resampler, coarse_level_delta, label):
 @pytest.mark.parametrize("name", list(RESAMPLERS))
 def test_same_result_as_the_fine_search(tmp_path, monkeypatch, name):
     seen = []
+    # the keyword is only visible in the private neighbour search of
+    # healpix-resample: follow its name if it is renamed there
     original = healpix_resample.knn._healpix_weighted_nearest
 
     def recording(*args, **kwargs):
