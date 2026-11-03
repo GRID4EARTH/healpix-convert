@@ -130,6 +130,8 @@
 - Sparse chunks are written with the data type of the input variable
   ({pull}`46`).
 - Documentation site, built with Sphinx and published on GitHub Pages.
+- The pyramid stage no longer fails on an output dataset written with storage
+  options, e.g. the credentials of an object store ({pull}`90`).
 
 ## v2026.10.0 (2026-10-08)
 
