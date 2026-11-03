@@ -11,12 +11,14 @@ directory, the resamplers of the methods listed in
 ``nearest``) are pickled there, one file per resampler, and the next group
 that needs the same resampler loads it instead of building it again. The
 directory is shared by the worker processes of a machine; the caller creates
-it and removes it when the conversion is done. Without the variable, the
-resamplers are built as before.
+it and removes it when the conversion is done. The cache loads pickles, which
+can run code: the directory must be private to the job (not shared with other
+users or jobs). Without the variable, the resamplers are built as before.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.metadata
 import os
@@ -79,6 +81,7 @@ def build_resampler(resampler_cls: type, method: str, **kwargs: Any) -> Any:
         log.warning(f"resampler cache: cannot read {path} ({e!r}), building the resampler")
 
     resampler = resampler_cls(**kwargs)
+    tmp = None
     try:
         os.makedirs(directory, exist_ok=True)
         # write then rename, so another process never reads a partial file
@@ -86,6 +89,9 @@ def build_resampler(resampler_cls: type, method: str, **kwargs: Any) -> Any:
         with os.fdopen(fd, "wb") as f:
             pickle.dump(resampler, f, protocol=pickle.HIGHEST_PROTOCOL)
         os.replace(tmp, path)
-    except OSError as e:
+    except Exception as e:  # the cache is optional: never fail the conversion
         log.warning(f"resampler cache: cannot write {path} ({e!r})")
+        if tmp is not None:
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
     return resampler
