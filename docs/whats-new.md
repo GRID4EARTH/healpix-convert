@@ -71,6 +71,11 @@
   every item of that level, which one item per array makes particularly
   verbose, while the attributes of a level group already describe its grid and
   the `asset` of an item names its refinement level.
+- Neighbour links store: with `HEALPIX_CONVERT_NEIGHBOUR_STORE` set to a URL
+  (storage options as JSON in `HEALPIX_CONVERT_NEIGHBOUR_STORE_OPTIONS`), the
+  links of the neighbour searches are kept there by geometry, and later
+  resamplers on the same geometry are built from them without a new search.
+  healpix-resample 2026.11.1 or later is required ({pull}`99`).
 - New `asset_type` multiscale setting: what a layout item refers to, a level
   group (`"group"`) or one array of a level (`"array"`). With `"auto"` (the
   default), the level groups are the assets where they describe every level
