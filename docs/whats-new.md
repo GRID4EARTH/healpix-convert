@@ -52,6 +52,12 @@
   dimension without such a setting are now refused with a message pointing to
   it; before, inputs of the same size were concatenated position by position
   even when their labels differed.
+- Opt-in GPU path: `HEALPIX_CONVERT_DEVICE` (e.g. `cuda`) is the torch device
+  of the resamplers whose settings give none, and the lon/lat of transverse
+  Mercator inputs (EPSG method 9807, metres) are computed on it; they differ
+  from pyproj's in the last bits, so the results are not bit-identical to a
+  run without the variable. `HEALPIX_CONVERT_GPU_SLOTS=n` limits how many
+  chunks use the device at once ({pull}`100`).
 - The multiscales metadata describes each derived level of a pyramid: the
   converted level it is aggregated from (`derived_from`), the transformation
   from it (`transform`, whose `scale` is how much longer a cell is) and the

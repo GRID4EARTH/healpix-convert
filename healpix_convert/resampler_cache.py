@@ -66,16 +66,29 @@ def device_slot():
     and applied, then give the device memory of this process back. More
     workers than slots can then read and write their chunks while others use
     the device, without more of them on it at once than its memory holds.
-    Otherwise: nothing."""
+    The slots are shared by the processes with the same temporary directory
+    (``TMPDIR``), device and ``CUDA_VISIBLE_DEVICES``. Otherwise: nothing."""
     slots = os.environ.get(GPU_SLOTS_ENV)
-    if default_device() is None or not slots:
+    device = default_device()
+    if device is None or not slots:
         yield
         return
+    if int(slots) < 1:
+        raise ValueError(f"{GPU_SLOTS_ENV} must be at least 1, got {slots!r}")
     import fcntl
     import time
 
+    # one set of slots per device of the machine: the device name, and the
+    # GPUs this process sees (e.g. two jobs on two GPUs of one node)
+    tag = f"{device}-{os.environ.get('CUDA_VISIBLE_DEVICES', 'all')}"
+    tag = "".join(c if c.isalnum() or c in "-_" else "_" for c in tag)
     files = [
-        open(os.path.join(tempfile.gettempdir(), f"healpix-convert-device-slot-{i}.lock"), "a")
+        open(
+            os.path.join(
+                tempfile.gettempdir(), f"healpix-convert-device-slot-{tag}-{i}.lock"
+            ),
+            "a",
+        )
         for i in range(int(slots))
     ]
     held = None
@@ -126,16 +139,24 @@ def _cache_dir(method: str) -> str | None:
     return directory
 
 
-def resampler_key(resampler_cls: type, kwargs: dict[str, Any]) -> str:
+def resampler_key(
+    resampler_cls: type, kwargs: dict[str, Any], *, with_device: bool = False
+) -> str:
     """Digest of everything the resampler is built from: its class, the
     healpix-resample version, the input points, the output cells and the
-    other arguments, except the device (the neighbour links do not depend on
-    it)."""
+    other arguments. The device only with ``with_device``: the neighbour
+    links do not depend on it, a pickled resampler does (its tensors are
+    restored on the device they were saved from).
+
+    The input points are hashed as given: the lon/lat of a projected input
+    computed on a device (``HEALPIX_CONVERT_DEVICE``, see
+    :mod:`healpix_convert.core.tmerc`) differ from pyproj's in the last bits,
+    so runs with and without the device keep separate entries."""
     h = hashlib.blake2b(digest_size=20)
     h.update(f"{resampler_cls.__module__}.{resampler_cls.__qualname__}".encode())
     h.update(importlib.metadata.version("healpix-resample").encode())
     for name in sorted(kwargs):
-        if name == "device":
+        if name == "device" and not with_device:
             continue
         value = kwargs[name]
         h.update(name.encode())
@@ -257,7 +278,9 @@ def build_resampler(resampler_cls: type, method: str, **kwargs: Any) -> Any:
     if directory is None:
         return _build_with_links(resampler_cls, kwargs)
 
-    path = os.path.join(directory, resampler_key(resampler_cls, kwargs) + ".pkl")
+    path = os.path.join(
+        directory, resampler_key(resampler_cls, kwargs, with_device=True) + ".pkl"
+    )
     try:
         with open(path, "rb") as f:
             return pickle.load(f)

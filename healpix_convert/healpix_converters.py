@@ -1100,11 +1100,6 @@ class SparseChunkConverter(UniformChunkConverter):
             )
 
             cell_ids = resampler.get_cell_ids()
-            start = chunk_index * self.cell_dim_chunk_size
-            stop = start + cell_ids.size
-            chunk_slice = slice(start, stop)
-
-            self.output_arrays[self.healpix.coordinate][chunk_slice] = cell_ids
 
             # resample arrays (data variables)
             var_names = [
@@ -1125,6 +1120,13 @@ class SparseChunkConverter(UniformChunkConverter):
                 logger=log.bind(group=self.group_path, chunk_index=chunk_index),
             )
             del resampler
+
+        # outside the device slot: a store write
+        start = chunk_index * self.cell_dim_chunk_size
+        stop = start + cell_ids.size
+        chunk_slice = slice(start, stop)
+
+        self.output_arrays[self.healpix.coordinate][chunk_slice] = cell_ids
 
         writes = []
         for name, cell_data in resampled.items():

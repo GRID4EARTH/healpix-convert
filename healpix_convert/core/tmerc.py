@@ -130,12 +130,25 @@ def tmerc_inverse(x, y, *, a, f, k0, lon0_deg, lat0_deg, x0, y0, device="cpu"):
 
 def tmerc_params(crs):
     """The tmerc parameters of a pyproj CRS, or None if it is not a
-    transverse Mercator projection."""
+    transverse Mercator projection (EPSG method 9807) in metres and degrees
+    on an ellipsoid."""
     op = crs.coordinate_operation
-    if op is None or "Transverse Mercator" not in op.method_name:
+    # EPSG 9807 only: not the south-orientated variant (9808) nor others
+    if op is None or op.method_code != "9807":
+        return None
+    angles = ("Latitude of natural origin", "Longitude of natural origin")
+    lengths = ("False easting", "False northing")
+    units = {q.name: q.unit_name for q in op.params}
+    if any(units.get(n) != "degree" for n in angles) or any(
+        units.get(n) != "metre" for n in lengths
+    ):
+        return None
+    if any(axis.unit_name != "metre" for axis in crs.axis_info):
         return None
     p = {q.name: q.value for q in op.params}
     e = crs.ellipsoid
+    if not e.inverse_flattening:  # a sphere
+        return None
     return dict(
         a=e.semi_major_metre, f=1.0 / e.inverse_flattening, k0=p["Scale factor at natural origin"],
         lon0_deg=p["Longitude of natural origin"], lat0_deg=p["Latitude of natural origin"],

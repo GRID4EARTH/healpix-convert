@@ -33,3 +33,17 @@ def test_transform_on_device_other_crs(monkeypatch):
     y = xr.DataArray(np.linspace(6.1e6, 7.1e6, 5), dims="y")
     src, dst = pyproj.CRS.from_epsg(2154), pyproj.CRS.from_epsg(4326)
     assert utils._transform_on_device(x, y, src, dst) is None
+
+
+@pytest.mark.parametrize(
+    "epsg",
+    [
+        2046,  # transverse Mercator (south orientated)
+        2240,  # transverse Mercator in US survey feet
+    ],
+)
+def test_other_transverse_mercator_keep_pyproj(epsg):
+    """Variants the torch path does not implement: pyproj, as before."""
+    from healpix_convert.core.tmerc import tmerc_params
+
+    assert tmerc_params(pyproj.CRS.from_epsg(epsg)) is None
