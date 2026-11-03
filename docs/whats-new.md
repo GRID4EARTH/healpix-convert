@@ -89,6 +89,11 @@
 - The `asset` of a multiscales layout item is now a path relative to the group
   holding the metadata (e.g. `"7"` instead of `"measurements/7"`), as the
   Multiscales Zarr convention asks.
+- Resamplers can be reused between the groups on the same input grid: with
+  `HEALPIX_CONVERT_RESAMPLER_CACHE` set to a directory private to the job, the
+  resamplers of the methods in `HEALPIX_CONVERT_RESAMPLER_CACHE_METHODS`
+  (default `"nearest"`) are pickled there and loaded by later groups with the
+  same input points, output cells and parameters. Off by default ({pull}`94`).
 - The attributes of the output variables can be set from the group settings
   (`metadata.override_attrs`), and not only excluded ({issue}`36`).
 - The STAC properties, extensions, links and assets propagated to the output
