@@ -28,13 +28,14 @@ skipped, the result is the same, bit for bit.
 from __future__ import annotations
 
 import contextlib
+import functools
 import hashlib
-import importlib.metadata
 import io
 import json
 import os
 import pickle
 import tempfile
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -141,22 +142,48 @@ def _cache_dir(method: str) -> str | None:
     return directory
 
 
+def _package_digest(root: Path) -> bytes:
+    """Digest of the files of the package in ``root`` (names and contents,
+    bytecode caches left out)."""
+    h = hashlib.blake2b(digest_size=20)
+    files = sorted(p for p in root.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
+    for path in files:
+        h.update(path.relative_to(root).as_posix().encode() + b"\0")
+        h.update(path.stat().st_size.to_bytes(8, "little"))
+        h.update(path.read_bytes())
+    return h.digest()
+
+
+@functools.cache
+def _healpix_resample_digest() -> bytes:
+    """Digest of the healpix-resample code that is imported. Its version string
+    is not enough: an install from a source archive or a checkout can carry
+    any version, with other code behind it."""
+    import healpix_resample
+
+    return _package_digest(Path(healpix_resample.__file__).parent)
+
+
 def resampler_key(
     resampler_cls: type, kwargs: dict[str, Any], *, with_device: bool = False
 ) -> str:
     """Digest of everything the resampler is built from: its class, the
-    healpix-resample version, the input points, the output cells and the
-    other arguments. The device only with ``with_device``: the neighbour
-    links do not depend on it, a pickled resampler does (its tensors are
-    restored on the device they were saved from).
+    healpix-resample code, the torch version (the neighbour search runs in
+    torch), the input points, the output cells and the other arguments. The
+    device only with ``with_device``: the neighbour links do not depend on it,
+    a pickled resampler does (its tensors are restored on the device they were
+    saved from).
 
     The input points are hashed as given: the lon/lat of a projected input
     computed on a device (``HEALPIX_CONVERT_DEVICE``, see
     :mod:`healpix_convert.core.tmerc`) differ from pyproj's in the last bits,
     so runs with and without the device keep separate entries."""
+    import torch
+
     h = hashlib.blake2b(digest_size=20)
     h.update(f"{resampler_cls.__module__}.{resampler_cls.__qualname__}".encode())
-    h.update(importlib.metadata.version("healpix-resample").encode())
+    h.update(_healpix_resample_digest())
+    h.update(str(torch.__version__).encode())
     for name in sorted(kwargs):
         if name == "device" and not with_device:
             continue

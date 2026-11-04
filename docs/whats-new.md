@@ -82,7 +82,9 @@
   (storage options as JSON in `HEALPIX_CONVERT_NEIGHBOUR_STORE_OPTIONS`), the
   links of the neighbour searches are kept there by geometry, and later
   resamplers on the same geometry are built from them without a new search.
-  healpix-resample 2026.11.1 or later is required ({pull}`99`).
+  The key of a resampler covers the files of the imported healpix-resample
+  package, not only its version string, and the torch version, so links found
+  by other code are never reused. healpix-resample 2026.11.1 or later is required ({pull}`99`).
 - New `asset_type` multiscale setting: what a layout item refers to, a level
   group (`"group"`) or one array of a level (`"array"`). With `"auto"` (the
   default), the level groups are the assets where they describe every level
