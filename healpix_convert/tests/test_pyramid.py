@@ -31,6 +31,7 @@ from healpix_convert.cache import (
     _set_pyramid_multiscale_groups,
 )
 from healpix_convert.core import utils
+from healpix_convert.core.coarsen import codecs_encoding
 from healpix_convert.core.conversion_models import OutputGroupInfo, OutputSpatialInfo
 from healpix_convert.core.healpix_conventions import Healpix
 from healpix_convert.core.metadata import (
@@ -616,7 +617,8 @@ class TestPyramidCodecs:
         written = level2["temperature"].metadata.to_dict()["codecs"]
         assert [c["name"] for c in written] == ["bytes", "zstd"]
         assert written[1]["configuration"]["level"] == 5
-        # the cell ids keep Zarr's defaults, the converted level its own codecs
+        # the cell ids keep the codecs of the converted ones, the converted
+        # level its own codecs
         assert level2["cell_ids"].metadata.to_dict()["codecs"] != written
         native = zarr.open_group(path, mode="r")[f"{GROUP}/3"]["temperature"]
         assert native.metadata.to_dict()["codecs"] != written
@@ -626,6 +628,90 @@ class TestPyramidCodecs:
             dt[f"{GROUP}/2"]["temperature"].values,
             _block_means(temperature, parents),
         )
+
+    def test_sharding_serializer_on_coarse_levels(self, converted):
+        """The chunks of the coarsest levels hold fewer cells than the inner
+        chunks of a sharding serializer: those are cut to the chunk."""
+        path, cell_ids, temperature, _ = converted
+        bytes_codec = {"name": "bytes", "configuration": {"endian": "little"}}
+        codecs = [
+            {
+                "name": "sharding_indexed",
+                "configuration": {
+                    "chunk_shape": [16],
+                    "codecs": [bytes_codec, {"name": "zstd", "configuration": {}}],
+                    "index_codecs": [bytes_codec, {"name": "crc32c"}],
+                },
+            }
+        ]
+
+        dt = _generate_pyramids(
+            *_cache_and_settings([3], {"derived_levels": [2, 1, 0], "codecs": codecs}),
+            path,
+        )
+
+        group = zarr.open_group(path, mode="r")[GROUP]
+        for level, chunk_size in [(2, 16), (1, 4), (0, 1)]:
+            array = group[f"{level}/temperature"]
+            assert array.shards == (chunk_size,)
+            assert array.chunks == (chunk_size,)
+
+        parents = cell_ids >> np.uint64(4)
+        np.testing.assert_allclose(
+            dt[f"{GROUP}/1"]["temperature"].values,
+            _block_means(temperature, parents),
+        )
+
+    @pytest.mark.parametrize("compression", ["none", "compacted", "ranges"])
+    @pytest.mark.parametrize("sharded", [False, True], ids=["plain", "sharded"])
+    def test_derived_cell_ids_keep_the_codecs(
+        self, tmp_path, monkeypatch, compression, sharded
+    ):
+        """The cell ids of the derived levels are written with the codecs of
+        the converted ones (e.g. a delta filter), sharded like them."""
+        monkeypatch.setitem(HEALPIX, "compression", compression)
+        cell_ids = _dense_cells(3)
+        encoding = codecs_encoding(
+            [
+                {"name": "numcodecs.delta", "configuration": {"dtype": "<u8"}},
+                {"name": "bytes", "configuration": {"endian": "little"}},
+                {"name": "zstd", "configuration": {}},
+            ]
+        )
+        if sharded:
+            # shards of one converted chunk (16 cells), inner chunks of 4 cells
+            encoding |= {"chunks": (4,), "shards": (16,)}
+        path = _write_converted(
+            tmp_path / "converted.zarr",
+            {3: _level_dataset(3, cell_ids, a=np.arange(cell_ids.size, dtype="f8"))},
+            encoding={f"/{GROUP}/3": {"cell_ids": encoding}},
+        )
+
+        dt = _generate_pyramids(
+            *_cache_and_settings([3], {"derived_levels": [2, 1, 0]}), path
+        )
+
+        group = zarr.open_group(path, mode="r")[GROUP]
+        native = group["3/cell_ids"]
+        for level, chunk_size in [(2, 16), (1, 4), (0, 1)]:
+            array = group[f"{level}/cell_ids"]
+            assert array.filters == native.filters
+            assert array.serializer == native.serializer
+            assert array.compressors == native.compressors
+            if sharded:
+                assert array.shards == (chunk_size,)
+                assert array.chunks == (min(4, chunk_size),)
+            else:
+                assert array.shards is None
+                assert array.chunks == (chunk_size,)
+
+            depth = 3 - level
+            np.testing.assert_array_equal(
+                dt[f"{GROUP}/{level}"]["cell_ids"].values,
+                np.unique(cell_ids >> np.uint64(2 * depth)),
+            )
+            dggs = dt[f"{GROUP}/{level}"].attrs["dggs"]
+            assert dggs.get("compression", "none") == compression
 
     def test_unknown_codec(self):
         with pytest.raises(
@@ -807,10 +893,12 @@ def _write_input(path):
     return str(path)
 
 
-def _workflow_settings(derived_levels=(1, 0), **group_kwargs) -> ConvertSettings:
+def _workflow_settings(
+    derived_levels=(1, 0), pyramid_codecs=None, **group_kwargs
+) -> ConvertSettings:
     """Convert two input groups at the levels 3 and 2, with dense chunks of one
-    level-1 cell each, and a pyramid with the given derived levels (other group
-    settings given as keyword arguments).
+    level-1 cell each, and a pyramid with the given derived levels and codecs
+    (other group settings given as keyword arguments).
     """
     chunk = {
         "method": "healpix_cell_dense",
@@ -831,7 +919,12 @@ def _workflow_settings(derived_levels=(1, 0), **group_kwargs) -> ConvertSettings
         {
             "multiscale_settings": {
                 "groups": [GROUP],
-                "pyramid_groups": {GROUP: {"derived_levels": list(derived_levels)}},
+                "pyramid_groups": {
+                    GROUP: {
+                        "derived_levels": list(derived_levels),
+                        "codecs": pyramid_codecs,
+                    }
+                },
             },
             "group_settings": group_settings,
         }
@@ -929,6 +1022,73 @@ def test_create_healpix_dataset_fills_the_pyramids(tmp_path):
     converted = dt[GROUP]["3"].to_dataset()
     parents = converted["cell_ids"].values >> np.uint64(4)
     expected = _block_means(converted["a"].values, parents)
+    np.testing.assert_allclose(dt[GROUP]["1"]["a"].values, expected, atol=1e-12)
+
+
+def _sharding(inner, codecs):
+    """A ``sharding_indexed`` codec setting with the given inner chunks."""
+    bytes_codec = {"name": "bytes", "configuration": {"endian": "little"}}
+    return {
+        "name": "sharding_indexed",
+        "configuration": {
+            "chunk_shape": [inner],
+            "codecs": codecs,
+            "index_codecs": [bytes_codec, {"name": "crc32c"}],
+        },
+    }
+
+
+@pytest.mark.parametrize("derived", ["plain", "sharded"])
+@pytest.mark.parametrize("converted", ["plain", "sharded"])
+def test_create_healpix_dataset_sharded_or_not(tmp_path, converted, derived):
+    """The converted levels (``codecs`` and ``healpix_coordinate_codecs`` group
+    settings) and the derived levels (``codecs`` pyramid setting) are sharded
+    or not independently, through the whole conversion."""
+    bytes_codec = {"name": "bytes", "configuration": {"endian": "little"}}
+    zstd = {"name": "zstd", "configuration": {}}
+    delta = {"name": "numcodecs.delta", "configuration": {"dtype": "<u8"}}
+    if converted == "sharded":
+        # chunks of 16 (level 3) and 4 (level 2) cells, inner chunks of 4
+        group_kwargs = {
+            "codecs": [_sharding(4, [bytes_codec, zstd])],
+            "healpix_coordinate_codecs": [_sharding(4, [delta, bytes_codec, zstd])],
+        }
+    else:
+        group_kwargs = {
+            "codecs": [bytes_codec, zstd],
+            "healpix_coordinate_codecs": [delta, bytes_codec, zstd],
+        }
+    # inner chunks of 4 cells, cut to the single cell of the level-1 chunks
+    pyramid_codecs = (
+        [_sharding(4, [bytes_codec, zstd])] if derived == "sharded" else [zstd]
+    )
+    input_path = _write_input(tmp_path / "input.zarr")
+    output_path = str(tmp_path / "converted.zarr")
+
+    dt = create_healpix_dataset(
+        [input_path],
+        _workflow_settings(
+            derived_levels=[1], pyramid_codecs=pyramid_codecs, **group_kwargs
+        ),
+        output_path,
+    )
+
+    group = zarr.open_group(output_path, mode="r")[GROUP]
+    for level, name, sharded in [
+        (3, "a", converted == "sharded"),
+        (2, "b", converted == "sharded"),
+        (1, "a", derived == "sharded"),
+        (1, "b", derived == "sharded"),
+    ]:
+        assert (group[f"{level}/{name}"].shards is not None) == sharded
+        # the cell ids follow the converted level
+        cell_ids = group[f"{level}/cell_ids"]
+        assert (cell_ids.shards is not None) == (converted == "sharded")
+        assert [f.codec_name for f in cell_ids.filters] == ["numcodecs.delta"]
+
+    converted_ds = dt[GROUP]["3"].to_dataset()
+    parents = converted_ds["cell_ids"].values >> np.uint64(4)
+    expected = _block_means(converted_ds["a"].values, parents)
     np.testing.assert_allclose(dt[GROUP]["1"]["a"].values, expected, atol=1e-12)
 
 
