@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib.metadata
+
 import healpix_resample
 import numpy as np
 import pytest
@@ -58,6 +60,47 @@ def test_other_inputs_other_key(points):
     assert key != resampler_cache.resampler_key(cls, _kwargs(lon, lat, out_cell_ids=np.arange(4, dtype=np.uint64)))
     assert key != resampler_cache.resampler_key(cls, {**_kwargs(lon, lat), "level": LEVEL + 1})
     assert key != resampler_cache.resampler_key(healpix_resample.PSFResampler, _kwargs(lon, lat))
+
+
+def test_other_healpix_resample_code_other_key(points, monkeypatch):
+    # same version string, other code behind it (e.g. installed from a source archive)
+    lon, lat, _ = points
+    cls = healpix_resample.NearestResampler
+    key = resampler_cache.resampler_key(cls, _kwargs(lon, lat))
+    monkeypatch.setattr(resampler_cache, "_healpix_resample_digest", lambda: b"other code")
+    assert key != resampler_cache.resampler_key(cls, _kwargs(lon, lat))
+
+
+def test_other_torch_other_key(points, monkeypatch):
+    import torch
+
+    lon, lat, _ = points
+    cls = healpix_resample.NearestResampler
+    key = resampler_cache.resampler_key(cls, _kwargs(lon, lat))
+    monkeypatch.setattr(torch, "__version__", "0.0.0")
+    assert key != resampler_cache.resampler_key(cls, _kwargs(lon, lat))
+
+
+def test_other_healpix_geo_other_key(points, monkeypatch):
+    lon, lat, _ = points
+    cls = healpix_resample.NearestResampler
+    key = resampler_cache.resampler_key(cls, _kwargs(lon, lat))
+    real = importlib.metadata.version
+    monkeypatch.setattr(importlib.metadata, "version",
+                        lambda name: "0.0.0" if name == "healpix-geo" else real(name))
+    assert key != resampler_cache.resampler_key(cls, _kwargs(lon, lat))
+
+
+def test_package_digest_follows_the_code(tmp_path):
+    pkg = tmp_path / "pkg"
+    (pkg / "__pycache__").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("__version__ = '1.0'\n")
+    (pkg / "knn.py").write_text("K = 1\n")
+    digest = resampler_cache._package_digest(pkg)
+    (pkg / "__pycache__" / "knn.cpython-313.pyc").write_bytes(b"bytecode")
+    assert resampler_cache._package_digest(pkg) == digest
+    (pkg / "knn.py").write_text("K = 2\n")
+    assert resampler_cache._package_digest(pkg) != digest
 
 
 def test_only_the_listed_methods(points, monkeypatch, tmp_path):
