@@ -77,6 +77,20 @@ def test_coarsen_healpix_group_several_levels():
     np.testing.assert_allclose(coarsened["a"].values, [values.mean()])
 
 
+def test_coarsen_healpix_group_float16_mean_does_not_overflow():
+    # 61 cells of 1100.0 (and 3 missing ones): their float16 sum (67100) is
+    # above the largest float16 (65504), their mean is not
+    cell_ids = _dense_cells(4, [25])
+    values = np.full(cell_ids.size, 1100.0, dtype="float16")
+    values[:3] = np.nan
+    ds = _group(cell_ids, a=values)
+
+    coarsened = coarsen_healpix_group(ds, 4, healpix=HEALPIX)
+
+    assert coarsened["a"].dtype == np.float16
+    np.testing.assert_array_equal(coarsened["a"].values, [1100.0])
+
+
 def test_coarsen_healpix_group_reduce_methods():
     ds = _group(_dense_cells(6, [25]), a=np.array([1.0, 2.0, 3.0, 10.0]))
 

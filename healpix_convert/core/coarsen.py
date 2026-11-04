@@ -174,8 +174,19 @@ def coarsen_healpix_group(
     assert ds.sizes[dim] % window == 0
 
     cell_vars = [name for name, var in ds.data_vars.items() if dim in var.dims]
+    values = ds[cell_vars]
+    if reduce in ("mean", "sum"):
+        # a float16 sum overflows above 65504 (e.g. 64 cells of 1100.0): the
+        # blocks are summed in float32, and the result is cast back below
+        values = values.assign(
+            {
+                name: var.astype("float32")
+                for name, var in values.data_vars.items()
+                if var.dtype == np.float16
+            }
+        )
     # one block of cells per cell of the coarser level
-    blocks = ds[cell_vars].coarsen({dim: window}, coord_func={coordinate: "min"})
+    blocks = values.coarsen({dim: window}, coord_func={coordinate: "min"})
     if reduce == "mode":
         # the structure and the coordinates of the blocks (their values are
         # replaced below, so this reduction is never computed)
