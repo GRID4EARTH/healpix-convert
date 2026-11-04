@@ -101,9 +101,10 @@ where each bit is a flag of its own (e.g. quality flags), are aggregated with
 cells, even in a minority of them, which `"mode"` would drop. Missing cells
 (the fill value) are skipped, and a coarser cell with no data gets the fill
 value. Signed and unsigned integers are both supported (the sign bit is a flag
-like the others); a floating point variable is an error, as is a 64-bit
-integer variable with a fill value, whose values are decoded as floating point
-values that do not hold all their bits.
+like the others); a floating point variable is an error, as is a packed integer
+variable (`scale_factor`, `add_offset`) and a 64-bit integer variable with a
+fill value, whose values are decoded as floating point values that do not hold
+all their bits.
 
 The data type and the fill value of each variable are preserved, an integer
 variable being rounded instead of truncated.

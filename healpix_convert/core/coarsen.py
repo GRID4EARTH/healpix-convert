@@ -128,6 +128,13 @@ def _flags_dtype(var: xr.DataArray, name: Hashable) -> np.dtype:
             f"the 'bitwise_or' reduction needs integer bit flags, but the variable "
             f"{name!r} has the data type {dtype}"
         )
+    if any(key in var.encoding for key in ("scale_factor", "add_offset")):
+        # the decoded values are scaled: their bits are not the stored flags
+        raise ValueError(
+            f"the 'bitwise_or' reduction does not support the variable {name!r}: "
+            "it is packed (scale_factor / add_offset), its decoded values are not "
+            "the stored bit flags"
+        )
     if np.issubdtype(var.dtype, np.floating) and dtype.itemsize > 4:
         # a 64-bit integer decoded as float64 has lost its high bits already
         raise ValueError(
