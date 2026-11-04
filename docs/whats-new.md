@@ -71,6 +71,16 @@
   every item of that level, which one item per array makes particularly
   verbose, while the attributes of a level group already describe its grid and
   the `asset` of an item names its refinement level.
+- Neighbour links store: with `HEALPIX_CONVERT_NEIGHBOUR_STORE` set to a URL
+  (storage options as JSON in `HEALPIX_CONVERT_NEIGHBOUR_STORE_OPTIONS`), the
+  links of the neighbour searches are kept there by geometry, and later
+  resamplers on the same geometry are built from them without a new search.
+  The key of a resampler covers the files of the imported healpix-resample
+  package, not only its version string, and the torch and healpix-geo
+  versions, so links found by other code are never reused. It does not cover
+  the device of the search: machines with and without a GPU sharing a store
+  all use the links of the first search. healpix-resample 2026.11.1 or later
+  is required ({pull}`99`).
 - New `asset_type` multiscale setting: what a layout item refers to, a level
   group (`"group"`) or one array of a level (`"array"`). With `"auto"` (the
   default), the level groups are the assets where they describe every level
@@ -89,6 +99,11 @@
 - The `asset` of a multiscales layout item is now a path relative to the group
   holding the metadata (e.g. `"7"` instead of `"measurements/7"`), as the
   Multiscales Zarr convention asks.
+- Resamplers can be reused between the groups on the same input grid: with
+  `HEALPIX_CONVERT_RESAMPLER_CACHE` set to a directory private to the job, the
+  resamplers of the methods in `HEALPIX_CONVERT_RESAMPLER_CACHE_METHODS`
+  (default `"nearest"`) are pickled there and loaded by later groups with the
+  same input points, output cells and parameters. Off by default ({pull}`94`).
 - The attributes of the output variables can be set from the group settings
   (`metadata.override_attrs`), and not only excluded ({issue}`36`).
 - The STAC properties, extensions, links and assets propagated to the output
