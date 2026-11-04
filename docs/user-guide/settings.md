@@ -15,7 +15,7 @@ import healpix_convert as hc
 
 settings = hc.ConvertSettings.from_dict({"group_settings": {...}})
 settings = hc.ConvertSettings.from_json(json_string)
-settings = hc.get_settings("era5")  # or "cams-eac4", "climatedt-sfc"
+settings = hc.get_settings("era5")  # or "cams-eac4", "climatedt-sfc", "dem-glo30"
 ```
 
 `to_dict()` and `to_json()` give the settings back, e.g., to store them or to
