@@ -86,6 +86,11 @@
   `healpix_cell_dense` chunk method: the cells of a coarser cell are then
   consecutive cells of the converted arrays, so the levels are aggregated by
   position without reading any cell id.
+- `generate_pyramids(in_memory=True)` reads the output dataset once, computes
+  the mean pyramids in numpy and writes the derived levels at once; the
+  arrays are decoded and encoded in a pool of processes
+  (`HEALPIX_CONVERT_PYRAMID_PROCESSES`). Opt-in; same results as the default
+  path up to the order of the sums ({pull}`98`).
 - The `asset` of a multiscales layout item is now a path relative to the group
   holding the metadata (e.g. `"7"` instead of `"measurements/7"`), as the
   Multiscales Zarr convention asks.

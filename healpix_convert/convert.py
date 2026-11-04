@@ -13,6 +13,7 @@ import shapely
 import structlog
 import xarray as xr
 import zarr.api.synchronous as zarr
+from zarr.storage import MemoryStore
 
 from healpix_convert.cache import create_staging_cache
 from healpix_convert.core.conversion_models import ConvertStagingCache
@@ -405,6 +406,7 @@ def generate_pyramids(
     output_path: str,
     *,
     output_storage_options: dict[str, Any] | None = None,
+    in_memory: bool = False,
 ) -> xr.DataTree:
     """Aggregate the converted data onto the coarser HEALPix refinement levels
     of the pyramids.
@@ -433,6 +435,20 @@ def generate_pyramids(
     output_storage_options : dict, optional
         Storage options passed to Zarr for reading the converted dataset and
         writing the pyramids (useful for, e.g., writing on S3 object store).
+    in_memory : bool, optional
+        Read the whole output dataset once (all its objects, concurrently),
+        aggregate the pyramids on that copy in memory, and write the derived
+        levels back at once (default: False, read and write the store as the
+        aggregation goes). Same computation as the default path, with the
+        sums in another order: the values can differ in the last bits
+        (float32 variables in particular), the arrays and metadata are the
+        same. On object storage the aggregation otherwise waits on many small
+        reads. The whole output dataset is held in memory, several times
+        over, and the decoding and encoding run in a pool of processes
+        (``HEALPIX_CONVERT_PYRAMID_PROCESSES``, default the CPUs available to
+        this process) started with ``spawn``: call it from a script under an
+        ``if __name__ == "__main__":`` guard, and not from a daemonic process
+        (e.g. a Dask worker task).
 
     Returns
     -------
@@ -453,6 +469,9 @@ def generate_pyramids(
 
     if not settings.multiscale_settings.pyramid_groups:
         log.info("••• no group with pyramid settings: nothing to generate.")
+    elif in_memory:
+        _write_derived_levels_in_memory(output_path, cache, settings, output_storage_options)
+        log.info("••• done!")
     else:
         root_group = zarr.open_group(
             output_path, mode="a", storage_options=output_storage_options
@@ -476,6 +495,103 @@ def generate_pyramids(
         chunks="auto",
         consolidated=False,
     )
+
+
+# processes of the in-memory pyramids (see _write_derived_levels_in_memory)
+_PYRAMID_POOL = None
+
+
+@dask.base.normalize_token.register(MemoryStore)
+def _tokenize_memory_store(store: MemoryStore) -> tuple[str, int]:
+    """Dask names the writes to an in-memory store after the store itself:
+    by identity, not by hashing all the objects it holds."""
+    return ("zarr-memory-store", id(store))
+
+
+def _available_cpus() -> int:
+    """The CPUs this process may run on (those given to the job by a batch
+    scheduler, not the whole node)."""
+    import os
+
+    if hasattr(os, "process_cpu_count"):  # Python >= 3.13
+        return os.process_cpu_count() or 1
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0)) or 1
+    return os.cpu_count() or 1
+
+
+def _write_derived_levels_in_memory(
+    output_path: str,
+    cache: ConvertStagingCache,
+    settings: ConvertSettings,
+    output_storage_options: dict[str, Any] | None,
+) -> None:
+    """:py:func:`write_derived_levels` on an in-memory copy of the output
+    dataset, then the new and changed objects written back at once."""
+    import fsspec
+    from zarr.core.buffer import default_buffer_prototype
+
+    fs, root = fsspec.core.url_to_fs(output_path, **(output_storage_options or {}))
+    root = root.rstrip("/")
+    # a listing cached by the file system (fsspec shares its instances) may
+    # miss the objects just written: list the store afresh
+    fs.invalidate_cache(root)
+    keys = fs.find(root)
+    if f"{root}/zarr.json" not in keys:
+        raise RuntimeError(f"{output_path}: no root group metadata in the listing")
+    log.info(f"••• reading the {len(keys)} objects of the output dataset into memory...")
+    contents = fs.cat(keys)  # concurrent on async file systems (e.g. S3)
+    before = {key[len(root) + 1 :]: value for key, value in contents.items()}
+
+    proto = default_buffer_prototype()
+    memory = MemoryStore(
+        {key: proto.buffer.from_bytes(value) for key, value in before.items()}
+    )
+    # the converted arrays are decoded in other processes (the codecs hold
+    # the GIL), their block means computed in numpy, and the rest of the
+    # derived levels (cell ids) by Dask in threads of this process
+    import multiprocessing
+    import os
+    from concurrent.futures import ProcessPoolExecutor
+
+    from healpix_convert.pyramid import decode_arrays_in_processes
+
+    global _PYRAMID_POOL
+    if _PYRAMID_POOL is None:
+        # kept for the next datasets: starting the processes (importing
+        # this package in each) costs more than a dataset's work
+        _PYRAMID_POOL = ProcessPoolExecutor(
+            max_workers=int(
+                os.environ.get("HEALPIX_CONVERT_PYRAMID_PROCESSES", _available_cpus())
+            ),
+            mp_context=multiprocessing.get_context("spawn"),
+        )
+    with dask.config.set(scheduler="threads"):
+        write_derived_levels(
+            memory,
+            cache,
+            settings,
+            direct=True,
+            loader=decode_arrays_in_processes(before, _PYRAMID_POOL),
+            pool=_PYRAMID_POOL,
+        )
+
+    after = {key: value.to_bytes() for key, value in memory._store_dict.items()}
+    changed = {
+        f"{root}/{key}": value
+        for key, value in after.items()
+        if before.get(key) != value
+    }
+    removed = [f"{root}/{key}" for key in before if key not in after]
+    log.info(f"••• writing {len(changed)} objects of the derived levels at once...")
+    if not fs.async_impl:
+        # a local file system does not create the directories of the new
+        # arrays and levels (object stores have none)
+        for d in {k.rsplit("/", 1)[0] for k in changed}:
+            fs.makedirs(d, exist_ok=True)
+    fs.pipe(changed)  # concurrent on async file systems
+    if removed:
+        fs.rm(removed)
 
 
 def finalize_healpix_dataset(

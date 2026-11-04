@@ -270,7 +270,7 @@ def _settings(
     )
 
 
-def _generate_pyramids(cache, settings, path):
+def _generate_pyramids(cache, settings, path, **kwargs):
     """The stages that write a pyramid of a hand-written dataset: creating its
     groups and metadata (as preparing the output dataset does), aggregating the
     converted data onto them, then finalizing the output dataset (which
@@ -287,7 +287,7 @@ def _generate_pyramids(cache, settings, path):
         group.attrs.update(get_multiscale_group_attrs(multiscales, settings.metadata))
 
     create_derived_level_groups(store, cache, settings)
-    generate_pyramids(cache, settings, path)
+    generate_pyramids(cache, settings, path, **kwargs)
 
     return finalize_healpix_dataset(cache, settings, path)
 
@@ -310,6 +310,35 @@ def converted(tmp_path):
     )
 
     return path, cell_ids, temperature, counts
+
+
+@pytest.fixture
+def converted_encoded(tmp_path):
+    """A full-earth dataset converted at the level 3 whose variables are
+    stored encoded: float32 with missing cells and exact zeros, an integer
+    variable with valid zeros and a CF ``_FillValue``, and a variable packed
+    as uint16 with ``scale_factor`` / ``add_offset``.
+    """
+    cell_ids = _dense_cells(3)
+    rng = np.random.default_rng(7)
+    single = rng.random(cell_ids.size).astype("float32")
+    single[rng.random(cell_ids.size) < 0.1] = np.nan
+    single[rng.random(cell_ids.size) < 0.1] = 0.0
+    flags = rng.integers(0, 5, cell_ids.size).astype("uint8")
+    packed = np.round(rng.random(cell_ids.size), 4)
+    packed[rng.random(cell_ids.size) < 0.1] = np.nan
+
+    ds = _level_dataset(3, cell_ids, single=single, flags=flags, packed=packed)
+    ds["flags"].encoding = {"_FillValue": 255}
+    ds["packed"].encoding = {
+        "dtype": "uint16",
+        "scale_factor": 1e-4,
+        "add_offset": -0.1,
+        "_FillValue": 65535,
+    }
+    path = _write_converted(tmp_path / "converted.zarr", {3: ds})
+
+    return (path,)
 
 
 @pytest.fixture
@@ -1227,3 +1256,48 @@ def test_multiscales_of_a_group_without_a_pyramid():
         assert "derived_from" not in _layout(multiscales, asset)
         assert "transform" not in _layout(multiscales, asset)
         assert "resampling_method" not in _layout(multiscales, asset)
+
+
+@pytest.mark.parametrize(
+    ("fixture", "levels", "derived_levels"),
+    [
+        ("converted", [3], [2, 1, 0]),
+        ("converted_encoded", [3], [2, 1, 0]),
+        ("converted_multi_level", [3, 2], [1, 0]),
+    ],
+)
+def test_in_memory_pyramids_same_as_on_the_store(
+    fixture, levels, derived_levels, request, tmp_path, monkeypatch
+):
+    """generate_pyramids(in_memory=True) (block means in numpy, the arrays
+    decoded and encoded in processes, written at once) gives the derived
+    levels of the default path: same arrays and metadata, same values up to
+    the order of the sums."""
+    import shutil
+
+    monkeypatch.setenv("HEALPIX_CONVERT_PYRAMID_PROCESSES", "2")
+    path = request.getfixturevalue(fixture)[0]
+    pyramid = {"derived_levels": derived_levels}
+    copy = str(tmp_path / "in_memory.zarr")
+    shutil.copytree(path, copy)
+
+    _generate_pyramids(*_cache_and_settings(levels, pyramid), path)
+    _generate_pyramids(*_cache_and_settings(levels, pyramid), copy, in_memory=True)
+
+    for level in derived_levels:
+        a = zarr.open_group(path, path=f"{GROUP}/{level}", mode="r")
+        b = zarr.open_group(copy, path=f"{GROUP}/{level}", mode="r")
+        assert sorted(a.array_keys()) == sorted(b.array_keys())
+        for name in a.array_keys():
+            # as JSON: a NaN fill_value is not equal to itself in the metadata
+            # objects of some Zarr versions (e.g. 3.1)
+            assert a[name].metadata.to_dict() == b[name].metadata.to_dict(), name
+            actual, expected = b[name][...], a[name][...]
+            if np.issubdtype(expected.dtype, np.integer):
+                # stored integers (incl. packed values): no rounding slack
+                np.testing.assert_array_equal(actual, expected, err_msg=name)
+            else:
+                rtol = 1e-6 if expected.dtype == np.float32 else 1e-12
+                np.testing.assert_allclose(
+                    actual, expected, rtol=rtol, equal_nan=True, err_msg=name
+                )
