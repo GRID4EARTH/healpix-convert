@@ -124,3 +124,50 @@ def test_unreadable_file_is_rebuilt(points, monkeypatch, tmp_path):
     r = build_resampler(cls, "nearest", **_kwargs(lon, lat))
     ref = cls(**_kwargs(lon, lat)).resample(val)
     np.testing.assert_array_equal(r.resample(val).cell_data, ref.cell_data)
+
+
+def test_device_in_the_key_of_the_pickles_only(points):
+    lon, lat, _ = points
+    cls = healpix_resample.NearestResampler
+    cpu, cuda = {**_kwargs(lon, lat), "device": "cpu"}, {**_kwargs(lon, lat), "device": "cuda"}
+    # the neighbour links serve every device, a pickled resampler one only
+    assert resampler_cache.resampler_key(cls, cpu) == resampler_cache.resampler_key(cls, cuda)
+    assert resampler_cache.resampler_key(cls, cpu, with_device=True) != resampler_cache.resampler_key(
+        cls, cuda, with_device=True
+    )
+
+
+def test_device_slots_are_exclusive(monkeypatch, tmp_path):
+    import threading
+    import time
+
+    monkeypatch.setenv("HEALPIX_CONVERT_DEVICE", "cpu")
+    monkeypatch.setenv("HEALPIX_CONVERT_GPU_SLOTS", "1")
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setattr(resampler_cache.tempfile, "tempdir", None)
+    inside, peak, lock = [0], [0], threading.Lock()
+
+    def work():
+        with resampler_cache.device_slot():
+            with lock:
+                inside[0] += 1
+                peak[0] = max(peak[0], inside[0])
+            time.sleep(0.1)
+            with lock:
+                inside[0] -= 1
+
+    threads = [threading.Thread(target=work) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert peak[0] == 1
+
+
+@pytest.mark.parametrize("slots", ["0", "-1"])
+def test_device_slots_at_least_one(monkeypatch, slots):
+    monkeypatch.setenv("HEALPIX_CONVERT_DEVICE", "cpu")
+    monkeypatch.setenv("HEALPIX_CONVERT_GPU_SLOTS", slots)
+    with pytest.raises(ValueError, match="at least 1"):
+        with resampler_cache.device_slot():
+            pass

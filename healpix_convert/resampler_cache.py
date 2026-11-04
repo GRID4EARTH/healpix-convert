@@ -52,6 +52,89 @@ CACHE_DIR_ENV = "HEALPIX_CONVERT_RESAMPLER_CACHE"
 CACHE_METHODS_ENV = "HEALPIX_CONVERT_RESAMPLER_CACHE_METHODS"
 NEIGHBOUR_STORE_ENV = "HEALPIX_CONVERT_NEIGHBOUR_STORE"
 NEIGHBOUR_STORE_OPTIONS_ENV = "HEALPIX_CONVERT_NEIGHBOUR_STORE_OPTIONS"
+DEVICE_ENV = "HEALPIX_CONVERT_DEVICE"
+
+
+def default_device() -> str | None:
+    """``HEALPIX_CONVERT_DEVICE`` (e.g. ``cuda``): the torch device of the
+    resamplers that take one and whose settings set none. Unset: the defaults
+    of healpix-resample."""
+    return os.environ.get(DEVICE_ENV) or None
+
+
+GPU_SLOTS_ENV = "HEALPIX_CONVERT_GPU_SLOTS"
+
+
+@contextlib.contextmanager
+def device_slot():
+    """With ``HEALPIX_CONVERT_DEVICE`` and ``HEALPIX_CONVERT_GPU_SLOTS=n``
+    set: hold one of ``n`` slots of this machine (lock files in the temporary
+    directory, shared by its worker processes) while the resampler is built
+    and applied, or the lon/lat of an input are computed on the device, then
+    give the device memory of this process back. More
+    workers than slots can then read and write their chunks while others use
+    the device, without more of them on it at once than its memory holds.
+    The slots are shared by the processes with the same temporary directory
+    (``TMPDIR``), device and ``CUDA_VISIBLE_DEVICES``. Otherwise: nothing."""
+    slots = os.environ.get(GPU_SLOTS_ENV)
+    device = default_device()
+    if device is None or not slots:
+        yield
+        return
+    if int(slots) < 1:
+        raise ValueError(f"{GPU_SLOTS_ENV} must be at least 1, got {slots!r}")
+    import fcntl
+    import time
+
+    # one set of slots per device of the machine: the device name, and the
+    # GPUs this process sees (e.g. two jobs on two GPUs of one node)
+    tag = f"{device}-{os.environ.get('CUDA_VISIBLE_DEVICES', 'all')}"
+    tag = "".join(c if c.isalnum() or c in "-_" else "_" for c in tag)
+    files = [
+        open(
+            os.path.join(
+                tempfile.gettempdir(), f"healpix-convert-device-slot-{tag}-{i}.lock"
+            ),
+            "a",
+        )
+        for i in range(int(slots))
+    ]
+    held = None
+    try:
+        while held is None:
+            for f in files:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    held = f
+                    break
+                except BlockingIOError:
+                    pass
+            else:
+                time.sleep(0.02)
+        yield
+    finally:
+        if held is not None:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            fcntl.flock(held, fcntl.LOCK_UN)
+        for f in files:
+            f.close()
+
+
+def _with_device(resampler_cls: type, kwargs: dict[str, Any]) -> dict[str, Any]:
+    device = default_device()
+    if device is None or "device" in kwargs:
+        return kwargs
+    import inspect
+
+    takes_device = any(
+        "device" in inspect.signature(c.__init__).parameters
+        for c in resampler_cls.__mro__
+        if "__init__" in c.__dict__
+    )
+    return {**kwargs, "device": device} if takes_device else kwargs
 
 
 def _cache_dir(method: str) -> str | None:
@@ -86,11 +169,21 @@ def _healpix_resample_digest() -> bytes:
     return _package_digest(Path(healpix_resample.__file__).parent)
 
 
-def resampler_key(resampler_cls: type, kwargs: dict[str, Any]) -> str:
+def resampler_key(
+    resampler_cls: type, kwargs: dict[str, Any], *, with_device: bool = False
+) -> str:
     """Digest of everything the resampler is built from: its class, the
     healpix-resample code, the torch and healpix-geo versions (the neighbour
     search runs in torch, on cells and centres from healpix-geo), the input
-    points, the output cells and the other arguments."""
+    points, the output cells and the other arguments. The device only with
+    ``with_device``: the neighbour links do not depend on it, a pickled
+    resampler does (its tensors are restored on the device they were saved
+    from).
+
+    The input points are hashed as given: the lon/lat of a projected input
+    computed on a device (``HEALPIX_CONVERT_DEVICE``, see
+    :mod:`healpix_convert.core.tmerc`) differ from pyproj's in the last bits,
+    so runs with and without the device keep separate entries."""
     import torch
 
     h = hashlib.blake2b(digest_size=20)
@@ -99,6 +192,8 @@ def resampler_key(resampler_cls: type, kwargs: dict[str, Any]) -> str:
     h.update(str(torch.__version__).encode())
     h.update(importlib.metadata.version("healpix-geo").encode())
     for name in sorted(kwargs):
+        if name == "device" and not with_device:
+            continue
         value = kwargs[name]
         h.update(name.encode())
         if isinstance(value, np.ndarray):
@@ -212,12 +307,16 @@ def _build_with_links(resampler_cls: type, kwargs: dict[str, Any]) -> Any:
 def build_resampler(resampler_cls: type, method: str, **kwargs: Any) -> Any:
     """``resampler_cls(**kwargs)``, from the resampler cache when it is on
     for ``method``, else from the neighbour links store when it is on (see
-    the module docstring)."""
+    the module docstring). The device is ``HEALPIX_CONVERT_DEVICE`` when it is
+    set and ``kwargs`` has none."""
+    kwargs = _with_device(resampler_cls, kwargs)
     directory = _cache_dir(method)
     if directory is None:
         return _build_with_links(resampler_cls, kwargs)
 
-    path = os.path.join(directory, resampler_key(resampler_cls, kwargs) + ".pkl")
+    path = os.path.join(
+        directory, resampler_key(resampler_cls, kwargs, with_device=True) + ".pkl"
+    )
     try:
         with open(path, "rb") as f:
             return pickle.load(f)
