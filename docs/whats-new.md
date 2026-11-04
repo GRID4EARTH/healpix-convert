@@ -43,6 +43,10 @@
 - New `"bitwise_or"` reduction for the pyramids (the `reduce` pyramid setting):
   a bit is set in a coarser cell if it is set in any of its cells, for bit
   flags (integer variables where each bit is a flag of its own).
+- The input datasets of one group may now have spatial dimensions of different
+  sizes, e.g. grids of different spacing next to each other: their points are
+  resampled together. Before, such inputs were refused as "incompatible spatial
+  info"; they still need the same spatial dimension and coordinate names.
 - Projected input datasets whose x or y coordinates run the other way than
   usual (increasing y, i.e. a bottom-up raster, or decreasing x) are now
   converted: the input points of a chunk are selected with slice bounds that
