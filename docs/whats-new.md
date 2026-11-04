@@ -121,6 +121,10 @@
 - The variables of a chunk are resampled in one batched call ({pull}`31`) and
   the output arrays of a chunk are written concurrently ({pull}`39`).
 - The group codecs are checked when the settings are created ({pull}`27`).
+- healpix-resample 2026.10.3 or later is required. Its release changes the
+  results of the `"bicubic"` resampler and of the samples tied with the
+  `Npt`-th nearest cell; the neighbour search accepts `coarse_level_delta` in
+  the resampler `init_params` ({pull}`92`).
 - The cell ids can be delta-coded before compression ({pull}`42`, {pull}`47`).
 - Object string arrays are written as variable-length strings ({pull}`40`).
 - The affine transform derived from x / y coordinates points at the top-left
