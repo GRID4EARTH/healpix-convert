@@ -1289,7 +1289,9 @@ def test_in_memory_pyramids_same_as_on_the_store(
         b = zarr.open_group(copy, path=f"{GROUP}/{level}", mode="r")
         assert sorted(a.array_keys()) == sorted(b.array_keys())
         for name in a.array_keys():
-            assert a[name].metadata == b[name].metadata, name
+            # as JSON: a NaN fill_value is not equal to itself in the metadata
+            # objects of some Zarr versions (e.g. 3.1)
+            assert a[name].metadata.to_dict() == b[name].metadata.to_dict(), name
             actual, expected = b[name][...], a[name][...]
             if np.issubdtype(expected.dtype, np.integer):
                 # stored integers (incl. packed values): no rounding slack
