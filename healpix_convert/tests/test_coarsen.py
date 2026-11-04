@@ -239,17 +239,27 @@ def test_coarsen_healpix_group_bitwise_or_keeps_data_type():
 
 
 @pytest.mark.parametrize(
-    ["values", "encoded_dtype", "match"],
+    ["values", "encoding", "match"],
     [
-        pytest.param(np.arange(4.0), None, "integer bit flags", id="float"),
+        pytest.param(np.arange(4.0), {}, "integer bit flags", id="float"),
         # 64-bit flags with a fill value, decoded as float64
-        pytest.param(np.arange(4.0), "uint64", "do not hold all", id="decoded-64-bit"),
+        pytest.param(
+            np.arange(4.0), {"dtype": "uint64"}, "do not hold all", id="decoded-64-bit"
+        ),
+        # packed integers: the decoded values are scaled, not the stored flags
+        pytest.param(
+            np.array([0.5, 1.0, 2.0, 4.0]),
+            {"dtype": "int16", "scale_factor": 0.5},
+            "packed",
+            id="packed",
+        ),
     ],
 )
-def test_coarsen_healpix_group_bitwise_or_needs_integers(values, encoded_dtype, match):
+def test_coarsen_healpix_group_bitwise_or_needs_integers(values, encoding, match):
     ds = _group(_dense_cells(6, [25]), a=values)
-    if encoded_dtype is not None:
-        ds["a"].encoding["dtype"] = np.dtype(encoded_dtype)
+    ds["a"].encoding.update(
+        {k: np.dtype(v) if k == "dtype" else v for k, v in encoding.items()}
+    )
 
     with pytest.raises(ValueError, match=match):
         coarsen_healpix_group(ds, 6, healpix=HEALPIX, reduce="bitwise_or")
