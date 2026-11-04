@@ -60,6 +60,27 @@ def test_other_inputs_other_key(points):
     assert key != resampler_cache.resampler_key(healpix_resample.PSFResampler, _kwargs(lon, lat))
 
 
+def test_other_healpix_resample_code_other_key(points, monkeypatch):
+    # same version string, other code behind it (e.g. installed from a source archive)
+    lon, lat, _ = points
+    cls = healpix_resample.NearestResampler
+    key = resampler_cache.resampler_key(cls, _kwargs(lon, lat))
+    monkeypatch.setattr(resampler_cache, "_healpix_resample_digest", lambda: b"other code")
+    assert key != resampler_cache.resampler_key(cls, _kwargs(lon, lat))
+
+
+def test_package_digest_follows_the_code(tmp_path):
+    pkg = tmp_path / "pkg"
+    (pkg / "__pycache__").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("__version__ = '1.0'\n")
+    (pkg / "knn.py").write_text("K = 1\n")
+    digest = resampler_cache._package_digest(pkg)
+    (pkg / "__pycache__" / "knn.cpython-313.pyc").write_bytes(b"bytecode")
+    assert resampler_cache._package_digest(pkg) == digest
+    (pkg / "knn.py").write_text("K = 2\n")
+    assert resampler_cache._package_digest(pkg) != digest
+
+
 def test_only_the_listed_methods(points, monkeypatch, tmp_path):
     monkeypatch.setenv(CACHE_DIR_ENV, str(tmp_path))
     monkeypatch.delenv(CACHE_METHODS_ENV, raising=False)
