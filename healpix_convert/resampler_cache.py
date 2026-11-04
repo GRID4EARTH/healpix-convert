@@ -83,11 +83,14 @@ def _healpix_resample_digest() -> bytes:
 
 def resampler_key(resampler_cls: type, kwargs: dict[str, Any]) -> str:
     """Digest of everything the resampler is built from: its class, the
-    healpix-resample code, the input points, the output cells and the other
-    arguments."""
+    healpix-resample code, the torch version (the neighbour search runs in
+    torch), the input points, the output cells and the other arguments."""
+    import torch
+
     h = hashlib.blake2b(digest_size=20)
     h.update(f"{resampler_cls.__module__}.{resampler_cls.__qualname__}".encode())
     h.update(_healpix_resample_digest())
+    h.update(str(torch.__version__).encode())
     for name in sorted(kwargs):
         value = kwargs[name]
         h.update(name.encode())

@@ -69,6 +69,16 @@ def test_other_healpix_resample_code_other_key(points, monkeypatch):
     assert key != resampler_cache.resampler_key(cls, _kwargs(lon, lat))
 
 
+def test_other_torch_other_key(points, monkeypatch):
+    import torch
+
+    lon, lat, _ = points
+    cls = healpix_resample.NearestResampler
+    key = resampler_cache.resampler_key(cls, _kwargs(lon, lat))
+    monkeypatch.setattr(torch, "__version__", "0.0.0")
+    assert key != resampler_cache.resampler_key(cls, _kwargs(lon, lat))
+
+
 def test_package_digest_follows_the_code(tmp_path):
     pkg = tmp_path / "pkg"
     (pkg / "__pycache__").mkdir(parents=True)
