@@ -194,15 +194,25 @@ def resampler_key(
     for name in sorted(kwargs):
         if name == "device" and not with_device:
             continue
-        value = kwargs[name]
         h.update(name.encode())
-        if isinstance(value, np.ndarray):
-            value = np.ascontiguousarray(value)
-            h.update(f"{value.dtype.str}{value.shape}".encode())
-            h.update(value.data)
-        else:
-            h.update(repr(value).encode())
+        _hash_value(h, kwargs[name])
     return h.hexdigest()
+
+
+def _hash_value(h: Any, value: Any) -> None:
+    """Feed ``value`` to the digest ``h``: arrays by their bytes, also inside
+    lists and tuples (the axes of the grid resamplers, one per input), whose
+    repr elides the middle of long arrays."""
+    if isinstance(value, np.ndarray):
+        value = np.ascontiguousarray(value)
+        h.update(f"{value.dtype.str}{value.shape}".encode())
+        h.update(value.data)
+    elif isinstance(value, (list, tuple)):
+        h.update(f"{type(value).__name__}{len(value)}".encode())
+        for item in value:
+            _hash_value(h, item)
+    else:
+        h.update(repr(value).encode())
 
 
 def pack_links(links: Any) -> bytes:
