@@ -980,10 +980,12 @@ def _write_input(path):
     return str(path)
 
 
-def _workflow_settings(derived_levels=(1, 0), **group_kwargs) -> ConvertSettings:
+def _workflow_settings(
+    derived_levels=(1, 0), pyramid_codecs=None, **group_kwargs
+) -> ConvertSettings:
     """Convert two input groups at the levels 3 and 2, with dense chunks of one
-    level-1 cell each, and a pyramid with the given derived levels (other group
-    settings given as keyword arguments).
+    level-1 cell each, and a pyramid with the given derived levels and codecs
+    (other group settings given as keyword arguments).
     """
     chunk = {
         "method": "healpix_cell_dense",
@@ -1004,7 +1006,12 @@ def _workflow_settings(derived_levels=(1, 0), **group_kwargs) -> ConvertSettings
         {
             "multiscale_settings": {
                 "groups": [GROUP],
-                "pyramid_groups": {GROUP: {"derived_levels": list(derived_levels)}},
+                "pyramid_groups": {
+                    GROUP: {
+                        "derived_levels": list(derived_levels),
+                        "codecs": pyramid_codecs,
+                    }
+                },
             },
             "group_settings": group_settings,
         }
@@ -1102,6 +1109,73 @@ def test_create_healpix_dataset_fills_the_pyramids(tmp_path):
     converted = dt[GROUP]["3"].to_dataset()
     parents = converted["cell_ids"].values >> np.uint64(4)
     expected = _block_means(converted["a"].values, parents)
+    np.testing.assert_allclose(dt[GROUP]["1"]["a"].values, expected, atol=1e-12)
+
+
+def _sharding(inner, codecs):
+    """A ``sharding_indexed`` codec setting with the given inner chunks."""
+    bytes_codec = {"name": "bytes", "configuration": {"endian": "little"}}
+    return {
+        "name": "sharding_indexed",
+        "configuration": {
+            "chunk_shape": [inner],
+            "codecs": codecs,
+            "index_codecs": [bytes_codec, {"name": "crc32c"}],
+        },
+    }
+
+
+@pytest.mark.parametrize("derived", ["plain", "sharded"])
+@pytest.mark.parametrize("converted", ["plain", "sharded"])
+def test_create_healpix_dataset_sharded_or_not(tmp_path, converted, derived):
+    """The converted levels (``codecs`` and ``healpix_coordinate_codecs`` group
+    settings) and the derived levels (``codecs`` pyramid setting) are sharded
+    or not independently, through the whole conversion."""
+    bytes_codec = {"name": "bytes", "configuration": {"endian": "little"}}
+    zstd = {"name": "zstd", "configuration": {}}
+    delta = {"name": "numcodecs.delta", "configuration": {"dtype": "<u8"}}
+    if converted == "sharded":
+        # chunks of 16 (level 3) and 4 (level 2) cells, inner chunks of 4
+        group_kwargs = {
+            "codecs": [_sharding(4, [bytes_codec, zstd])],
+            "healpix_coordinate_codecs": [_sharding(4, [delta, bytes_codec, zstd])],
+        }
+    else:
+        group_kwargs = {
+            "codecs": [bytes_codec, zstd],
+            "healpix_coordinate_codecs": [delta, bytes_codec, zstd],
+        }
+    # inner chunks of 4 cells, cut to the single cell of the level-1 chunks
+    pyramid_codecs = (
+        [_sharding(4, [bytes_codec, zstd])] if derived == "sharded" else [zstd]
+    )
+    input_path = _write_input(tmp_path / "input.zarr")
+    output_path = str(tmp_path / "converted.zarr")
+
+    dt = create_healpix_dataset(
+        [input_path],
+        _workflow_settings(
+            derived_levels=[1], pyramid_codecs=pyramid_codecs, **group_kwargs
+        ),
+        output_path,
+    )
+
+    group = zarr.open_group(output_path, mode="r")[GROUP]
+    for level, name, sharded in [
+        (3, "a", converted == "sharded"),
+        (2, "b", converted == "sharded"),
+        (1, "a", derived == "sharded"),
+        (1, "b", derived == "sharded"),
+    ]:
+        assert (group[f"{level}/{name}"].shards is not None) == sharded
+        # the cell ids follow the converted level
+        cell_ids = group[f"{level}/cell_ids"]
+        assert (cell_ids.shards is not None) == (converted == "sharded")
+        assert [f.codec_name for f in cell_ids.filters] == ["numcodecs.delta"]
+
+    converted_ds = dt[GROUP]["3"].to_dataset()
+    parents = converted_ds["cell_ids"].values >> np.uint64(4)
+    expected = _block_means(converted_ds["a"].values, parents)
     np.testing.assert_allclose(dt[GROUP]["1"]["a"].values, expected, atol=1e-12)
 
 

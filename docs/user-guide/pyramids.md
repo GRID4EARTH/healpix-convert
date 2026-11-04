@@ -174,7 +174,10 @@ as they would code the aggregated values a second time.
 A `sharding_indexed` serializer writes one shard per chunk of a derived level,
 with the inner chunks it gives. The chunks of the coarsest derived levels may
 hold fewer cells than those inner chunks: there, the inner chunks are cut to
-the chunk, i.e. each shard holds one inner chunk.
+the chunk, i.e. each shard holds one inner chunk. Whether the aggregated
+variables are sharded depends on this setting only: the derived levels of
+sharded converted levels are not sharded without a `sharding_indexed`
+serializer here, and they can be sharded when the converted levels are not.
 
 The cell ids of the derived levels are written with the codecs of the cell ids
 of the converted level (the `healpix_coordinate_codecs` group setting, e.g. a
