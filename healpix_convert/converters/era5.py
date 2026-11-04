@@ -165,6 +165,10 @@ class ERA5Converter:
 
     With several times, each group gets a ``time`` coordinate (the enda and oper
     groups may have different times).
+
+    Memory: each process converting chunks keeps the full HEALPix map of every
+    variable at every time (0.75 MiB each), e.g. about 6 GiB for a month of
+    hourly analyses. For long ranges, write one store per day instead.
     """
 
     def __init__(
