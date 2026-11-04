@@ -52,6 +52,13 @@
   dimension without such a setting are now refused with a message pointing to
   it; before, inputs of the same size were concatenated position by position
   even when their labels differed.
+- Opt-in GPU path: `HEALPIX_CONVERT_DEVICE` (e.g. `cuda`) is the torch device
+  of the resamplers whose settings give none, and the lon/lat of transverse
+  Mercator inputs (EPSG method 9807, metres) are computed on it; they differ
+  from pyproj's in the last bits, so the results are not bit-identical to a
+  run without the variable. `HEALPIX_CONVERT_GPU_SLOTS=n` limits how many
+  processes use the device at once, for the resamplers and the lon/lat
+  computation alike ({pull}`100`).
 - The multiscales metadata describes each derived level of a pyramid: the
   converted level it is aggregated from (`derived_from`), the transformation
   from it (`transform`, whose `scale` is how much longer a cell is) and the
@@ -71,6 +78,16 @@
   every item of that level, which one item per array makes particularly
   verbose, while the attributes of a level group already describe its grid and
   the `asset` of an item names its refinement level.
+- Neighbour links store: with `HEALPIX_CONVERT_NEIGHBOUR_STORE` set to a URL
+  (storage options as JSON in `HEALPIX_CONVERT_NEIGHBOUR_STORE_OPTIONS`), the
+  links of the neighbour searches are kept there by geometry, and later
+  resamplers on the same geometry are built from them without a new search.
+  The key of a resampler covers the files of the imported healpix-resample
+  package, not only its version string, and the torch and healpix-geo
+  versions, so links found by other code are never reused. It does not cover
+  the device of the search: machines with and without a GPU sharing a store
+  all use the links of the first search. healpix-resample 2026.11.1 or later
+  is required ({pull}`99`).
 - New `asset_type` multiscale setting: what a layout item refers to, a level
   group (`"group"`) or one array of a level (`"array"`). With `"auto"` (the
   default), the level groups are the assets where they describe every level
@@ -89,6 +106,11 @@
 - The `asset` of a multiscales layout item is now a path relative to the group
   holding the metadata (e.g. `"7"` instead of `"measurements/7"`), as the
   Multiscales Zarr convention asks.
+- Resamplers can be reused between the groups on the same input grid: with
+  `HEALPIX_CONVERT_RESAMPLER_CACHE` set to a directory private to the job, the
+  resamplers of the methods in `HEALPIX_CONVERT_RESAMPLER_CACHE_METHODS`
+  (default `"nearest"`) are pickled there and loaded by later groups with the
+  same input points, output cells and parameters. Off by default ({pull}`94`).
 - The attributes of the output variables can be set from the group settings
   (`metadata.override_attrs`), and not only excluded ({issue}`36`).
 - The STAC properties, extensions, links and assets propagated to the output
