@@ -163,6 +163,9 @@
 - Documentation site, built with Sphinx and published on GitHub Pages.
 - The pyramid stage no longer fails on an output dataset written with storage
   options, e.g. the credentials of an object store ({pull}`90`).
+- The `"mean"` and `"sum"` reductions of the pyramids sum `float16` variables
+  in `float32`: a block whose `float16` sum was above 65504 (e.g. 64 cells of
+  1100.0) got an infinite mean ({issue}`102`).
 
 ## v2026.10.0 (2026-10-08)
 
