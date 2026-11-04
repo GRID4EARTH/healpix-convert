@@ -145,12 +145,12 @@ of every derived level (not to their cell ids). It takes the same form as the
 
 ```python
 "pyramid_groups": {
-    "measurements/reflectance": {
+    "data/var": {
         "derived_levels": [18, 16, 15, 14, 13, 12],
         "codecs": [
             {
-                "name": "hcc-sentinel2-pyramid",
-                "configuration": {"quantification_value": 10000.0, "add_offset": -1000.0},
+                "name": "zstd",
+                "configuration": {"level": 5},
             }
         ],
     },
@@ -158,7 +158,7 @@ of every derived level (not to their cell ids). It takes the same form as the
 ```
 
 Since a chunk of a derived level holds the cells of one HEALPix cell, codecs
-that code one parent cell per chunk, like the Sentinel-2 serializers of
+that code one parent cell per chunk, like the HEALPix serializers of
 `healpix-compress`, can encode them. The converted levels keep the codecs they
 were written with: the codecs of a lossy serializer are not reused implicitly,
 as they would code the aggregated values a second time.
