@@ -26,6 +26,28 @@ def test_transform_on_device_same_as_pyproj(epsg, monkeypatch):
         np.testing.assert_allclose(got[name].values, ref[name].values, rtol=0, atol=1e-12)
 
 
+def test_transform_on_device_holds_a_slot(monkeypatch):
+    """The lon/lat are computed in a device slot, like the resamplers."""
+    import contextlib
+
+    from healpix_convert import resampler_cache
+
+    entered = []
+
+    @contextlib.contextmanager
+    def slot():
+        entered.append(1)
+        yield
+
+    monkeypatch.setattr(resampler_cache, "device_slot", slot)
+    monkeypatch.setenv("HEALPIX_CONVERT_DEVICE", "cpu")
+    x = xr.DataArray(399965.0 + 10.0 * np.arange(5), dims="x")
+    y = xr.DataArray(4499995.0 - 10.0 * np.arange(4), dims="y")
+    src, dst = pyproj.CRS.from_epsg(32630), pyproj.CRS.from_epsg(4326)
+    assert utils._transform_on_device(x, y, src, dst) is not None
+    assert entered == [1]
+
+
 def test_transform_on_device_other_crs(monkeypatch):
     """Not a transverse Mercator grid (here Lambert-93): pyproj, as before."""
     monkeypatch.setenv("HEALPIX_CONVERT_DEVICE", "cpu")

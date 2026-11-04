@@ -338,19 +338,18 @@ def _transform_on_device(
     params = tmerc_params(source_crs)
     if params is None:
         return None
+    from healpix_convert.resampler_cache import device_slot
+
     xx, yy = xr.broadcast(
         x.drop_indexes("x", errors="ignore"),
         y.drop_indexes("y", errors="ignore"),
     )
-    lon, lat = tmerc_inverse(
-        xx.values.ravel(), yy.values.ravel(), device=device, **params
-    )
-    if device.startswith("cuda"):
-        import torch
-
-        # outside the device slots (see resampler_cache.device_slot): give
-        # the memory back to the other processes on the device
-        torch.cuda.empty_cache()
+    # in a device slot, like the resamplers: no more processes on the device
+    # at once than the slots allow (the slot gives the memory back after)
+    with device_slot():
+        lon, lat = tmerc_inverse(
+            xx.values.ravel(), yy.values.ravel(), device=device, **params
+        )
     return xr.Coordinates(
         {
             "lon": xr.Variable(xx.dims, lon.reshape(xx.shape)),

@@ -57,7 +57,8 @@
   Mercator inputs (EPSG method 9807, metres) are computed on it; they differ
   from pyproj's in the last bits, so the results are not bit-identical to a
   run without the variable. `HEALPIX_CONVERT_GPU_SLOTS=n` limits how many
-  chunks use the device at once ({pull}`100`).
+  processes use the device at once, for the resamplers and the lon/lat
+  computation alike ({pull}`100`).
 - The multiscales metadata describes each derived level of a pyramid: the
   converted level it is aggregated from (`derived_from`), the transformation
   from it (`transform`, whose `scale` is how much longer a cell is) and the

@@ -64,7 +64,8 @@ def device_slot():
     """With ``HEALPIX_CONVERT_DEVICE`` and ``HEALPIX_CONVERT_GPU_SLOTS=n``
     set: hold one of ``n`` slots of this machine (lock files in the temporary
     directory, shared by its worker processes) while the resampler is built
-    and applied, then give the device memory of this process back. More
+    and applied, or the lon/lat of an input are computed on the device, then
+    give the device memory of this process back. More
     workers than slots can then read and write their chunks while others use
     the device, without more of them on it at once than its memory holds.
     The slots are shared by the processes with the same temporary directory
