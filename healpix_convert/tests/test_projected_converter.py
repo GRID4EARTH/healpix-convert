@@ -1,4 +1,4 @@
-"""Chunked conversion of projected (x/y) input data, e.g. EOPF Sentinel-2 groups."""
+"""Chunked conversion of projected (x/y) input data, e.g. a UTM raster group."""
 
 from pathlib import PurePath
 
@@ -29,7 +29,7 @@ LEVEL = 14
 RESOLUTION = 60.0
 BUFFER = 60.0
 
-PATH = PurePath("measurements/reflectance")
+PATH = PurePath("data/var")
 
 # one output chunk (HEALPix cell at the chunk level), in UTM zone 31N
 (CELL,) = healpix_geo.nested.lonlat_to_healpix(
@@ -62,7 +62,7 @@ def tile(
     buffered chunk polygon, `depth` meters below its north-east edge, so that
     the tile and the chunk overlap by a small triangle.
 
-    Like EOPF Zarr groups, the x/y coordinates are the pixel centres and the
+    As in many projected Zarr groups, the x/y coordinates are the pixel centres and the
     spatial metadata is given as STAC "proj:*" attributes. `data_shift` moves the
     data (coordinates and transform) east of the returned extent, i.e. makes the
     extent and the transform disagree. `ascending_y` gives a bottom-up raster
