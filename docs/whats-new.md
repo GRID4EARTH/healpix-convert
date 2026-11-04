@@ -201,7 +201,8 @@
   options, e.g. the credentials of an object store ({pull}`90`).
 - The `"mean"` and `"sum"` reductions of the pyramids sum `float16` variables
   in `float32`: a block whose `float16` sum was above 65504 (e.g. 64 cells of
-  1100.0) got an infinite mean ({issue}`102`).
+  1100.0) got an infinite mean ({issue}`102`). A `"sum"` above 65504 is still
+  infinite: it is written as `float16`.
 
 ## v2026.10.0 (2026-10-08)
 
