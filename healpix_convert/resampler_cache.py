@@ -22,7 +22,11 @@ storage options as JSON in ``HEALPIX_CONVERT_NEIGHBOUR_STORE_OPTIONS``), the
 links of the neighbour search of the resamplers that have one (healpix-resample
 ``NeighbourLinks``) are kept there, compressed, under the key of the resampler,
 and a resampler built on the same geometry is built from them: the search is
-skipped, the result is the same, bit for bit.
+skipped, and the resampler is the same, bit for bit, as the one built by the
+search that stored the links. The key does not cover the device the search
+runs on (healpix-resample uses CUDA when it is available): a store shared
+between machines with and without a GPU gives all of them the links of the
+first search, so their results agree.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import hashlib
+import importlib.metadata
 import io
 import json
 import os
@@ -168,11 +173,12 @@ def resampler_key(
     resampler_cls: type, kwargs: dict[str, Any], *, with_device: bool = False
 ) -> str:
     """Digest of everything the resampler is built from: its class, the
-    healpix-resample code, the torch version (the neighbour search runs in
-    torch), the input points, the output cells and the other arguments. The
-    device only with ``with_device``: the neighbour links do not depend on it,
-    a pickled resampler does (its tensors are restored on the device they were
-    saved from).
+    healpix-resample code, the torch and healpix-geo versions (the neighbour
+    search runs in torch, on cells and centres from healpix-geo), the input
+    points, the output cells and the other arguments. The device only with
+    ``with_device``: the neighbour links do not depend on it, a pickled
+    resampler does (its tensors are restored on the device they were saved
+    from).
 
     The input points are hashed as given: the lon/lat of a projected input
     computed on a device (``HEALPIX_CONVERT_DEVICE``, see
@@ -184,6 +190,7 @@ def resampler_key(
     h.update(f"{resampler_cls.__module__}.{resampler_cls.__qualname__}".encode())
     h.update(_healpix_resample_digest())
     h.update(str(torch.__version__).encode())
+    h.update(importlib.metadata.version("healpix-geo").encode())
     for name in sorted(kwargs):
         if name == "device" and not with_device:
             continue

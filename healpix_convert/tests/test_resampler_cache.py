@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib.metadata
+
 import healpix_resample
 import numpy as np
 import pytest
@@ -76,6 +78,16 @@ def test_other_torch_other_key(points, monkeypatch):
     cls = healpix_resample.NearestResampler
     key = resampler_cache.resampler_key(cls, _kwargs(lon, lat))
     monkeypatch.setattr(torch, "__version__", "0.0.0")
+    assert key != resampler_cache.resampler_key(cls, _kwargs(lon, lat))
+
+
+def test_other_healpix_geo_other_key(points, monkeypatch):
+    lon, lat, _ = points
+    cls = healpix_resample.NearestResampler
+    key = resampler_cache.resampler_key(cls, _kwargs(lon, lat))
+    real = importlib.metadata.version
+    monkeypatch.setattr(importlib.metadata, "version",
+                        lambda name: "0.0.0" if name == "healpix-geo" else real(name))
     assert key != resampler_cache.resampler_key(cls, _kwargs(lon, lat))
 
 
