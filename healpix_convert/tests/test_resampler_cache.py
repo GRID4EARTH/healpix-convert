@@ -60,6 +60,20 @@ def test_other_inputs_other_key(points):
     assert key != resampler_cache.resampler_key(healpix_resample.PSFResampler, _kwargs(lon, lat))
 
 
+def test_grid_axes_other_key():
+    # the grid resamplers take one lon and one lat axis per input, in lists: a
+    # change in the middle of a long axis (which repr elides) is another key
+    lon = np.arange(0.0, 20.0, 0.01)
+    lat = np.linspace(40.0, 50.0, 2000)
+    moved = lat.copy()
+    moved[1000] += 0.003
+    cls = healpix_resample.NearestResampler
+    key = resampler_cache.resampler_key(cls, _kwargs([lon], [lat]))
+    assert key == resampler_cache.resampler_key(cls, _kwargs([lon.copy()], [lat.copy()]))
+    assert key != resampler_cache.resampler_key(cls, _kwargs([lon], [moved]))
+    assert key != resampler_cache.resampler_key(cls, _kwargs([lon, lon], [lat, lat]))
+
+
 def test_only_the_listed_methods(points, monkeypatch, tmp_path):
     monkeypatch.setenv(CACHE_DIR_ENV, str(tmp_path))
     monkeypatch.delenv(CACHE_METHODS_ENV, raising=False)
