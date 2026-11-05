@@ -385,3 +385,24 @@ def resolution_to_level(
     base = EARTH_RADIUS_M * np.sqrt(np.pi / 3.0)
     level = int(round_func(np.log2(base / resolution)))
     return level
+
+
+def drop_cached_listings(store: Any) -> None:
+    """Drop the listings cached by the file system of a Zarr ``store``, if it
+    is an fsspec store, so that Zarr lists the objects it holds afresh.
+
+    A file system that caches its listings (e.g. s3fs) keeps them per
+    instance, and only drops those of the objects written through that same
+    instance, while fsspec shares its instances in a process: the objects
+    written through another instance (e.g. a sync one, or one with other
+    options) are missing from the listings of the instance Zarr reads the
+    store with, as long as that instance lives.
+    """
+    fs = getattr(store, "fs", None)
+    if fs is None:  # not an fsspec store (e.g. a local or memory Zarr store)
+        return
+    # Zarr wraps a sync file system: the listings are those of the wrapped one
+    fs = getattr(fs, "sync_fs", fs)
+    # all of them: s3fs drops the listings of the parents of a path, not those
+    # of its descendants
+    fs.invalidate_cache()
