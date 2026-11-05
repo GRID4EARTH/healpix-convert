@@ -103,6 +103,15 @@ class STACSettings(BaseModel):
     ``processing:lineage``) is written either way.
     """
 
+    provenance_packages: list[str] = Field(default_factory=list)
+    """Names of installed packages whose versions are recorded in
+    ``processing:software``, in addition to the ones healpix-convert always
+    records (itself, healpix-resample, healpix-compress, healpix-geo, zarr,
+    xarray, numpy and torch), e.g. the package that calls healpix-convert.
+
+    A package that is not installed is left out.
+    """
+
     merge_properties: MappingMergeStrategy = "pick_first"
     """How the STAC properties of several input datasets are merged.
 

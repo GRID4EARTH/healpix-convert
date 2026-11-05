@@ -6,9 +6,12 @@ conversion.
 
 from __future__ import annotations
 
+import importlib.metadata
 import itertools
 import json
+import os
 import re
+import subprocess
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import PurePath
@@ -71,24 +74,126 @@ STAC_PROCESSING_SCHEMA_URL = (
     "https://stac-extensions.github.io/processing/v1.2.0/schema.json"
 )
 
-#: Libraries whose versions are worth recording: the converter itself and the
-#: resampling engine that decides the actual data values.
-PROVENANCE_PACKAGES = ("healpix-convert", "healpix-resample")
+#: Libraries whose versions are worth recording: the converter itself, the
+#: resampling engine that decides the actual data values, the libraries that
+#: encode and write them, and torch, on which the resamplers compute.
+PROVENANCE_PACKAGES = (
+    "healpix-convert",
+    "healpix-resample",
+    "healpix-compress",
+    "healpix-geo",
+    "zarr",
+    "xarray",
+    "numpy",
+    "torch",
+)
+
+#: The name of the place where the conversion runs (e.g. a cluster, a cloud,
+#: a hub): recorded as ``processing:facility``. Nothing names it reliably from
+#: inside a job, so it is given by whoever runs the conversion.
+FACILITY_ENV = "HEALPIX_CONVERT_FACILITY"
+
+#: The STAC property describing what the conversion computed on.
+COMPUTE_PROPERTY = "healpix_convert:compute"
 
 
-def _package_versions() -> dict[str, str]:
-    import importlib.metadata
+def _git_commit(dist: importlib.metadata.Distribution) -> str | None:
+    """The commit a package was installed from, when it was installed from a
+    git repository (recorded by the installer, PEP 610)."""
+    try:
+        direct_url = json.loads(dist.read_text("direct_url.json") or "null")
+    except (OSError, ValueError):
+        return None
+    if not isinstance(direct_url, dict):
+        return None
+    commit = direct_url.get("vcs_info", {}).get("commit_id")
+    return commit if isinstance(commit, str) and commit else None
 
+
+def _package_version(package: str) -> str | None:
+    """The version of an installed package, with the commit it was installed
+    from (``+git.<sha>``) if it came from a git repository and its version
+    does not name that commit already."""
+    try:
+        dist = importlib.metadata.distribution(package)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+    version = dist.version
+    commit = _git_commit(dist)
+    if commit is None or commit[:7] in version:
+        return version
+    separator = "." if "+" in version else "+"
+    return f"{version}{separator}git.{commit[:12]}"
+
+
+def _package_versions(extra: Iterable[str] = ()) -> dict[str, str]:
     versions = {}
-    for package in PROVENANCE_PACKAGES:
-        try:
-            versions[package] = importlib.metadata.version(package)
-        except importlib.metadata.PackageNotFoundError:
+    for package in dict.fromkeys([*PROVENANCE_PACKAGES, *extra]):
+        version = _package_version(package)
+        if version is None:
             # not installed (e.g. an optional resampler backend): recording a
             # wrong version would be worse than recording none
             continue
+        versions[package] = version
 
     return versions
+
+
+def _requested_device() -> str | None:
+    """The device asked for the resamplers whose settings set none (None: the
+    default of healpix-resample)."""
+    return None
+
+
+def _gpu_names() -> list[str]:
+    """The names of the GPUs this process sees, from ``nvidia-smi`` (asking
+    torch would start CUDA in this process)."""
+    command = ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"]
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible:
+        command += ["-i", visible]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def format_compute_environment() -> dict[str, Any]:
+    """What the conversion computes on, as seen by this process.
+
+    ``device`` is the device of the resamplers whose settings set none: the
+    one asked for, else the default of healpix-resample (``cuda`` if torch
+    sees a GPU, else ``cpu``). On a GPU, ``gpus`` names the GPUs this process
+    sees and ``cuda`` the CUDA version of torch. A resampler whose settings
+    name a device uses that one: the settings are recorded as
+    ``processing:expression``.
+
+    No host name, user or job id: the output may be published.
+
+    """
+    try:
+        import torch
+    except ImportError:
+        torch = None
+
+    device = _requested_device()
+    if device is None:
+        cuda = torch is not None and torch.cuda.is_available()
+        device = "cuda" if cuda else "cpu"
+
+    compute: dict[str, Any] = {"device": device}
+    if device.startswith("cuda"):
+        gpus = _gpu_names()
+        if gpus:
+            compute["gpus"] = gpus
+        if torch is not None and torch.version.cuda:
+            compute["cuda"] = torch.version.cuda
+
+    return compute
 
 
 def format_stac_derived_links(input_paths: Iterable[str]) -> list[dict[str, Any]]:
@@ -118,7 +223,9 @@ def format_stac_processing(
 
     Records what is needed to tell two outputs of the same input apart: the
     conversion settings (including the resampler and its parameters), the
-    versions that produced them, the inputs, and when.
+    versions that produced them, what they were computed on (see
+    :py:func:`format_compute_environment`) and where (``processing:facility``,
+    from ``HEALPIX_CONVERT_FACILITY`` if set), the inputs, and when.
 
     Parameters
     ----------
@@ -135,12 +242,17 @@ def format_stac_processing(
     if processing_datetime is None:
         processing_datetime = datetime.now(UTC)
 
-    versions = _package_versions()
+    versions = _package_versions(settings.metadata.stac.provenance_packages)
 
     properties: dict[str, Any] = {
         "processing:datetime": processing_datetime.isoformat(),
         "processing:software": versions,
+        COMPUTE_PROPERTY: format_compute_environment(),
     }
+
+    facility = os.environ.get(FACILITY_ENV)
+    if facility:
+        properties["processing:facility"] = facility
 
     if include_conversion_settings:
         # the settings are what make two outputs of one input differ, so they
