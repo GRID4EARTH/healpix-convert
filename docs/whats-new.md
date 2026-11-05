@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- The ClimateDT converter now always resamples the native (spherical) HEALPix
+  level 7 fields onto the level 7 grid on the WGS84 ellipsoid, the grid its
+  output declares; the two grids are up to about 14 km apart. Before, it copied
+  the spherical values by default, and with `ellipsoid_correction=True` it
+  wrote the values of the first cells of the sphere into every chunk and
+  resampled the whole sphere again for each chunk. The `ellipsoid_correction`
+  parameter is removed. The resampler is PSF for every variable for now, with
+  the ERA5 settings (`threshold=0.5`, `lam=0`, clipped to the source range),
+  run once per variable and timestep; masked (NaN) source cells stay NaN. A
+  variable with a dimension besides time and cells (e.g. ocean depth levels)
+  raises `NotImplementedError`; before, only its first level was written.
+  Reported by Anne Fouilloux.
 - The pyramids can be written with a `sharding_indexed` serializer in the
   `codecs` pyramid setting: the inner chunks are cut to the chunks of the
   coarsest derived levels where those hold fewer cells. Before, the conversion
