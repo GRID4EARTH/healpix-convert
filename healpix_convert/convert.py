@@ -618,6 +618,14 @@ def _write_derived_levels_in_memory(
     fs.pipe(changed)  # concurrent on async file systems
     if removed:
         fs.rm(removed)
+    # written through a sync instance of the file system: the instance Zarr
+    # reads the store with (e.g. an async one) still has the listings of
+    # before, with no derived level array
+    utils.drop_cached_listings(
+        zarr.open_group(
+            output_path, mode="r", storage_options=output_storage_options
+        ).store
+    )
 
 
 def finalize_healpix_dataset(

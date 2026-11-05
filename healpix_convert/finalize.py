@@ -21,6 +21,7 @@ from pathlib import PurePath
 import structlog
 import zarr.api.synchronous as zarr
 
+from healpix_convert.core import utils
 from healpix_convert.core.conversion_models import (
     ROOT_GROUP_PATH,
     ConvertStagingCache,
@@ -102,6 +103,11 @@ def consolidate_output_metadata(
         return
 
     log.info(f"••• consolidating the Zarr metadata of {len(paths)} output group(s)...")
+
+    # consolidating lists the descendants of each group: list what the store
+    # holds, not what this process listed before the last groups and arrays
+    # were written (possibly through another instance of its file system)
+    utils.drop_cached_listings(output_store)
 
     for path in paths:
         name = path or "/"

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from pathlib import PurePath
 
+import fsspec
 import healpix_geo.nested as hpn
 import numpy as np
 import pytest
 import shapely
 import xarray as xr
 import zarr
+from fsspec.implementations.memory import MemoryFileSystem
 
 from healpix_convert import (
     ConvertSettings,
@@ -1519,3 +1521,150 @@ def test_in_memory_pyramids_same_as_on_the_store(
                 np.testing.assert_allclose(
                     actual, expected, rtol=rtol, equal_nan=True, err_msg=name
                 )
+
+
+class _ListingCacheMemoryFileSystem(MemoryFileSystem):
+    """A memory file system that caches its listings like an object store
+    file system (e.g. s3fs): per instance, until a write through that same
+    instance. fsspec shares its instances by their arguments, so the sync
+    instance of a URL and the async one Zarr opens on it (``asynchronous``)
+    are two instances, with two listing caches.
+    """
+
+    protocol = "listingcachememory"
+    store: dict = {}
+    pseudo_dirs = [""]
+
+    @classmethod
+    def _strip_protocol(cls, path):
+        prefix = f"{cls.protocol}://"
+        if isinstance(path, str) and path.startswith(prefix):
+            path = path[len(prefix) :]
+        return super()._strip_protocol(path)
+
+    def ls(self, path, detail=True, **kwargs):
+        path = self._strip_protocol(path)
+        if path not in self.dircache:
+            self.dircache[path] = super().ls(path, detail=True, **kwargs)
+        listing = self.dircache[path]
+        return listing if detail else [entry["name"] for entry in listing]
+
+    def find(self, path, maxdepth=None, withdirs=False, detail=False, **kwargs):
+        # one listing of the whole prefix, not cached (as s3fs lists it)
+        cached, self.dircache = self.dircache, {}
+        try:
+            return super().find(path, maxdepth, withdirs, detail, **kwargs)
+        finally:
+            self.dircache = cached
+
+    def invalidate_cache(self, path=None):
+        if path is None:
+            self.dircache.clear()
+            return
+        path = self._strip_protocol(path)
+        while True:
+            self.dircache.pop(path, None)
+            parent = self._parent(path)
+            if parent == path:
+                break
+            path = parent
+
+    def pipe_file(self, path, value, **kwargs):
+        super().pipe_file(path, value, **kwargs)
+        self.invalidate_cache(self._parent(path))
+
+    def _open(self, path, mode="rb", **kwargs):
+        if "r" not in mode:
+            self.invalidate_cache(self._parent(path))
+        return super()._open(path, mode, **kwargs)
+
+    def rm_file(self, path):
+        super().rm_file(path)
+        self.invalidate_cache(self._parent(path))
+
+    def makedirs(self, path, exist_ok=False):
+        super().makedirs(path, exist_ok=exist_ok)
+        self.invalidate_cache(self._parent(path))
+
+
+fsspec.register_implementation(
+    _ListingCacheMemoryFileSystem.protocol, _ListingCacheMemoryFileSystem
+)
+
+
+@pytest.fixture
+def listing_cache_store():
+    """A URL on that file system, emptied after the test."""
+    url = f"{_ListingCacheMemoryFileSystem.protocol}://converted.zarr"
+    yield url
+    fs = fsspec.filesystem(_ListingCacheMemoryFileSystem.protocol)
+    _ListingCacheMemoryFileSystem.store.clear()
+    _ListingCacheMemoryFileSystem.pseudo_dirs[:] = [""]
+    fs.invalidate_cache()
+
+
+@pytest.mark.parametrize("writer", ["other_process", "in_memory"])
+@pytest.mark.parametrize("converted", ["plain", "sharded"])
+def test_consolidated_metadata_on_a_listing_cache(
+    tmp_path, listing_cache_store, monkeypatch, converted, writer
+):
+    """The stages of the conversion run in one process, on a file system that
+    caches its listings: the consolidated metadata of the root group describes
+    every derived level, as the store holds them, though they were written
+    through another instance of the file system than the one that listed the
+    prepared dataset (e.g. in another process, or through the sync instance
+    of the in-memory pyramids)."""
+    monkeypatch.setenv("HEALPIX_CONVERT_PYRAMID_PROCESSES", "2")
+    bytes_codec = {"name": "bytes", "configuration": {"endian": "little"}}
+    zstd = {"name": "zstd", "configuration": {}}
+    if converted == "sharded":
+        # chunks of 16 (level 3) and 4 (level 2) cells, inner chunks of 4
+        sharding = {
+            "name": "sharding_indexed",
+            "configuration": {
+                "chunk_shape": [4],
+                "codecs": [bytes_codec, zstd],
+                "index_codecs": [bytes_codec, {"name": "crc32c"}],
+            },
+        }
+        group_kwargs = {"codecs": [sharding]}
+    else:
+        group_kwargs = {"codecs": [bytes_codec, zstd]}
+    input_path = _write_input(tmp_path / "input.zarr")
+    output_path = listing_cache_store
+    settings = _workflow_settings(**group_kwargs)
+
+    cache = create_staging_cache([input_path], settings)
+    prepare_healpix_dataset(cache, settings, output_path)
+    for group in (f"{GROUP}/fine", f"{GROUP}/coarse"):
+        convert_group_to_healpix(
+            group, cache=cache, settings=settings, output_path=output_path
+        )
+    if writer == "in_memory":
+        dt = generate_pyramids(cache, settings, output_path, in_memory=True)
+        # the returned tree is read through the instance of this process
+        assert set(dt[GROUP]["1"].data_vars) >= {"a", "b"}
+    else:
+        # the pyramids written as in another process: through other instances
+        # of the file system, while this process keeps its own (and their
+        # listings)
+        instances = dict(_ListingCacheMemoryFileSystem._cache)
+        _ListingCacheMemoryFileSystem.clear_instance_cache()
+        generate_pyramids(cache, settings, output_path)
+        _ListingCacheMemoryFileSystem._cache.clear()
+        _ListingCacheMemoryFileSystem._cache.update(instances)
+    finalize_healpix_dataset(cache, settings, output_path)
+
+    root = zarr.open_group(output_path, mode="r", use_consolidated=True)
+    consolidated = root.metadata.consolidated_metadata.flattened_metadata
+    for level in (1, 0):
+        for name in ("a", "b", "cell_ids"):
+            assert f"{GROUP}/{level}/{name}" in consolidated, (level, name)
+    assert (root[f"{GROUP}/3/a"].shards is not None) == (converted == "sharded")
+    # ... and a reader of the consolidated metadata alone reads them
+    dt = xr.open_datatree(output_path, engine="zarr", consolidated=True)
+    assert set(dt[GROUP].children) == {"3", "2", "1", "0"}
+    converted_ds = dt[GROUP]["3"].to_dataset()
+    parents = converted_ds["cell_ids"].values >> np.uint64(4)
+    expected = _block_means(converted_ds["a"].values, parents)
+    np.testing.assert_allclose(dt[GROUP]["1"]["a"].values, expected, atol=1e-12)
