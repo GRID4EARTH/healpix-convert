@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- New `"grid-bilinear"` resampler for input groups on a rectilinear lon/lat
+  grid, converted by dense chunks: each cell is interpolated from the 4 grid
+  nodes around its centre (healpix-resample's `GridBilinearResampler`), instead
+  of the inverse-distance mean of the nearby input points of `"bilinear"`. It
+  is exact for a field linear in longitude and latitude, and much faster and
+  lighter on large grids. It is only available with a healpix-resample version
+  that provides `GridBilinearResampler`.
 - New `finalize_healpix_dataset` conversion stage, the last one, run once every
   group of the output dataset has been written: it consolidates the Zarr
   metadata of the output dataset. No other stage writes consolidated metadata
@@ -18,6 +25,9 @@
   was consolidated. A `groups` path that names no group of the output dataset
   is reported with a warning when the staging cache is created, and skipped
   when the metadata is consolidated.
+- Minimum versions raised to healpix-resample 2026.10.2 (its `batch_size`
+  option, used by the `"dem-glo30"` settings), healpix-geo 0.4.1 and, for
+  development, healpix-plot 2026.7.0.
 - New `output_dtype` group setting, the floating-point data type of the resampled
   data variables (e.g. `"float16"`): before, the `"bilinear"` and `"psf"`
   resamplers always wrote `float64`. The derived levels of a pyramid follow the
@@ -52,6 +62,13 @@
   dimension without such a setting are now refused with a message pointing to
   it; before, inputs of the same size were concatenated position by position
   even when their labels differed.
+- New `"dem-glo30"` settings and example notebook for the Copernicus DEM
+  GLO-30: bilinear interpolation of the grid nodes (`"grid-bilinear"`) to
+  level 18 in float32, sharded (one shard per level-6 cell, inner chunks of
+  one level-8 cell), a pyramid of block means down to level 8,
+  and the licence of the data in the output STAC item. The notebook reads the
+  heights from Earth Data Hub or from the CDSE COG tiles (`SOURCE`). Based on
+  the GLO-30 notebook by Pablo Richard.
 - The multiscales metadata describes each derived level of a pyramid: the
   converted level it is aggregated from (`derived_from`), the transformation
   from it (`transform`, whose `scale` is how much longer a cell is) and the

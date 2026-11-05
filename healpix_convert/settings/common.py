@@ -36,6 +36,7 @@ from healpix_convert.settings.conventions import (
     DGGSConventionSelector,
     MultiscalesConventionSelector,
 )
+from healpix_convert.settings.dem import DEM_GLO30_CONVERT_SETTINGS
 from healpix_convert.settings.era5 import ERA5_CONVERT_SETTINGS
 from healpix_convert.settings.stac import STACSettings
 
@@ -107,6 +108,18 @@ class BilinearResamplerSettings(BaseResamplerSettings):
     name: Literal["bilinear"] = "bilinear"
 
 
+class GridBilinearResamplerSettings(BaseResamplerSettings):
+    """Settings for resampling a regular longitude/latitude grid onto HEALPix by
+    bilinear interpolation of the 4 grid nodes around each cell centre.
+
+    Only for groups with rectilinear (1-D) longitude/latitude coordinates,
+    converted by dense chunks. Needs a healpix-resample version that provides
+    ``GridBilinearResampler``.
+    """
+
+    name: Literal["grid-bilinear"] = "grid-bilinear"
+
+
 class PSFResamplerSettings(BaseResamplerSettings):
     """Settings for resampling data onto HEALPix using PSF interpolation."""
 
@@ -125,6 +138,7 @@ ResamplerSettings: TypeAlias = (
     KNearestNeighborsResamplerSettings
     | NearestResamplerSettings
     | BilinearResamplerSettings
+    | GridBilinearResamplerSettings
     | PSFResamplerSettings
     | CellPointResamplerSettings
 )
@@ -509,6 +523,18 @@ class HealpixGroupSettings(BaseModel):
             raise ValueError(
                 "HEALPix refinement level must be equal to 29 when the 'cell-point' resampler "
                 "is used."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_grid_bilinear_resampler_chunk(self) -> HealpixGroupSettings:
+        if self.resampler.name == "grid-bilinear" and not isinstance(
+            self.chunk, HealpixDenseChunkSettings
+        ):
+            raise ValueError(
+                "the 'grid-bilinear' resampler needs dense chunks "
+                "(chunk method 'healpix_cell_dense')"
             )
 
         return self
@@ -1006,6 +1032,8 @@ def get_settings(name: str) -> ConvertSettings:
         return ConvertSettings.model_validate(CAMS_CONVERT_SETTINGS)
     elif name == "climatedt-sfc":
         return ConvertSettings.model_validate(CDT_SFC_CONVERT_SETTINGS)
+    elif name == "dem-glo30":
+        return ConvertSettings.model_validate(DEM_GLO30_CONVERT_SETTINGS)
 
     else:
         raise ValueError(f"settings not found for {name!r}")

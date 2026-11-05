@@ -3,14 +3,14 @@
 The tutorials are the notebooks of the
 [`notebooks`](https://github.com/GRID4EARTH/healpix-convert/tree/main/notebooks)
 folder of the repository. They are shown here without being run: running them
-needs access to the input data (CDS, ADS or Polytope credentials, or a local
-copy of the ESA CCI land cover map) and large downloads.
+needs access to the input data (CDS, ADS, Polytope or Earth Data Hub
+credentials, or a local copy of the ESA CCI land cover map) and large downloads.
 
 The ERA5, CAMS and ClimateDT notebooks use the product converters of
 `healpix_convert.converters`, which download the data and convert it in three
 steps (`prepare`, `convert_group` for each chunk, `consolidate`). The ESA CCI
-land cover notebook uses the generic conversion functions described in the
-{doc}`quickstart`.
+land cover and Copernicus DEM notebooks use the generic conversion functions
+described in the {doc}`quickstart`.
 
 ::::{grid} 1 1 2 2
 :gutter: 3
@@ -50,6 +50,13 @@ A categorical land cover map (GeoTIFF) to WGS84 HEALPix level 15 with
 nearest-neighbor resampling.
 :::
 
+:::{grid-item-card} Copernicus DEM GLO-30
+:link: notebooks/dem_glo30_converter
+:link-type: doc
+The GLO-30 elevation model (1 arc-second) to HEALPix level 18 with bilinear
+resampling, and a pyramid of coarser levels down to level 8.
+:::
+
 ::::
 
 ```{toctree}
@@ -61,4 +68,5 @@ notebooks/era5_converter
 notebooks/cams_converter
 notebooks/climatedt_converter
 notebooks/esacci_land_cover_converter
+notebooks/dem_glo30_converter
 ```

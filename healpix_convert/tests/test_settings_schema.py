@@ -53,7 +53,7 @@ def test_schema_is_valid() -> None:
     jsonschema.Draft202012Validator.check_schema(json.loads(_published()))
 
 
-@pytest.mark.parametrize("name", ["era5", "cams-eac4", "climatedt-sfc"])
+@pytest.mark.parametrize("name", ["era5", "cams-eac4", "climatedt-sfc", "dem-glo30"])
 def test_schema_accepts_predefined_settings(name: str) -> None:
     jsonschema = pytest.importorskip("jsonschema")
 
