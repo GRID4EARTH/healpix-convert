@@ -1,12 +1,12 @@
 """
 ClimateDT (IFS-NEMO) default conversion settings.
 
-ClimateDT output is natively on HEALPix level 7 NESTED (nside=128, ~50 km/pixel).
-No regridding is needed — data is directly packaged into the EOPF zarr format.
+ClimateDT output is natively on HEALPix level 7 NESTED (nside=128, ~50 km/pixel)
+on the sphere. It is resampled onto the same level on the WGS84 ellipsoid (the
+grid the output declares): the two grids are up to ~14 km apart.
 
-The PSFResampler can optionally be applied for a sphere → WGS84 ellipsoid
-correction (the source coordinates are spherical, the target grid is on the
-WGS84 ellipsoid). This adds ~5-10 s per timestep.
+The resampler is PSF for now, for every variable, with the ERA5 settings;
+which resampler suits each variable best has not been studied yet.
 
 Output group layout:
   measurements/sfc/     – surface IFS fields
@@ -49,9 +49,9 @@ CDT_SFC_CONVERT_SETTINGS: dict = {
                 "chunk_buffer_width": 0.0,
             },
             "resampler": {
-                "name": "nearest",
-                "init_params": {},
-                "resample_params": {},
+                "name": "psf",
+                "init_params": {"threshold": 0.5},
+                "resample_params": {"lam": 0.0},
             },
         },
     },
