@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- The provenance of the output dataset (its STAC item) tells what the
+  conversion computed on and where ({issue}`110`): a new
+  `healpix_convert:compute` property (the device of the resamplers, and on a
+  GPU the GPU names and the CUDA version), `processing:facility` from the new
+  `HEALPIX_CONVERT_FACILITY` environment variable, and more versions in
+  `processing:software` (healpix-compress, healpix-geo, zarr, xarray, numpy,
+  torch, with the git commit of a package installed from a repository). The
+  new `provenance_packages` STAC setting adds the versions of other packages.
 - New `finalize_healpix_dataset` conversion stage, the last one, run once every
   group of the output dataset has been written: it consolidates the Zarr
   metadata of the output dataset. No other stage writes consolidated metadata

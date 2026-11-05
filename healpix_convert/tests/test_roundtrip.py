@@ -113,6 +113,7 @@ def test_provenance_records_the_settings(converted, settings) -> None:
     )
     assert properties["processing:expression"]["expression"] == settings.to_dict()
     assert "healpix-convert" in properties["processing:software"]
+    assert properties["healpix_convert:compute"]["device"] in {"cpu", "cuda"}
     assert "synthetic-input" in properties["processing:lineage"] or "input.zarr" in properties["processing:lineage"]
 
     # the inputs stay findable: STAC records what this was derived from

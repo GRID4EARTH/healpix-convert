@@ -816,6 +816,14 @@
           "title": "Include Conversion Settings",
           "type": "boolean"
         },
+        "provenance_packages": {
+          "description": "Names of installed packages whose versions are recorded in\n``processing:software``, in addition to the ones healpix-convert always\nrecords (itself, healpix-resample, healpix-compress, healpix-geo, zarr,\nxarray, numpy and torch), e.g. the package that calls healpix-convert.\n\nA package that is not installed is left out.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Provenance Packages",
+          "type": "array"
+        },
         "merge_properties": {
           "default": "pick_first",
           "description": "How the STAC properties of several input datasets are merged.\n\n``\"join_inner\"`` keeps the properties every input has with the same value,\ni.e., what they agree on: a ``datetime`` that differs across the inputs\ndoes not describe the output either.\n\nWith a single input dataset both strategies are equivalent.",

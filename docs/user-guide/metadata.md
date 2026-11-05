@@ -132,13 +132,27 @@ item merged from the `stac_discovery` attributes of the input datasets, with
 - provenance properties following the
   [STAC processing extension](https://github.com/stac-extensions/processing):
   the date of the conversion (`processing:datetime`), the versions of
-  `healpix-convert` and `healpix-resample` (`processing:software`), the
+  `healpix-convert`, `healpix-resample`, `healpix-compress`, `healpix-geo`,
+  `zarr`, `xarray`, `numpy` and `torch` (`processing:software`, with
+  `+git.<sha>` for a package installed from a git repository), the
   conversion settings (`processing:expression`, whose `format` is the URL of
   the settings JSON schema of the recorded `healpix-convert` version) and the
-  inputs (`processing:lineage`).
+  inputs (`processing:lineage`);
+- what the conversion computed on (`healpix_convert:compute`): the `device`
+  of the resamplers whose settings set none (`cpu` or `cuda`) and, on a GPU,
+  the names of the GPUs (`gpus`) and the CUDA version of torch (`cuda`);
+- where it ran (`processing:facility`), if the `HEALPIX_CONVERT_FACILITY`
+  environment variable names it (e.g. the name of a cluster or a cloud).
+
+This is what the process that creates the output dataset sees
+(`prepare_healpix_dataset`, or `create_healpix_dataset`): run the stages that
+convert the data in the same environment. No host name, user or job id is
+recorded, since the output may be published.
 
 Set `metadata.stac.include_conversion_settings` to `False` to leave
-`processing:expression` out (not recommended).
+`processing:expression` out (not recommended), and list in
+`metadata.stac.provenance_packages` the other packages whose versions to
+record (e.g. the one calling `healpix-convert`).
 
 ### Merging the input items
 
@@ -211,9 +225,10 @@ that are not its own is worse than one advertising none. Set it to `[]` to
 keep them, or describe the output's own files with `override_assets`.
 
 These settings apply to the propagated metadata only. The STAC metadata written
-by `healpix-convert` itself keeps precedence: the `processing:*` properties and
-the processing extension above are written after the settings are applied, so
-the output stays traceable whatever they say. The one exception is
+by `healpix-convert` itself keeps precedence: the `processing:*` and
+`healpix_convert:compute` properties and the processing extension above are
+written after the settings are applied, so the output stays traceable whatever
+they say. The one exception is
 `include_conversion_settings`, which decides whether the settings themselves
 are recorded.
 
