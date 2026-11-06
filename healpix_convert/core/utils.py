@@ -1,9 +1,12 @@
 """Utility methods used internally for converting datasets onto HEALPix."""
 
+import errno
+import random
 import re
+import time
 from collections import Counter
-from collections.abc import Iterable
-from typing import Any, Literal, cast
+from collections.abc import Callable, Iterable
+from typing import Any, Literal, TypeVar, cast
 
 import affine
 import healpix_geo
@@ -320,11 +323,54 @@ def create_transform_coords(
     )
 
 
+def _transform_on_device(
+    x: xr.DataArray, y: xr.DataArray, source_crs: pyproj.CRS, target_crs: pyproj.CRS
+) -> xr.Coordinates | None:
+    """With ``HEALPIX_CONVERT_DEVICE`` set, the lon/lat of a transverse
+    Mercator grid (e.g. UTM) to the geographic CRS of its datum, computed in
+    torch on that device (see :mod:`healpix_convert.core.tmerc`); else None."""
+    import os
+
+    device = os.environ.get("HEALPIX_CONVERT_DEVICE")
+    if not device or source_crs.geodetic_crs is None:
+        return None
+    if not target_crs.equals(source_crs.geodetic_crs, ignore_axis_order=True):
+        return None
+    from healpix_convert.core.tmerc import tmerc_inverse, tmerc_params
+
+    params = tmerc_params(source_crs)
+    if params is None:
+        return None
+    from healpix_convert.resampler_cache import device_slot
+
+    xx, yy = xr.broadcast(
+        x.drop_indexes("x", errors="ignore"),
+        y.drop_indexes("y", errors="ignore"),
+    )
+    # in a device slot, like the resamplers: no more processes on the device
+    # at once than the slots allow (the slot gives the memory back after)
+    with device_slot():
+        lon, lat = tmerc_inverse(
+            xx.values.ravel(), yy.values.ravel(), device=device, **params
+        )
+    return xr.Coordinates(
+        {
+            "lon": xr.Variable(xx.dims, lon.reshape(xx.shape)),
+            "lat": xr.Variable(xx.dims, lat.reshape(xx.shape)),
+        },
+        indexes={},
+    )
+
+
 def assign_transform_coords(
     ds: xr.Dataset, source_crs: pyproj.CRS, target_crs: pyproj.CRS
 ) -> xr.Dataset:
-    transformer = pyproj.Transformer.from_crs(source_crs, target_crs, always_xy=True)
-    new_coords = create_transform_coords(ds["x"], ds["y"], transformer)
+    new_coords = _transform_on_device(ds["x"], ds["y"], source_crs, target_crs)
+    if new_coords is None:
+        transformer = pyproj.Transformer.from_crs(
+            source_crs, target_crs, always_xy=True
+        )
+        new_coords = create_transform_coords(ds["x"], ds["y"], transformer)
     return ds.assign_coords(new_coords)
 
 
@@ -385,3 +431,53 @@ def resolution_to_level(
     base = EARTH_RADIUS_M * np.sqrt(np.pi / 3.0)
     level = int(round_func(np.log2(base / resolution)))
     return level
+
+
+_T = TypeVar("_T")
+
+
+def retry_store_conflicts(
+    func: Callable[..., _T], *, attempts: int = 6, delay: float = 0.2
+) -> Callable[..., _T]:
+    """``func``, retried when the object store refuses a write because of a
+    concurrent conditional operation on the same key (S3 ``OperationAborted``,
+    which s3fs raises as an ``OSError`` with errno ``EBUSY``).
+
+    Zarr writes the metadata of the parent groups of a new node with a
+    conditional put: nodes created in threads under common parents conflict on
+    those keys. The creation of a node is idempotent, so it is just retried,
+    after a growing random delay.
+    """
+
+    def wrapped(*args: Any, **kwargs: Any) -> _T:
+        for attempt in range(attempts):
+            try:
+                return func(*args, **kwargs)
+            except OSError as e:
+                if e.errno != errno.EBUSY or attempt == attempts - 1:
+                    raise
+                time.sleep(delay * 2**attempt * (1.0 + random.random()))
+        raise AssertionError("unreachable")
+
+    return wrapped
+
+
+def drop_cached_listings(store: Any) -> None:
+    """Drop the listings cached by the file system of a Zarr ``store``, if it
+    is an fsspec store, so that Zarr lists the objects it holds afresh.
+
+    A file system that caches its listings (e.g. s3fs) keeps them per
+    instance, and only drops those of the objects written through that same
+    instance, while fsspec shares its instances in a process: the objects
+    written through another instance (e.g. a sync one, or one with other
+    options) are missing from the listings of the instance Zarr reads the
+    store with, as long as that instance lives.
+    """
+    fs = getattr(store, "fs", None)
+    if fs is None:  # not an fsspec store (e.g. a local or memory Zarr store)
+        return
+    # Zarr wraps a sync file system: the listings are those of the wrapped one
+    fs = getattr(fs, "sync_fs", fs)
+    # all of them: s3fs drops the listings of the parents of a path, not those
+    # of its descendants
+    fs.invalidate_cache()

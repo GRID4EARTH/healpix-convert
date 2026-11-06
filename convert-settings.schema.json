@@ -244,6 +244,39 @@
       "title": "ExtraDimensionSettings",
       "type": "object"
     },
+    "GridBilinearResamplerSettings": {
+      "description": "Settings for resampling a regular longitude/latitude grid onto HEALPix by\nbilinear interpolation of the 4 grid nodes around each cell centre.\n\nOnly for groups with rectilinear (1-D) longitude/latitude coordinates,\nconverted by dense chunks. Needs a healpix-resample version that provides\n``GridBilinearResampler``.",
+      "properties": {
+        "init_params": {
+          "additionalProperties": true,
+          "description": "Parameters passed to the resampler constructor.",
+          "title": "Init Params",
+          "type": "object"
+        },
+        "resample_params": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {}
+            ]
+          },
+          "description": "Parameters passed to the resampler's `resample()` method.\n\nParameter values may be given either like:\n- a common value used for all arrays (data variables) in the group\n- a value for each array in the group (dictionary where keys are\n  variable names)",
+          "title": "Resample Params",
+          "type": "object"
+        },
+        "name": {
+          "const": "grid-bilinear",
+          "default": "grid-bilinear",
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "title": "GridBilinearResamplerSettings",
+      "type": "object"
+    },
     "Healpix": {
       "description": "HEALPix grid.\n\nCompliant with the DGGS Zarr convention.",
       "properties": {
@@ -372,6 +405,7 @@
             "mapping": {
               "bilinear": "#/$defs/BilinearResamplerSettings",
               "cell-point": "#/$defs/CellPointResamplerSettings",
+              "grid-bilinear": "#/$defs/GridBilinearResamplerSettings",
               "k-nearest": "#/$defs/KNearestNeighborsResamplerSettings",
               "nearest": "#/$defs/NearestResamplerSettings",
               "psf": "#/$defs/PSFResamplerSettings"
@@ -387,6 +421,9 @@
             },
             {
               "$ref": "#/$defs/BilinearResamplerSettings"
+            },
+            {
+              "$ref": "#/$defs/GridBilinearResamplerSettings"
             },
             {
               "$ref": "#/$defs/PSFResamplerSettings"
@@ -762,13 +799,14 @@
         },
         "reduce": {
           "default": "mean",
-          "description": "How the values of the children cells are aggregated.\n\nMissing (NaN) values are skipped. The mean does not suit categorical data\n(masks, classifications): aggregate those with \"mode\", the most frequent\nvalue of the cells of a block (the smallest of them in case of a tie).",
+          "description": "How the values of the children cells are aggregated.\n\nMissing (NaN) values are skipped. The mean does not suit categorical data\n(masks, classifications): aggregate those with \"mode\", the most frequent\nvalue of the cells of a block (the smallest of them in case of a tie).\n\nBit flags (integer variables where each bit is a flag of its own, e.g.\nquality flags) are aggregated with \"bitwise_or\": a flag is set in a coarser\ncell if it is set in any of its cells (missing cells are skipped). It needs\ninteger variables only, the data type of which is preserved.",
           "enum": [
             "mean",
             "min",
             "max",
             "sum",
-            "mode"
+            "mode",
+            "bitwise_or"
           ],
           "title": "Reduce",
           "type": "string"

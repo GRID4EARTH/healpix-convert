@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- The ClimateDT converter now always resamples the native (spherical) HEALPix
+  level 7 fields onto the level 7 grid on the WGS84 ellipsoid, the grid its
+  output declares; the two grids are up to about 14 km apart. Before, it copied
+  the spherical values by default, and with `ellipsoid_correction=True` it
+  wrote the values of the first cells of the sphere into every chunk and
+  resampled the whole sphere again for each chunk. The `ellipsoid_correction`
+  parameter is removed. The resampler is PSF for every variable for now, with
+  the ERA5 settings (`threshold=0.5`, `lam=0`, clipped to the source range),
+  run once per variable and timestep; masked (NaN) source cells stay NaN. A
+  variable with a dimension besides time and cells (e.g. ocean depth levels)
+  raises `NotImplementedError`; before, only its first level was written.
+  Reported by Anne Fouilloux.
+- The pyramids can be written with a `sharding_indexed` serializer in the
+  `codecs` pyramid setting: the inner chunks are cut to the chunks of the
+  coarsest derived levels where those hold fewer cells. Before, the conversion
+  failed at the end of the pyramid stage with a `ValueError`.
+- The cell ids of the derived levels are written with the codecs of the cell ids
+  of the converted level (e.g. a delta filter set by the
+  `healpix_coordinate_codecs` group setting), sharded like them. Before, they
+  had Zarr's default codecs, and took far more space than the converted ones.
+- New `"grid-bilinear"` resampler for input groups on a rectilinear lon/lat
+  grid, converted by dense chunks: each cell is interpolated from the 4 grid
+  nodes around its centre (healpix-resample's `GridBilinearResampler`), instead
+  of the inverse-distance mean of the nearby input points of `"bilinear"`. It
+  is exact for a field linear in longitude and latitude, and much faster and
+  lighter on large grids. It is only available with a healpix-resample version
+  that provides `GridBilinearResampler`.
 - New `finalize_healpix_dataset` conversion stage, the last one, run once every
   group of the output dataset has been written: it consolidates the Zarr
   metadata of the output dataset. No other stage writes consolidated metadata
@@ -18,10 +45,20 @@
   was consolidated. A `groups` path that names no group of the output dataset
   is reported with a warning when the staging cache is created, and skipped
   when the metadata is consolidated.
+- Minimum versions raised to healpix-resample 2026.10.2 (its `batch_size`
+  option, used by the `"dem-glo30"` settings), healpix-geo 0.4.1 and, for
+  development, healpix-plot 2026.7.0.
 - New `output_dtype` group setting, the floating-point data type of the resampled
   data variables (e.g. `"float16"`): before, the `"bilinear"` and `"psf"`
   resamplers always wrote `float64`. The derived levels of a pyramid follow the
   data type of the converted level.
+- New `"bitwise_or"` reduction for the pyramids (the `reduce` pyramid setting):
+  a bit is set in a coarser cell if it is set in any of its cells, for bit
+  flags (integer variables where each bit is a flag of its own).
+- The input datasets of one group may now have spatial dimensions of different
+  sizes, e.g. grids of different spacing next to each other: their points are
+  resampled together. Before, such inputs were refused as "incompatible spatial
+  info"; they still need the same spatial dimension and coordinate names.
 - Projected input datasets whose x or y coordinates run the other way than
   usual (increasing y, i.e. a bottom-up raster, or decreasing x) are now
   converted: the input points of a chunk are selected with slice bounds that
@@ -39,6 +76,15 @@
   the derived levels (Zarr's defaults if not set), e.g. a serializer of
   `healpix-compress` coding one HEALPix cell per chunk. It is checked when the
   settings are created, like the `codecs` group setting.
+- The ERA5 converter writes several analysis times in one store: `date` and
+  `time` take MARS lists and ranges (`date="20260801/to/20260831"`,
+  `time="00:00:00/06:00:00/12:00:00/18:00:00"`), each group gets a `time`
+  coordinate, and the new `time_chunk` option sets how many times a chunk
+  holds (`"all"`: the time series of 1024 cells in one chunk). The enda group
+  gets the 3-hourly times only, the times of the ERA5 EDA. New public
+  `download()`, `dataset()` and `grib_paths()` methods give the GRIB files
+  without writing a store; a single date and time give the same store and
+  cache file names as before.
 - The chunks of a derived level always hold all the children of one HEALPix
   cell: on a partial spatial extent, their cells are no longer coarser than the
   coarsest level the converted cells cover entirely. Before, the chunks of the
@@ -52,6 +98,20 @@
   dimension without such a setting are now refused with a message pointing to
   it; before, inputs of the same size were concatenated position by position
   even when their labels differed.
+- Opt-in GPU path: `HEALPIX_CONVERT_DEVICE` (e.g. `cuda`) is the torch device
+  of the resamplers whose settings give none, and the lon/lat of transverse
+  Mercator inputs (EPSG method 9807, metres) are computed on it; they differ
+  from pyproj's in the last bits, so the results are not bit-identical to a
+  run without the variable. `HEALPIX_CONVERT_GPU_SLOTS=n` limits how many
+  processes use the device at once, for the resamplers and the lon/lat
+  computation alike ({pull}`100`).
+- New `"dem-glo30"` settings and example notebook for the Copernicus DEM
+  GLO-30: bilinear interpolation of the grid nodes (`"grid-bilinear"`) to
+  level 18 in float32, sharded (one shard per level-6 cell, inner chunks of
+  one level-8 cell), a pyramid of block means down to level 8,
+  and the licence of the data in the output STAC item. The notebook reads the
+  heights from Earth Data Hub or from the CDSE COG tiles (`SOURCE`). Based on
+  the GLO-30 notebook by Pablo Richard.
 - The multiscales metadata describes each derived level of a pyramid: the
   converted level it is aggregated from (`derived_from`), the transformation
   from it (`transform`, whose `scale` is how much longer a cell is) and the
@@ -71,6 +131,16 @@
   every item of that level, which one item per array makes particularly
   verbose, while the attributes of a level group already describe its grid and
   the `asset` of an item names its refinement level.
+- Neighbour links store: with `HEALPIX_CONVERT_NEIGHBOUR_STORE` set to a URL
+  (storage options as JSON in `HEALPIX_CONVERT_NEIGHBOUR_STORE_OPTIONS`), the
+  links of the neighbour searches are kept there by geometry, and later
+  resamplers on the same geometry are built from them without a new search.
+  The key of a resampler covers the files of the imported healpix-resample
+  package, not only its version string, and the torch and healpix-geo
+  versions, so links found by other code are never reused. It does not cover
+  the device of the search: machines with and without a GPU sharing a store
+  all use the links of the first search. healpix-resample 2026.11.1 or later
+  is required ({pull}`99`).
 - New `asset_type` multiscale setting: what a layout item refers to, a level
   group (`"group"`) or one array of a level (`"array"`). With `"auto"` (the
   default), the level groups are the assets where they describe every level
@@ -86,9 +156,19 @@
   `healpix_cell_dense` chunk method: the cells of a coarser cell are then
   consecutive cells of the converted arrays, so the levels are aggregated by
   position without reading any cell id.
+- `generate_pyramids(in_memory=True)` reads the output dataset once, computes
+  the mean pyramids in numpy and writes the derived levels at once; the
+  arrays are decoded and encoded in a pool of processes
+  (`HEALPIX_CONVERT_PYRAMID_PROCESSES`). Opt-in; same results as the default
+  path up to the order of the sums ({pull}`98`).
 - The `asset` of a multiscales layout item is now a path relative to the group
   holding the metadata (e.g. `"7"` instead of `"measurements/7"`), as the
   Multiscales Zarr convention asks.
+- Resamplers can be reused between the groups on the same input grid: with
+  `HEALPIX_CONVERT_RESAMPLER_CACHE` set to a directory private to the job, the
+  resamplers of the methods in `HEALPIX_CONVERT_RESAMPLER_CACHE_METHODS`
+  (default `"nearest"`) are pickled there and loaded by later groups with the
+  same input points, output cells and parameters. Off by default ({pull}`94`).
 - The attributes of the output variables can be set from the group settings
   (`metadata.override_attrs`), and not only excluded ({issue}`36`).
 - The STAC properties, extensions, links and assets propagated to the output
@@ -121,6 +201,10 @@
 - The variables of a chunk are resampled in one batched call ({pull}`31`) and
   the output arrays of a chunk are written concurrently ({pull}`39`).
 - The group codecs are checked when the settings are created ({pull}`27`).
+- healpix-resample 2026.10.3 or later is required. Its release changes the
+  results of the `"bicubic"` resampler and of the samples tied with the
+  `Npt`-th nearest cell; the neighbour search accepts `coarse_level_delta` in
+  the resampler `init_params` ({pull}`92`).
 - The cell ids can be delta-coded before compression ({pull}`42`, {pull}`47`).
 - Object string arrays are written as variable-length strings ({pull}`40`).
 - The affine transform derived from x / y coordinates points at the top-left
@@ -130,6 +214,12 @@
 - Sparse chunks are written with the data type of the input variable
   ({pull}`46`).
 - Documentation site, built with Sphinx and published on GitHub Pages.
+- The pyramid stage no longer fails on an output dataset written with storage
+  options, e.g. the credentials of an object store ({pull}`90`).
+- The `"mean"` and `"sum"` reductions of the pyramids sum `float16` variables
+  in `float32`: a block whose `float16` sum was above 65504 (e.g. 64 cells of
+  1100.0) got an infinite mean ({issue}`102`). A `"sum"` above 65504 is still
+  infinite: it is written as `float16`.
 
 ## v2026.10.0 (2026-10-08)
 

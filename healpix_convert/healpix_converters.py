@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
@@ -39,6 +40,7 @@ from healpix_convert.core.metadata import (
     get_cf_grid_mapping_attrs,
     get_healpix_group_attrs,
 )
+from healpix_convert.resampler_cache import build_resampler, device_slot
 from healpix_convert.settings.common import (
     ConvertSettings,
     ExtraDimensionSettings,
@@ -102,6 +104,25 @@ def _maybe_coerce_str_array_dtype(values: np.ndarray) -> np.ndarray:
     return values
 
 
+def _maybe_decode_bytes_array(values: np.ndarray) -> np.ndarray:
+    """Decode an array of byte strings to (unicode) strings.
+
+    Labels may be stored as fixed-length byte strings (numpy ``S`` dtype) or
+    read back as an ``object`` array of ``bytes``; they never compare equal to
+    the same labels given as strings (``b"d01" != "d01"``). Other arrays,
+    including object arrays that do not hold only bytes, are returned unchanged.
+    """
+    if values.dtype.kind == "S":
+        return np.char.decode(values, "utf-8")
+    if (
+        values.dtype == object
+        and values.size
+        and all(isinstance(v, bytes) for v in values.flat)
+    ):
+        return np.char.decode(values.astype(bytes), "utf-8")
+    return values
+
+
 class ZarrCreateArrayKwargs(TypedDict):
     shape: tuple[int, ...]
     dtype: npt.DTypeLike | str
@@ -141,6 +162,15 @@ def align_extra_dimensions(
                 f"extra dimension {dim!r} has no coordinate in some input dataset: "
                 "its labels are needed to align the inputs"
             )
+
+        # labels stored as bytes would never match the (str) labels of the
+        # settings or of the other inputs
+        for i, ds in enumerate(datasets):
+            if dim in ds.dims:
+                values = ds[dim].values
+                decoded = _maybe_decode_bytes_array(values)
+                if decoded is not values:
+                    datasets[i] = ds.assign_coords({dim: (dim, decoded, ds[dim].attrs)})
 
         datasets = [
             ds.set_xindex(dim) if dim in ds.dims and dim not in ds.xindexes else ds
@@ -377,7 +407,11 @@ class HealpixGroupConverter(ABC):
 
                 if self.settings.output_dtype is not None:
                     dtype = np.dtype(self.settings.output_dtype)
-                elif self.settings.resampler.name in ["bilinear", "psf"]:
+                elif self.settings.resampler.name in [
+                    "bilinear",
+                    "grid-bilinear",
+                    "psf",
+                ]:
                     dtype = np.float64
                 else:
                     dtype = var.dtype
@@ -588,6 +622,53 @@ _RESAMPLER_NAME_CLS: dict[str, type] = {
     "psf": healpix_resample.PSFResampler,
     "cell-point": healpix_resample.CellPointResampler,
 }
+# not in the healpix-resample releases older than its GridBilinearResampler
+if hasattr(healpix_resample, "GridBilinearResampler"):
+    _RESAMPLER_NAME_CLS["grid-bilinear"] = healpix_resample.GridBilinearResampler
+
+# resamplers built from the 1-D axes of a rectilinear lon/lat grid instead of
+# the input points (see `_grid_resampler_axes`)
+_GRID_RESAMPLERS = {"grid-bilinear"}
+
+# attribute of the input points of a chunk holding the 1-D axes of each input
+# dataset of a rectilinear lon/lat grid, in the order of the points
+_GRID_AXES_ATTR = "_healpix_convert_grid_axes"
+
+
+def _get_resampler_cls(name: str) -> type:
+    try:
+        return _RESAMPLER_NAME_CLS[name]
+    except KeyError:
+        raise ValueError(
+            f"resampler {name!r} is not available in the installed healpix-resample "
+            f"version {importlib.metadata.version('healpix-resample')}"
+        ) from None
+
+
+def _grid_resampler_axes(ds_input_points: xr.Dataset) -> tuple[list, list]:
+    """Longitude and latitude axes (one per input dataset) of the input points of
+    a chunk, for the resamplers that take the grid axes (``_GRID_RESAMPLERS``)."""
+    axes = ds_input_points.attrs.get(_GRID_AXES_ATTR)
+    if axes is None:
+        raise ValueError(
+            "the 'grid-bilinear' resampler needs input data on a rectilinear "
+            "longitude/latitude grid (1-D coordinates)"
+        )
+    # the input datasets are bands of rows, one above the other: two inputs at
+    # the same latitudes (e.g. tiles side by side) cannot be interpolated
+    # across their seam
+    spans = sorted((float(np.min(lat)), float(np.max(lat))) for _, lat in axes)
+    north = -np.inf
+    for south, top in spans:
+        if south <= north:
+            raise ValueError(
+                "the 'grid-bilinear' resampler needs input datasets that do not "
+                "overlap in latitude (one per band of rows), but two inputs of "
+                f"this chunk cover the same latitudes ({south} to {min(top, north)}): "
+                "mosaic the inputs that lie side by side into one dataset"
+            )
+        north = max(north, top)
+    return [lon for lon, _ in axes], [lat for _, lat in axes]
 
 
 class UniformChunkConverter(HealpixGroupConverter, ABC):
@@ -779,19 +860,32 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         west, east = relative_lon.min() - lon_padding, relative_lon.max() + lon_padding
 
         prepared = []
+        axes = []
+        grid_resampler = self.settings.resampler.name in _GRID_RESAMPLERS
         for ds in self.datasets:
             x, y = ds[lon_name], ds[lat_name]
             if x.ndim != 1 or y.ndim != 1 or x.dims == y.dims:
                 raise ValueError(
                     "rectilinear longitude/latitude must have distinct 1D dimensions"
                 )
+            # The grid resamplers need the 2 nodes on each side of every cell
+            # centre; near the chunk edges they can lie outside the buffered
+            # window, so the window grows by one grid step of this input.
+            step_x = step_y = 0.0
+            if grid_resampler:
+                step_x = np.abs((np.diff(x.values) + 180.0) % 360.0 - 180.0).max(
+                    initial=0.0
+                )
+                step_y = np.abs(np.diff(y.values)).max(initial=0.0)
             xvalues = (x.values - centre_lon + 180.0) % 360.0 - 180.0
             xidx = np.flatnonzero(
                 np.ones(x.size, dtype=bool)
                 if polar
-                else (xvalues >= west) & (xvalues <= east)
+                else (xvalues >= west - step_x) & (xvalues <= east + step_x)
             )
-            yidx = np.flatnonzero((y.values >= south) & (y.values <= north))
+            yidx = np.flatnonzero(
+                (y.values >= south - step_y) & (y.values <= north + step_y)
+            )
             if not xidx.size or not yidx.size:
                 continue
             # Keep the data lazy until after spatial selection. Stack broadcasts
@@ -804,7 +898,19 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
                 lat=clipped[lat_name],
             )
             prepared.append(clipped)
-        return xr.concat(prepared, dim="points") if prepared else None
+            # the points are stacked in C order of (lat, lon): the grid
+            # resamplers take these axes and values in that order
+            axes.append(
+                (
+                    (x.values[xidx] + 180.0) % 360.0 - 180.0,
+                    np.asarray(y.values[yidx]),
+                )
+            )
+        if not prepared:
+            return None
+        ds_input_points = xr.concat(prepared, dim="points")
+        ds_input_points.attrs[_GRID_AXES_ATTR] = axes
+        return ds_input_points
 
     def _query_chunk_input_points_projected(
         self, chunk_cell_id: int
@@ -893,8 +999,9 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
 
             x = ds_clipped.x.values
             y = ds_clipped.y.values
-            points = shapely.points(x, y)
-            in_poly = shapely.within(points, poly)
+            # same as shapely.within(shapely.points(x, y), poly) (a point on
+            # the boundary is not inside), without creating the point objects
+            in_poly = shapely.contains_xy(poly, x, y)
 
             if not in_poly.any():
                 # no pixel centre in the overlapping zone, e.g., the (buffered)
@@ -983,46 +1090,60 @@ class DenseChunkConverter(UniformChunkConverter):
         resampler_settings = self.settings.resampler
 
         # For the "nearest" resample method: give output cell ids the resampler (forcing)
+        # For the grid resamplers too: they interpolate at the given cell centres
         # For the other methods: best to let the resampler algorithm do the lookup
-        if resampler_settings.name == "nearest":
+        if (
+            resampler_settings.name == "nearest"
+            or resampler_settings.name in _GRID_RESAMPLERS
+        ):
             out_cell_ids = cell_ids
         else:
             out_cell_ids = None
 
-        resampler_cls = _RESAMPLER_NAME_CLS[resampler_settings.name]
+        resampler_cls = _get_resampler_cls(resampler_settings.name)
         # TODO: pass array dtype to resampler
         # in case all arrays to resample have the same dtype
 
-        log.debug("initialize resampler")
-        resampler = resampler_cls(
-            lon_deg=ds_input_points.lon.values,
-            lat_deg=ds_input_points.lat.values,
-            level=self.healpix.refinement_level,
-            verbose=False,
-            out_cell_ids=out_cell_ids,
-            nest=self.healpix.indexing_scheme == "nested",
-            ellipsoid=self.healpix.ellipsoid.name,
-            **dict(resampler_settings.init_params),
-        )
-        # resample arrays (data variables)
-        var_names = [
-            str(name)
-            for name in ds_input_points.variables
-            if name in self.spatial_info.spatial_arrays
-        ]
-        resample_params = broadcast_params(
-            resampler_settings.resample_params, var_names
-        )
+        if resampler_settings.name in _GRID_RESAMPLERS:
+            lon_deg, lat_deg = _grid_resampler_axes(ds_input_points)
+        else:
+            lon_deg = ds_input_points.lon.values
+            lat_deg = ds_input_points.lat.values
 
-        log.debug(f"resample {len(var_names)} arrays")
-        resampled = _resample_variables(
-            resampler,
-            ds_input_points,
-            var_names,
-            resample_params,
-            chunk_cell_ids=cell_ids,
-            logger=log.bind(group=self.group_path, chunk_index=chunk_index),
-        )
+        log.debug("initialize resampler")
+        with device_slot():
+            resampler = build_resampler(
+                resampler_cls,
+                resampler_settings.name,
+                lon_deg=lon_deg,
+                lat_deg=lat_deg,
+                level=self.healpix.refinement_level,
+                verbose=False,
+                out_cell_ids=out_cell_ids,
+                nest=self.healpix.indexing_scheme == "nested",
+                ellipsoid=self.healpix.ellipsoid.name,
+                **dict(resampler_settings.init_params),
+            )
+            # resample arrays (data variables)
+            var_names = [
+                str(name)
+                for name in ds_input_points.variables
+                if name in self.spatial_info.spatial_arrays
+            ]
+            resample_params = broadcast_params(
+                resampler_settings.resample_params, var_names
+            )
+
+            log.debug(f"resample {len(var_names)} arrays")
+            resampled = _resample_variables(
+                resampler,
+                ds_input_points,
+                var_names,
+                resample_params,
+                chunk_cell_ids=cell_ids,
+                logger=log.bind(group=self.group_path, chunk_index=chunk_index),
+            )
+            del resampler
 
         writes = []
         for name, cell_data in resampled.items():
@@ -1077,45 +1198,51 @@ class SparseChunkConverter(UniformChunkConverter):
         log.debug("initialize resampler")
         resampler_settings = self.settings.resampler
 
-        resampler_cls = _RESAMPLER_NAME_CLS[resampler_settings.name]
+        resampler_cls = _get_resampler_cls(resampler_settings.name)
         # TODO: pass array dtype to resampler
         # in case all arrays to resample have the same dtype
 
-        resampler = resampler_cls(
-            lon_deg=ds_input_points.lon.values,
-            lat_deg=ds_input_points.lat.values,
-            # level=self.healpix.refinement_level,  # assumes cell-point (level=29)
-            verbose=False,
-            nest=self.healpix.indexing_scheme == "nested",
-            ellipsoid=self.healpix.ellipsoid.name,
-            **dict(resampler_settings.init_params),
-        )
+        with device_slot():
+            resampler = build_resampler(
+                resampler_cls,
+                resampler_settings.name,
+                lon_deg=ds_input_points.lon.values,
+                lat_deg=ds_input_points.lat.values,
+                # level=self.healpix.refinement_level,  # assumes cell-point (level=29)
+                verbose=False,
+                nest=self.healpix.indexing_scheme == "nested",
+                ellipsoid=self.healpix.ellipsoid.name,
+                **dict(resampler_settings.init_params),
+            )
 
-        cell_ids = resampler.get_cell_ids()
+            cell_ids = resampler.get_cell_ids()
+
+            # resample arrays (data variables)
+            var_names = [
+                str(name)
+                for name in ds_input_points.variables
+                if name in self.spatial_info.spatial_arrays
+            ]
+            resample_params = broadcast_params(
+                resampler_settings.resample_params, var_names
+            )
+
+            log.debug(f"resample {len(var_names)} arrays")
+            resampled = _resample_variables(
+                resampler,
+                ds_input_points,
+                var_names,
+                resample_params,
+                logger=log.bind(group=self.group_path, chunk_index=chunk_index),
+            )
+            del resampler
+
+        # outside the device slot: a store write
         start = chunk_index * self.cell_dim_chunk_size
         stop = start + cell_ids.size
         chunk_slice = slice(start, stop)
 
         self.output_arrays[self.healpix.coordinate][chunk_slice] = cell_ids
-
-        # resample arrays (data variables)
-        var_names = [
-            str(name)
-            for name in ds_input_points.variables
-            if name in self.spatial_info.spatial_arrays
-        ]
-        resample_params = broadcast_params(
-            resampler_settings.resample_params, var_names
-        )
-
-        log.debug(f"resample {len(var_names)} arrays")
-        resampled = _resample_variables(
-            resampler,
-            ds_input_points,
-            var_names,
-            resample_params,
-            logger=log.bind(group=self.group_path, chunk_index=chunk_index),
-        )
 
         writes = []
         for name, cell_data in resampled.items():
@@ -1123,8 +1250,6 @@ class SparseChunkConverter(UniformChunkConverter):
             writes.append((zarray, (..., chunk_slice), cell_data.astype(zarray.dtype)))
 
         _write_chunk_arrays(writes)
-
-        del resampler
 
 
 class NoChunkConverter(HealpixGroupConverter):
@@ -1186,7 +1311,8 @@ class NoChunkConverter(HealpixGroupConverter):
         prepared_datasets = []
         for ds, crs in zip(self.datasets, self.spatial_info.crs):
             ds_latlon_flat = (
-                ds.compute().pipe(lambda ds: maybe_convert_to_latlon(ds, crs))
+                ds.compute()
+                .pipe(lambda ds: maybe_convert_to_latlon(ds, crs))
                 # note: the Xarray stack operation below already broadcasts
                 # the Dataset variables that only have a subset of the spatial dimensions
                 .stack(
@@ -1220,12 +1346,14 @@ class NoChunkConverter(HealpixGroupConverter):
         else:
             out_cell_ids = None
 
-        resampler_cls = _RESAMPLER_NAME_CLS[resampler_settings.name]
+        resampler_cls = _get_resampler_cls(resampler_settings.name)
         # TODO: pass array dtype to resampler
         # in case all arrays to resample have the same dtype
 
         log.debug("initialize resampler")
-        resampler = resampler_cls(
+        resampler = build_resampler(
+            resampler_cls,
+            resampler_settings.name,
             lon_deg=ds_input_points.lon.values,
             lat_deg=ds_input_points.lat.values,
             level=self.healpix.refinement_level,

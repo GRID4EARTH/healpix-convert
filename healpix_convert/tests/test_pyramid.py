@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from pathlib import PurePath
 
+import fsspec
 import healpix_geo.nested as hpn
 import numpy as np
 import pytest
 import shapely
 import xarray as xr
 import zarr
+from fsspec.implementations.memory import MemoryFileSystem
 
 from healpix_convert import (
     ConvertSettings,
@@ -31,6 +33,7 @@ from healpix_convert.cache import (
     _set_pyramid_multiscale_groups,
 )
 from healpix_convert.core import utils
+from healpix_convert.core.coarsen import codecs_encoding
 from healpix_convert.core.conversion_models import OutputGroupInfo, OutputSpatialInfo
 from healpix_convert.core.healpix_conventions import Healpix
 from healpix_convert.core.metadata import (
@@ -270,13 +273,13 @@ def _settings(
     )
 
 
-def _generate_pyramids(cache, settings, path):
+def _generate_pyramids(cache, settings, path, storage_options=None, **kwargs):
     """The stages that write a pyramid of a hand-written dataset: creating its
     groups and metadata (as preparing the output dataset does), aggregating the
     converted data onto them, then finalizing the output dataset (which
     consolidates its Zarr metadata).
     """
-    store = zarr.open_group(path, mode="a").store
+    store = zarr.open_group(path, mode="a", storage_options=storage_options).store
 
     for input_path, multiscales in cache.output_groups.multiscale_groups.items():
         group = zarr.open_group(
@@ -287,9 +290,13 @@ def _generate_pyramids(cache, settings, path):
         group.attrs.update(get_multiscale_group_attrs(multiscales, settings.metadata))
 
     create_derived_level_groups(store, cache, settings)
-    generate_pyramids(cache, settings, path)
+    generate_pyramids(
+        cache, settings, path, output_storage_options=storage_options, **kwargs
+    )
 
-    return finalize_healpix_dataset(cache, settings, path)
+    return finalize_healpix_dataset(
+        cache, settings, path, output_storage_options=storage_options
+    )
 
 
 @pytest.fixture
@@ -310,6 +317,35 @@ def converted(tmp_path):
     )
 
     return path, cell_ids, temperature, counts
+
+
+@pytest.fixture
+def converted_encoded(tmp_path):
+    """A full-earth dataset converted at the level 3 whose variables are
+    stored encoded: float32 with missing cells and exact zeros, an integer
+    variable with valid zeros and a CF ``_FillValue``, and a variable packed
+    as uint16 with ``scale_factor`` / ``add_offset``.
+    """
+    cell_ids = _dense_cells(3)
+    rng = np.random.default_rng(7)
+    single = rng.random(cell_ids.size).astype("float32")
+    single[rng.random(cell_ids.size) < 0.1] = np.nan
+    single[rng.random(cell_ids.size) < 0.1] = 0.0
+    flags = rng.integers(0, 5, cell_ids.size).astype("uint8")
+    packed = np.round(rng.random(cell_ids.size), 4)
+    packed[rng.random(cell_ids.size) < 0.1] = np.nan
+
+    ds = _level_dataset(3, cell_ids, single=single, flags=flags, packed=packed)
+    ds["flags"].encoding = {"_FillValue": 255}
+    ds["packed"].encoding = {
+        "dtype": "uint16",
+        "scale_factor": 1e-4,
+        "add_offset": -0.1,
+        "_FillValue": 65535,
+    }
+    path = _write_converted(tmp_path / "converted.zarr", {3: ds})
+
+    return (path,)
 
 
 @pytest.fixture
@@ -375,6 +411,21 @@ def test_derived_levels_and_metadata(converted):
 
     # the dataset (STAC item included) is otherwise left as it is
     assert dt.attrs["stac_discovery"] == STAC_ITEM
+
+
+def test_output_storage_options(converted):
+    # an output dataset given as a URL with storage options (e.g., the
+    # credentials of an object store) is opened once with them; the pyramid
+    # stage then reads it back through the store, without the options
+    path, cell_ids, *_ = converted
+    cache, settings = _cache_and_settings([3], {"derived_levels": [2]})
+
+    dt = _generate_pyramids(
+        cache, settings, f"local://{path}", storage_options={"auto_mkdir": True}
+    )
+
+    assert set(dt[GROUP].children) == {"3", "2"}
+    assert dt[GROUP]["2"].sizes["cells"] == cell_ids.size // 4
 
 
 def test_consolidated_metadata_is_up_to_date(converted):
@@ -522,6 +573,45 @@ def test_reduce_mode(tmp_path):
     np.testing.assert_array_equal(level2.values, expected)
 
 
+@pytest.mark.parametrize("fill_value", [None, 255])
+def test_reduce_bitwise_or(tmp_path, fill_value):
+    # bit flags at the level 3, aggregated onto the level 2
+    cell_ids = _dense_cells(3)
+    rng = np.random.default_rng(0)
+    # each bit set in about one cell out of five: often in a minority of the
+    # children of a cell
+    bits = rng.random((cell_ids.size, 4)) < 0.2
+    flags = (bits * (1 << np.arange(4))).sum(axis=1).astype("uint8")
+    missing = np.zeros(cell_ids.size, dtype=bool)
+    if fill_value is not None:
+        # some cells without data
+        missing = rng.random(cell_ids.size) < 0.3
+        flags[missing] = fill_value
+    ds = _level_dataset(3, cell_ids, flags=flags)
+    if fill_value is not None:
+        ds["flags"].attrs["_FillValue"] = fill_value
+    path = _write_converted(tmp_path / "converted.zarr", {3: ds})
+
+    dt = _generate_pyramids(
+        *_cache_and_settings([3], {"derived_levels": [2], "reduce": "bitwise_or"}),
+        path,
+    )
+
+    assert dt[f"{GROUP}/2"]["flags"].encoding["dtype"] == np.dtype("uint8")
+    # every flag set in one of the 4 children, the missing ones skipped; the
+    # fill value where all the children are missing
+    blocks = np.where(missing, 0, flags).reshape(-1, 4)
+    expected = np.bitwise_or.reduce(blocks, axis=1)
+    if fill_value is not None:
+        expected[missing.reshape(-1, 4).all(axis=1)] = fill_value
+    else:
+        # no fill value: a block of cells without any flag gives 0, not missing
+        assert (expected == 0).any()
+    stored = zarr.open_array(path, path=f"{GROUP}/2/flags")[:]
+    assert stored.dtype == np.dtype("uint8")
+    np.testing.assert_array_equal(stored, expected)
+
+
 def test_derived_chunks_are_healpix_cells(converted):
     path, *_ = converted
     cache, settings = _cache_and_settings([3], {"derived_levels": [2, 1]})
@@ -616,7 +706,8 @@ class TestPyramidCodecs:
         written = level2["temperature"].metadata.to_dict()["codecs"]
         assert [c["name"] for c in written] == ["bytes", "zstd"]
         assert written[1]["configuration"]["level"] == 5
-        # the cell ids keep Zarr's defaults, the converted level its own codecs
+        # the cell ids keep the codecs of the converted ones, the converted
+        # level its own codecs
         assert level2["cell_ids"].metadata.to_dict()["codecs"] != written
         native = zarr.open_group(path, mode="r")[f"{GROUP}/3"]["temperature"]
         assert native.metadata.to_dict()["codecs"] != written
@@ -626,6 +717,90 @@ class TestPyramidCodecs:
             dt[f"{GROUP}/2"]["temperature"].values,
             _block_means(temperature, parents),
         )
+
+    def test_sharding_serializer_on_coarse_levels(self, converted):
+        """The chunks of the coarsest levels hold fewer cells than the inner
+        chunks of a sharding serializer: those are cut to the chunk."""
+        path, cell_ids, temperature, _ = converted
+        bytes_codec = {"name": "bytes", "configuration": {"endian": "little"}}
+        codecs = [
+            {
+                "name": "sharding_indexed",
+                "configuration": {
+                    "chunk_shape": [16],
+                    "codecs": [bytes_codec, {"name": "zstd", "configuration": {}}],
+                    "index_codecs": [bytes_codec, {"name": "crc32c"}],
+                },
+            }
+        ]
+
+        dt = _generate_pyramids(
+            *_cache_and_settings([3], {"derived_levels": [2, 1, 0], "codecs": codecs}),
+            path,
+        )
+
+        group = zarr.open_group(path, mode="r")[GROUP]
+        for level, chunk_size in [(2, 16), (1, 4), (0, 1)]:
+            array = group[f"{level}/temperature"]
+            assert array.shards == (chunk_size,)
+            assert array.chunks == (chunk_size,)
+
+        parents = cell_ids >> np.uint64(4)
+        np.testing.assert_allclose(
+            dt[f"{GROUP}/1"]["temperature"].values,
+            _block_means(temperature, parents),
+        )
+
+    @pytest.mark.parametrize("compression", ["none", "compacted", "ranges"])
+    @pytest.mark.parametrize("sharded", [False, True], ids=["plain", "sharded"])
+    def test_derived_cell_ids_keep_the_codecs(
+        self, tmp_path, monkeypatch, compression, sharded
+    ):
+        """The cell ids of the derived levels are written with the codecs of
+        the converted ones (e.g. a delta filter), sharded like them."""
+        monkeypatch.setitem(HEALPIX, "compression", compression)
+        cell_ids = _dense_cells(3)
+        encoding = codecs_encoding(
+            [
+                {"name": "numcodecs.delta", "configuration": {"dtype": "<u8"}},
+                {"name": "bytes", "configuration": {"endian": "little"}},
+                {"name": "zstd", "configuration": {}},
+            ]
+        )
+        if sharded:
+            # shards of one converted chunk (16 cells), inner chunks of 4 cells
+            encoding |= {"chunks": (4,), "shards": (16,)}
+        path = _write_converted(
+            tmp_path / "converted.zarr",
+            {3: _level_dataset(3, cell_ids, a=np.arange(cell_ids.size, dtype="f8"))},
+            encoding={f"/{GROUP}/3": {"cell_ids": encoding}},
+        )
+
+        dt = _generate_pyramids(
+            *_cache_and_settings([3], {"derived_levels": [2, 1, 0]}), path
+        )
+
+        group = zarr.open_group(path, mode="r")[GROUP]
+        native = group["3/cell_ids"]
+        for level, chunk_size in [(2, 16), (1, 4), (0, 1)]:
+            array = group[f"{level}/cell_ids"]
+            assert array.filters == native.filters
+            assert array.serializer == native.serializer
+            assert array.compressors == native.compressors
+            if sharded:
+                assert array.shards == (chunk_size,)
+                assert array.chunks == (min(4, chunk_size),)
+            else:
+                assert array.shards is None
+                assert array.chunks == (chunk_size,)
+
+            depth = 3 - level
+            np.testing.assert_array_equal(
+                dt[f"{GROUP}/{level}"]["cell_ids"].values,
+                np.unique(cell_ids >> np.uint64(2 * depth)),
+            )
+            dggs = dt[f"{GROUP}/{level}"].attrs["dggs"]
+            assert dggs.get("compression", "none") == compression
 
     def test_unknown_codec(self):
         with pytest.raises(
@@ -807,10 +982,12 @@ def _write_input(path):
     return str(path)
 
 
-def _workflow_settings(derived_levels=(1, 0), **group_kwargs) -> ConvertSettings:
+def _workflow_settings(
+    derived_levels=(1, 0), pyramid_codecs=None, **group_kwargs
+) -> ConvertSettings:
     """Convert two input groups at the levels 3 and 2, with dense chunks of one
-    level-1 cell each, and a pyramid with the given derived levels (other group
-    settings given as keyword arguments).
+    level-1 cell each, and a pyramid with the given derived levels and codecs
+    (other group settings given as keyword arguments).
     """
     chunk = {
         "method": "healpix_cell_dense",
@@ -831,7 +1008,12 @@ def _workflow_settings(derived_levels=(1, 0), **group_kwargs) -> ConvertSettings
         {
             "multiscale_settings": {
                 "groups": [GROUP],
-                "pyramid_groups": {GROUP: {"derived_levels": list(derived_levels)}},
+                "pyramid_groups": {
+                    GROUP: {
+                        "derived_levels": list(derived_levels),
+                        "codecs": pyramid_codecs,
+                    }
+                },
             },
             "group_settings": group_settings,
         }
@@ -929,6 +1111,73 @@ def test_create_healpix_dataset_fills_the_pyramids(tmp_path):
     converted = dt[GROUP]["3"].to_dataset()
     parents = converted["cell_ids"].values >> np.uint64(4)
     expected = _block_means(converted["a"].values, parents)
+    np.testing.assert_allclose(dt[GROUP]["1"]["a"].values, expected, atol=1e-12)
+
+
+def _sharding(inner, codecs):
+    """A ``sharding_indexed`` codec setting with the given inner chunks."""
+    bytes_codec = {"name": "bytes", "configuration": {"endian": "little"}}
+    return {
+        "name": "sharding_indexed",
+        "configuration": {
+            "chunk_shape": [inner],
+            "codecs": codecs,
+            "index_codecs": [bytes_codec, {"name": "crc32c"}],
+        },
+    }
+
+
+@pytest.mark.parametrize("derived", ["plain", "sharded"])
+@pytest.mark.parametrize("converted", ["plain", "sharded"])
+def test_create_healpix_dataset_sharded_or_not(tmp_path, converted, derived):
+    """The converted levels (``codecs`` and ``healpix_coordinate_codecs`` group
+    settings) and the derived levels (``codecs`` pyramid setting) are sharded
+    or not independently, through the whole conversion."""
+    bytes_codec = {"name": "bytes", "configuration": {"endian": "little"}}
+    zstd = {"name": "zstd", "configuration": {}}
+    delta = {"name": "numcodecs.delta", "configuration": {"dtype": "<u8"}}
+    if converted == "sharded":
+        # chunks of 16 (level 3) and 4 (level 2) cells, inner chunks of 4
+        group_kwargs = {
+            "codecs": [_sharding(4, [bytes_codec, zstd])],
+            "healpix_coordinate_codecs": [_sharding(4, [delta, bytes_codec, zstd])],
+        }
+    else:
+        group_kwargs = {
+            "codecs": [bytes_codec, zstd],
+            "healpix_coordinate_codecs": [delta, bytes_codec, zstd],
+        }
+    # inner chunks of 4 cells, cut to the single cell of the level-1 chunks
+    pyramid_codecs = (
+        [_sharding(4, [bytes_codec, zstd])] if derived == "sharded" else [zstd]
+    )
+    input_path = _write_input(tmp_path / "input.zarr")
+    output_path = str(tmp_path / "converted.zarr")
+
+    dt = create_healpix_dataset(
+        [input_path],
+        _workflow_settings(
+            derived_levels=[1], pyramid_codecs=pyramid_codecs, **group_kwargs
+        ),
+        output_path,
+    )
+
+    group = zarr.open_group(output_path, mode="r")[GROUP]
+    for level, name, sharded in [
+        (3, "a", converted == "sharded"),
+        (2, "b", converted == "sharded"),
+        (1, "a", derived == "sharded"),
+        (1, "b", derived == "sharded"),
+    ]:
+        assert (group[f"{level}/{name}"].shards is not None) == sharded
+        # the cell ids follow the converted level
+        cell_ids = group[f"{level}/cell_ids"]
+        assert (cell_ids.shards is not None) == (converted == "sharded")
+        assert [f.codec_name for f in cell_ids.filters] == ["numcodecs.delta"]
+
+    converted_ds = dt[GROUP]["3"].to_dataset()
+    parents = converted_ds["cell_ids"].values >> np.uint64(4)
+    expected = _block_means(converted_ds["a"].values, parents)
     np.testing.assert_allclose(dt[GROUP]["1"]["a"].values, expected, atol=1e-12)
 
 
@@ -1227,3 +1476,195 @@ def test_multiscales_of_a_group_without_a_pyramid():
         assert "derived_from" not in _layout(multiscales, asset)
         assert "transform" not in _layout(multiscales, asset)
         assert "resampling_method" not in _layout(multiscales, asset)
+
+
+@pytest.mark.parametrize(
+    ("fixture", "levels", "derived_levels"),
+    [
+        ("converted", [3], [2, 1, 0]),
+        ("converted_encoded", [3], [2, 1, 0]),
+        ("converted_multi_level", [3, 2], [1, 0]),
+    ],
+)
+def test_in_memory_pyramids_same_as_on_the_store(
+    fixture, levels, derived_levels, request, tmp_path, monkeypatch
+):
+    """generate_pyramids(in_memory=True) (block means in numpy, the arrays
+    decoded and encoded in processes, written at once) gives the derived
+    levels of the default path: same arrays and metadata, same values up to
+    the order of the sums."""
+    import shutil
+
+    monkeypatch.setenv("HEALPIX_CONVERT_PYRAMID_PROCESSES", "2")
+    path = request.getfixturevalue(fixture)[0]
+    pyramid = {"derived_levels": derived_levels}
+    copy = str(tmp_path / "in_memory.zarr")
+    shutil.copytree(path, copy)
+
+    _generate_pyramids(*_cache_and_settings(levels, pyramid), path)
+    _generate_pyramids(*_cache_and_settings(levels, pyramid), copy, in_memory=True)
+
+    for level in derived_levels:
+        a = zarr.open_group(path, path=f"{GROUP}/{level}", mode="r")
+        b = zarr.open_group(copy, path=f"{GROUP}/{level}", mode="r")
+        assert sorted(a.array_keys()) == sorted(b.array_keys())
+        for name in a.array_keys():
+            # as JSON: a NaN fill_value is not equal to itself in the metadata
+            # objects of some Zarr versions (e.g. 3.1)
+            assert a[name].metadata.to_dict() == b[name].metadata.to_dict(), name
+            actual, expected = b[name][...], a[name][...]
+            if np.issubdtype(expected.dtype, np.integer):
+                # stored integers (incl. packed values): no rounding slack
+                np.testing.assert_array_equal(actual, expected, err_msg=name)
+            else:
+                rtol = 1e-6 if expected.dtype == np.float32 else 1e-12
+                np.testing.assert_allclose(
+                    actual, expected, rtol=rtol, equal_nan=True, err_msg=name
+                )
+
+
+class _ListingCacheMemoryFileSystem(MemoryFileSystem):
+    """A memory file system that caches its listings like an object store
+    file system (e.g. s3fs): per instance, until a write through that same
+    instance. fsspec shares its instances by their arguments, so the sync
+    instance of a URL and the async one Zarr opens on it (``asynchronous``)
+    are two instances, with two listing caches.
+    """
+
+    protocol = "listingcachememory"
+    store: dict = {}
+    pseudo_dirs = [""]
+
+    @classmethod
+    def _strip_protocol(cls, path):
+        prefix = f"{cls.protocol}://"
+        if isinstance(path, str) and path.startswith(prefix):
+            path = path[len(prefix) :]
+        return super()._strip_protocol(path)
+
+    def ls(self, path, detail=True, **kwargs):
+        path = self._strip_protocol(path)
+        if path not in self.dircache:
+            self.dircache[path] = super().ls(path, detail=True, **kwargs)
+        listing = self.dircache[path]
+        return listing if detail else [entry["name"] for entry in listing]
+
+    def find(self, path, maxdepth=None, withdirs=False, detail=False, **kwargs):
+        # one listing of the whole prefix, not cached (as s3fs lists it)
+        cached, self.dircache = self.dircache, {}
+        try:
+            return super().find(path, maxdepth, withdirs, detail, **kwargs)
+        finally:
+            self.dircache = cached
+
+    def invalidate_cache(self, path=None):
+        if path is None:
+            self.dircache.clear()
+            return
+        path = self._strip_protocol(path)
+        while True:
+            self.dircache.pop(path, None)
+            parent = self._parent(path)
+            if parent == path:
+                break
+            path = parent
+
+    def pipe_file(self, path, value, **kwargs):
+        super().pipe_file(path, value, **kwargs)
+        self.invalidate_cache(self._parent(path))
+
+    def _open(self, path, mode="rb", **kwargs):
+        if "r" not in mode:
+            self.invalidate_cache(self._parent(path))
+        return super()._open(path, mode, **kwargs)
+
+    def rm_file(self, path):
+        super().rm_file(path)
+        self.invalidate_cache(self._parent(path))
+
+    def makedirs(self, path, exist_ok=False):
+        super().makedirs(path, exist_ok=exist_ok)
+        self.invalidate_cache(self._parent(path))
+
+
+fsspec.register_implementation(
+    _ListingCacheMemoryFileSystem.protocol, _ListingCacheMemoryFileSystem
+)
+
+
+@pytest.fixture
+def listing_cache_store():
+    """A URL on that file system, emptied after the test."""
+    url = f"{_ListingCacheMemoryFileSystem.protocol}://converted.zarr"
+    yield url
+    fs = fsspec.filesystem(_ListingCacheMemoryFileSystem.protocol)
+    _ListingCacheMemoryFileSystem.store.clear()
+    _ListingCacheMemoryFileSystem.pseudo_dirs[:] = [""]
+    fs.invalidate_cache()
+
+
+@pytest.mark.parametrize("writer", ["other_process", "in_memory"])
+@pytest.mark.parametrize("converted", ["plain", "sharded"])
+def test_consolidated_metadata_on_a_listing_cache(
+    tmp_path, listing_cache_store, monkeypatch, converted, writer
+):
+    """The stages of the conversion run in one process, on a file system that
+    caches its listings: the consolidated metadata of the root group describes
+    every derived level, as the store holds them, though they were written
+    through another instance of the file system than the one that listed the
+    prepared dataset (e.g. in another process, or through the sync instance
+    of the in-memory pyramids)."""
+    monkeypatch.setenv("HEALPIX_CONVERT_PYRAMID_PROCESSES", "2")
+    bytes_codec = {"name": "bytes", "configuration": {"endian": "little"}}
+    zstd = {"name": "zstd", "configuration": {}}
+    if converted == "sharded":
+        # chunks of 16 (level 3) and 4 (level 2) cells, inner chunks of 4
+        sharding = {
+            "name": "sharding_indexed",
+            "configuration": {
+                "chunk_shape": [4],
+                "codecs": [bytes_codec, zstd],
+                "index_codecs": [bytes_codec, {"name": "crc32c"}],
+            },
+        }
+        group_kwargs = {"codecs": [sharding]}
+    else:
+        group_kwargs = {"codecs": [bytes_codec, zstd]}
+    input_path = _write_input(tmp_path / "input.zarr")
+    output_path = listing_cache_store
+    settings = _workflow_settings(**group_kwargs)
+
+    cache = create_staging_cache([input_path], settings)
+    prepare_healpix_dataset(cache, settings, output_path)
+    for group in (f"{GROUP}/fine", f"{GROUP}/coarse"):
+        convert_group_to_healpix(
+            group, cache=cache, settings=settings, output_path=output_path
+        )
+    if writer == "in_memory":
+        dt = generate_pyramids(cache, settings, output_path, in_memory=True)
+        # the returned tree is read through the instance of this process
+        assert set(dt[GROUP]["1"].data_vars) >= {"a", "b"}
+    else:
+        # the pyramids written as in another process: through other instances
+        # of the file system, while this process keeps its own (and their
+        # listings)
+        instances = dict(_ListingCacheMemoryFileSystem._cache)
+        _ListingCacheMemoryFileSystem.clear_instance_cache()
+        generate_pyramids(cache, settings, output_path)
+        _ListingCacheMemoryFileSystem._cache.clear()
+        _ListingCacheMemoryFileSystem._cache.update(instances)
+    finalize_healpix_dataset(cache, settings, output_path)
+
+    root = zarr.open_group(output_path, mode="r", use_consolidated=True)
+    consolidated = root.metadata.consolidated_metadata.flattened_metadata
+    for level in (1, 0):
+        for name in ("a", "b", "cell_ids"):
+            assert f"{GROUP}/{level}/{name}" in consolidated, (level, name)
+    assert (root[f"{GROUP}/3/a"].shards is not None) == (converted == "sharded")
+    # ... and a reader of the consolidated metadata alone reads them
+    dt = xr.open_datatree(output_path, engine="zarr", consolidated=True)
+    assert set(dt[GROUP].children) == {"3", "2", "1", "0"}
+    converted_ds = dt[GROUP]["3"].to_dataset()
+    parents = converted_ds["cell_ids"].values >> np.uint64(4)
+    expected = _block_means(converted_ds["a"].values, parents)
+    np.testing.assert_allclose(dt[GROUP]["1"]["a"].values, expected, atol=1e-12)

@@ -95,7 +95,16 @@ reduction (`"min"`, `"max"`, `"sum"`): these are the reductions that give, for
 a whole block of cells, the same result as aggregating all its cells at once.
 The mean does not suit categorical data such as masks or classifications:
 aggregate those with `"mode"`, the most frequent value of the cells of a block
-(the smallest of them in case of a tie).
+(the smallest of them in case of a tie). Bit flags, i.e. integer variables
+where each bit is a flag of its own (e.g. quality flags), are aggregated with
+`"bitwise_or"`: a flag is set in a coarser cell if it is set in any of its
+cells, even in a minority of them, which `"mode"` would drop. Missing cells
+(the fill value) are skipped, and a coarser cell with no data gets the fill
+value. Signed and unsigned integers are both supported (the sign bit is a flag
+like the others); a floating point variable is an error, as is a packed integer
+variable (`scale_factor`, `add_offset`) and a 64-bit integer variable with a
+fill value, whose values are decoded as floating point values that do not hold
+all their bits.
 
 The data type and the fill value of each variable are preserved, an integer
 variable being rounded instead of truncated.
@@ -145,12 +154,12 @@ of every derived level (not to their cell ids). It takes the same form as the
 
 ```python
 "pyramid_groups": {
-    "measurements/reflectance": {
+    "data/var": {
         "derived_levels": [18, 16, 15, 14, 13, 12],
         "codecs": [
             {
-                "name": "hcc-sentinel2-pyramid",
-                "configuration": {"quantification_value": 10000.0, "add_offset": -1000.0},
+                "name": "zstd",
+                "configuration": {"level": 5},
             }
         ],
     },
@@ -158,10 +167,24 @@ of every derived level (not to their cell ids). It takes the same form as the
 ```
 
 Since a chunk of a derived level holds the cells of one HEALPix cell, codecs
-that code one parent cell per chunk, like the Sentinel-2 serializers of
+that code one parent cell per chunk, like the HEALPix serializers of
 `healpix-compress`, can encode them. The converted levels keep the codecs they
 were written with: the codecs of a lossy serializer are not reused implicitly,
 as they would code the aggregated values a second time.
+
+A `sharding_indexed` serializer writes one shard per chunk of a derived level,
+with the inner chunks it gives. The chunks of the coarsest derived levels may
+hold fewer cells than those inner chunks: there, the inner chunks are cut to
+the chunk, i.e. each shard holds one inner chunk. Whether the aggregated
+variables are sharded depends on this setting only: the derived levels of
+sharded converted levels are not sharded without a `sharding_indexed`
+serializer here, and they can be sharded when the converted levels are not.
+
+The cell ids of the derived levels are written with the codecs of the cell ids
+of the converted level (the `healpix_coordinate_codecs` group setting, e.g. a
+delta filter), on the chunks of the derived level. Sharded converted cell ids
+give one shard per chunk of a derived level, with the same inner chunks, or the
+whole chunk where it is smaller.
 
 ## Groups converted at several levels
 
