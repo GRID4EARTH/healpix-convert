@@ -20,6 +20,7 @@ from pathlib import PurePath
 
 import structlog
 import zarr.api.synchronous as zarr
+from zarr.core.sync import sync
 
 from healpix_convert.core import utils
 from healpix_convert.core.conversion_models import (
@@ -72,6 +73,33 @@ def consolidation_paths(
     return list(dict.fromkeys(zarr_group_path(path) for path in paths))
 
 
+def _missing_group_documents(output_store: zarr.StoreLike) -> list[str]:
+    """Return the paths of the groups whose metadata document is missing while
+    the store holds nodes below them, the root group included ("")."""
+
+    async def list_documents() -> set[str]:
+        return {
+            key.removesuffix("zarr.json").rstrip("/")
+            async for key in output_store.list_prefix("")
+            if key == "zarr.json" or key.endswith("/zarr.json")
+        }
+
+    documents = sync(list_documents())
+    missing = set()
+
+    for node in documents:
+        parent = PurePath(node).parent
+        while True:
+            path = "" if str(parent) == "." else parent.as_posix()
+            if path not in documents:
+                missing.add(path)
+            if not path:
+                break
+            parent = parent.parent
+
+    return sorted(missing)
+
+
 def consolidate_output_metadata(
     output_store: zarr.StoreLike,
     cache: ConvertStagingCache,
@@ -89,6 +117,14 @@ def consolidate_output_metadata(
         dataset.
     settings : :py:class:`ConvertSettings`
         The conversion settings.
+
+    Raises
+    ------
+    RuntimeError
+        If a group of the output dataset has lost its metadata document (e.g.,
+        an object store write that never arrived): Zarr would leave the whole
+        hierarchy below that group out of the consolidated metadata, with a
+        warning only.
 
     Notes
     -----
@@ -108,6 +144,15 @@ def consolidate_output_metadata(
     # holds, not what this process listed before the last groups and arrays
     # were written (possibly through another instance of its file system)
     utils.drop_cached_listings(output_store)
+
+    missing = _missing_group_documents(output_store)
+    if missing:
+        names = ", ".join(f"'{path or '/'}'" for path in missing)
+        raise RuntimeError(
+            f"the output dataset holds nodes below {len(missing)} group(s) "
+            f"without a metadata document: {names}. Its consolidated metadata "
+            "would miss them: convert it again."
+        )
 
     for path in paths:
         name = path or "/"
