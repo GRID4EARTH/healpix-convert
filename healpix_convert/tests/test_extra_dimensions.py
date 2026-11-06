@@ -140,6 +140,48 @@ class TestAlignExtraDimensions:
         for ds, original in zip(aligned, tiles):
             xr.testing.assert_identical(ds, original)
 
+    @pytest.mark.parametrize(
+        "to_bytes",
+        [
+            pytest.param(
+                lambda labels: np.array(labels, dtype="S"), id="fixed-length-bytes"
+            ),
+            pytest.param(
+                lambda labels: np.array(
+                    [label.encode() for label in labels], dtype=object
+                ),
+                id="object-bytes",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ["settings", "expected"],
+        [
+            pytest.param({"join": "outer"}, ["d01", "d02", "d03"], id="outer"),
+            pytest.param(
+                {"join": "reindex", "labels": ["d01", "d02", "d03", "d04"]},
+                ["d01", "d02", "d03", "d04"],
+                id="reindex",
+            ),
+        ],
+    )
+    def test_bytes_labels(self, to_bytes, settings, expected):
+        # labels stored as bytes are aligned with labels given as strings
+        tiles = [
+            TILES[0].assign_coords(
+                detector=("detector", to_bytes(["d01", "d02", "d03"]))
+            ),
+            TILES[1],
+        ]
+        extra = {"detector": ExtraDimensionSettings.model_validate(settings)}
+
+        aligned = align_extra_dimensions(tiles, extra, SPATIAL_DIMS)
+
+        for ds, value in zip(aligned, [0.0, 10.0]):
+            assert list(ds["detector"].values) == expected
+            assert ds["detector"].dtype.kind == "U"
+            assert (ds["viewing_incidence_angles"].sel(detector="d02") == value).all()
+
 
 def _write_input(path, lon0: float, detectors: list[str]) -> str:
     """A lat/lon input with a ``detector`` dimension, 0.1 degree apart from

@@ -104,6 +104,25 @@ def _maybe_coerce_str_array_dtype(values: np.ndarray) -> np.ndarray:
     return values
 
 
+def _maybe_decode_bytes_array(values: np.ndarray) -> np.ndarray:
+    """Decode an array of byte strings to (unicode) strings.
+
+    Labels may be stored as fixed-length byte strings (numpy ``S`` dtype) or
+    read back as an ``object`` array of ``bytes``; they never compare equal to
+    the same labels given as strings (``b"d01" != "d01"``). Other arrays,
+    including object arrays that do not hold only bytes, are returned unchanged.
+    """
+    if values.dtype.kind == "S":
+        return np.char.decode(values, "utf-8")
+    if (
+        values.dtype == object
+        and values.size
+        and all(isinstance(v, bytes) for v in values.flat)
+    ):
+        return np.char.decode(values.astype(bytes), "utf-8")
+    return values
+
+
 class ZarrCreateArrayKwargs(TypedDict):
     shape: tuple[int, ...]
     dtype: npt.DTypeLike | str
@@ -143,6 +162,15 @@ def align_extra_dimensions(
                 f"extra dimension {dim!r} has no coordinate in some input dataset: "
                 "its labels are needed to align the inputs"
             )
+
+        # labels stored as bytes would never match the (str) labels of the
+        # settings or of the other inputs
+        for i, ds in enumerate(datasets):
+            if dim in ds.dims:
+                values = ds[dim].values
+                decoded = _maybe_decode_bytes_array(values)
+                if decoded is not values:
+                    datasets[i] = ds.assign_coords({dim: (dim, decoded, ds[dim].attrs)})
 
         datasets = [
             ds.set_xindex(dim) if dim in ds.dims and dim not in ds.xindexes else ds
