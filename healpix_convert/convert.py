@@ -384,7 +384,7 @@ def convert_group_to_healpix(
     group_path = PurePath(group.lstrip("/"))
 
     root_group = zarr.open_group(
-        output_path, mode="a", storage_options=output_storage_options
+        output_path, mode="r+", storage_options=output_storage_options
     )
     output_store = root_group.store
 
@@ -455,7 +455,7 @@ def generate_pyramids(
         log.info("••• no group with pyramid settings: nothing to generate.")
     else:
         root_group = zarr.open_group(
-            output_path, mode="a", storage_options=output_storage_options
+            output_path, mode="r+", storage_options=output_storage_options
         )
         write_derived_levels(
             root_group.store,
@@ -531,8 +531,10 @@ def finalize_healpix_dataset(
     log.info("••• reading conversion settings...")
     settings = validate_convert_settings(settings)
 
+    # "r+", not "a": a root group whose metadata document is missing is an
+    # error here, not a new empty group (losing the root attributes)
     root_group = zarr.open_group(
-        output_path, mode="a", storage_options=output_storage_options
+        output_path, mode="r+", storage_options=output_storage_options
     )
     consolidate_output_metadata(root_group.store, cache, settings)
 
