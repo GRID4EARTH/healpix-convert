@@ -306,17 +306,35 @@ def _build_derived_level(
     encoding: dict[str, Any] = {}
     if pyramid.codecs is not None:
         encoding.update(codecs_encoding(pyramid.codecs))
-    if inner_chunk_size is not None:
-        # a shard (one Dask chunk) holds several chunks, which the codecs code
-        encoding.update(chunks=(inner_chunk_size,), shards=(chunk_size,))
 
-    if encoding:
-        # the aggregated variables only (not the cell ids coordinate)
-        for name, var in ds.data_vars.items():
-            if healpix.spatial_dimension in var.dims:
-                var.encoding.update(encoding)
+    ds = ds.chunk({healpix.spatial_dimension: chunk_size})
 
-    return ds.chunk({healpix.spatial_dimension: chunk_size})
+    # the aggregated variables only (not the cell ids coordinate)
+    for name, var in ds.data_vars.items():
+        if healpix.spatial_dimension not in var.dims:
+            continue
+
+        var_encoding = dict(encoding)
+        if inner_chunk_size is not None:
+            # a shard (one Dask chunk) holds several chunks, which the codecs
+            # code; the other dimensions keep the chunks of the variable
+            sizes = {
+                dim: (
+                    inner_chunk_size
+                    if dim == healpix.spatial_dimension
+                    else var.chunksizes[dim][0]
+                )
+                for dim in var.dims
+            }
+            var_encoding["chunks"] = tuple(sizes[dim] for dim in var.dims)
+            var_encoding["shards"] = tuple(
+                chunk_size if dim == healpix.spatial_dimension else sizes[dim]
+                for dim in var.dims
+            )
+        if var_encoding:
+            var.encoding.update(var_encoding)
+
+    return ds
 
 
 def _set_cf_grid_mapping(ds: xr.Dataset, healpix: Healpix) -> xr.Dataset:

@@ -1343,3 +1343,29 @@ def test_derived_layout_levels():
 def test_pyramid_shard_level_settings():
     with pytest.raises(ValueError, match="requires 'chunk_level_offset'"):
         PyramidSettings(derived_levels=[6], shard_level=1)
+
+
+@pytest.mark.parametrize("dims", [("time", "cells"), ("cells", "time")])
+def test_derived_levels_sharded_with_extra_dimension(tmp_path, dims):
+    cell_ids = _dense_cells(7)
+    base = np.arange(cell_ids.size, dtype="f8")
+    values = np.stack([base, base + 1])
+    ds = _level_dataset(7, cell_ids, a=base)
+    ds["t"] = (dims, values if dims[0] == "time" else values.T)
+    ds = ds.chunk({"time": 2, "cells": 4**6})
+    path = _write_converted(tmp_path / "converted.zarr", {7: ds})
+    cache, settings = _cache_and_settings(
+        [7],
+        {"derived_levels": [6], "chunk_level_offset": 3, "shard_level": 1},
+        variables={7: ["a", "t"]},
+    )
+
+    dt = _generate_pyramids(cache, settings, path)
+
+    t = _derived_arrays(cache, dt, "t")[6]
+    cells = dims.index("cells")
+    assert t.encoding["chunks"][cells] == 4**3
+    assert t.encoding["shards"][cells] == 4**5
+    assert t.encoding["chunks"][1 - cells] == 2
+    expected = values.reshape(2, -1, 4).mean(axis=2)
+    np.testing.assert_allclose(t.values, expected if cells == 1 else expected.T)
