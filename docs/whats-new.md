@@ -8,7 +8,9 @@
   cell of the level `level - chunk_level_offset`) and a shard the chunks of one
   cell of the level `shard_level`, with no shard where it would hold a single
   chunk. Before, the chunks of a derived level followed the chunks of the
-  converted levels, whose shards they could be as large as. Without these
+  converted levels, whose shards they could be as large as. With
+  `chunk_level_offset`, `codecs` are the codecs of the chunks inside the shards
+  and must not contain a `sharding_indexed` codec of their own. Without these
   settings the layout is unchanged.
 - New `finalize_healpix_dataset` conversion stage, the last one, run once every
   group of the output dataset has been written: it consolidates the Zarr

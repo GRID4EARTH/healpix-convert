@@ -1369,3 +1369,46 @@ def test_derived_levels_sharded_with_extra_dimension(tmp_path, dims):
     assert t.encoding["chunks"][1 - cells] == 2
     expected = values.reshape(2, -1, 4).mean(axis=2)
     np.testing.assert_allclose(t.values, expected if cells == 1 else expected.T)
+
+
+def test_derived_levels_sharded_keep_the_pyramid_codecs(converted_fine):
+    path, _ = converted_fine
+    cache, settings = _cache_and_settings(
+        [7],
+        {
+            "derived_levels": [6],
+            "chunk_level_offset": 3,
+            "shard_level": 1,
+            "codecs": [
+                {"name": "bytes", "configuration": {"endian": "little"}},
+                {"name": "gzip", "configuration": {"level": 1}},
+            ],
+        },
+    )
+
+    _generate_pyramids(cache, settings, path)
+
+    a = zarr.open_group(path, path=f"{GROUP}/6", mode="r")["a"]
+    (sharding,) = a.metadata.codecs
+    assert sharding.to_dict()["name"] == "sharding_indexed"
+    inner = [codec["name"] for codec in sharding.to_dict()["configuration"]["codecs"]]
+    assert inner == ["bytes", "gzip"]
+
+
+def test_chunk_level_offset_refuses_a_sharding_codec():
+    with pytest.raises(ValueError, match="must not contain 'sharding_indexed'"):
+        PyramidSettings(
+            derived_levels=[6],
+            chunk_level_offset=3,
+            codecs=[
+                {
+                    "name": "sharding_indexed",
+                    "configuration": {
+                        "chunk_shape": [64],
+                        "codecs": [
+                            {"name": "bytes", "configuration": {"endian": "little"}}
+                        ],
+                    },
+                }
+            ],
+        )

@@ -154,7 +154,8 @@ small inner chunks of the native levels. The `chunk_level_offset` and
   the chunks of the children of one cell of that level. A level whose shards
   would hold at most one chunk is written in plain chunks, without sharding.
   Without `shard_level` the derived levels are not sharded. The `codecs`
-  setting codes the chunks inside the shards.
+  setting codes the chunks inside the shards (they are wrapped in a
+  `sharding_indexed` serializer) and must not contain one of its own.
 
 For example, with a parent cell of level 7 (the whole array), a native level 20
 and derived levels 19 to 14, `chunk_level_offset` 9 and `shard_level` 8 give:

@@ -405,6 +405,21 @@ def check_codecs_available(
     return value
 
 
+def _check_no_sharding_codec(
+    chunk_level_offset: int | None, codecs: list[CodecSettings] | None
+) -> None:
+    """With ``chunk_level_offset`` the shards are set by the layout settings:
+    the ``codecs`` are the codecs of the chunks inside them, and must not hold
+    a sharding codec of their own."""
+    if chunk_level_offset is None or codecs is None:
+        return
+    if any(codec["name"] == "sharding_indexed" for codec in codecs):
+        raise ValueError(
+            "with 'chunk_level_offset', 'codecs' are the codecs of the chunks "
+            "inside the shards and must not contain 'sharding_indexed'"
+        )
+
+
 class HealpixGroupSettings(BaseModel):
     """Settings for converting a single Zarr group onto HEALPix."""
 
@@ -518,6 +533,7 @@ class HealpixGroupSettings(BaseModel):
             raise ValueError(
                 "'chunk_level_offset' requires the 'healpix_cell_dense' chunk method"
             )
+        _check_no_sharding_codec(self.chunk_level_offset, self.codecs)
 
         return self
 
@@ -683,6 +699,7 @@ class PyramidSettings(BaseModel):
     def validate_layout(self) -> PyramidSettings:
         if self.shard_level is not None and self.chunk_level_offset is None:
             raise ValueError("'shard_level' requires 'chunk_level_offset'")
+        _check_no_sharding_codec(self.chunk_level_offset, self.codecs)
         return self
 
     coarsen_from: Literal["nearest", "finest"] = "nearest"
