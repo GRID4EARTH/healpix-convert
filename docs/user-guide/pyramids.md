@@ -142,33 +142,47 @@ By default, the chunks of a derived level hold as many cells as the converted
 ones, shards included: a native level whose shards (the `sharding_indexed`
 codec of its `codecs` setting) are large gives its derived levels chunks as
 large as those shards, written in a single file, although a viewer reads only
-small inner chunks of the native levels. The `chunk_level` and `shard_level`
-pyramid settings give the derived levels their own layout, with the vocabulary
-of the chunk settings of a native level (HEALPix refinement levels of cells):
+small inner chunks of the native levels. The `chunk_level_offset` and
+`shard_level` settings give every level of a group the same layout rule:
+
+- `chunk_level_offset` is *relative* to the level of the array: a chunk holds
+  the children of one cell of the level `level - chunk_level_offset`, i.e.
+  `4 ** chunk_level_offset` cells at every level. If that is not smaller than
+  the array (or than the cells of the coarsest level entirely covered by
+  converted data), the array is written in a single chunk per such cell.
+- `shard_level` is *absolute*: a shard (Zarr's `sharding_indexed` codec) holds
+  the chunks of the children of one cell of that level. A level whose shards
+  would hold at most one chunk is written in plain chunks, without sharding.
+  Without `shard_level` the derived levels are not sharded. The `codecs`
+  setting codes the chunks inside the shards.
+
+For example, with a parent cell of level 7 (the whole array), a native level 20
+and derived levels 19 to 14, `chunk_level_offset` 9 and `shard_level` 8 give:
+
+| level | chunk (cells) | shards |
+|-------|---------------|--------|
+| 20    | 262,144       | 4 of 16,777,216 cells |
+| 19    | 262,144       | 4 of 4,194,304 cells |
+| 18    | 262,144       | 4 of 1,048,576 cells |
+| 17    | 262,144       | none: a shard holds one chunk, 4 chunk files |
+| 16 and below | the whole array | none: a single chunk |
 
 ```json
 "pyramid_groups": {
     "measurements": {
-        "derived_levels": [18, 16, 14],
-        "chunk_level": 11,
-        "shard_level": 9
+        "derived_levels": [19, 18, 17, 16, 15, 14],
+        "chunk_level_offset": 9,
+        "shard_level": 8
     }
 }
 ```
 
-- `chunk_level`: a chunk holds the children of one cell of that level, so
-  `4 ** (level - chunk_level)` cells at the derived level `level`.
-- `shard_level` (optional, not finer than `chunk_level`): the chunks are
-  grouped in shards (Zarr's `sharding_indexed` codec), one shard holding the
-  children of one cell of that level. The `codecs` setting codes the chunks
-  inside the shards. Without it, the derived levels are not sharded.
-
-Both settings apply to a derived level when it is at least 4 levels deeper
-than `chunk_level` (a chunk holds at least 256 cells); the coarser levels keep
-the default layout described above. As for the default layout, the chunk and
-shard cells stop at the coarsest level entirely covered by converted data; a
-level whose shard cells are then not coarser than its chunk cells is written
-in chunks, without shards. Without these settings, nothing changes.
+The same `chunk_level_offset` can be given in the settings of the converted
+groups. Their `healpix_cell_dense` chunk setting then gives the shards (a shard
+is one conversion chunk, so `shard_level` is that chunk's level), and their
+`codecs` the codecs inside the shards; a level whose chunk cells are not finer
+than the chunk setting's is written in plain chunks. Without these settings,
+nothing changes.
 
 ## Codecs of the derived levels
 

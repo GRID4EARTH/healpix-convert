@@ -23,6 +23,7 @@ from healpix_convert.core.conversion_models import (
     zarr_group_path,
 )
 from healpix_convert.core.healpix_conventions import Healpix
+from healpix_convert.core.layout import chunk_shard_levels
 from healpix_convert.core.multiscales_conventions import HealpixMultiscales
 from healpix_convert.settings.common import (
     ConvertSettings,
@@ -224,17 +225,6 @@ def _derived_chunk_level(
     return max(level - max(native_depth, MIN_CHUNK_DEPTH), coarsest_level)
 
 
-def _explicit_layout(level: int, pyramid: PyramidSettings) -> bool:
-    """Whether the ``chunk_level`` pyramid setting gives the chunks of a derived
-    level: it does when the level is at least :py:data:`MIN_CHUNK_DEPTH` levels
-    deeper than the chunk cells.
-    """
-    return (
-        pyramid.chunk_level is not None
-        and level - pyramid.chunk_level >= MIN_CHUNK_DEPTH
-    )
-
-
 def derived_chunk_level(
     level: int,
     native_level: int,
@@ -243,19 +233,18 @@ def derived_chunk_level(
     pyramid: PyramidSettings,
 ) -> int:
     """Refinement level of the cells of the files (shards, or chunks if the
-    level is not sharded) of a derived level, with the ``chunk_level`` and
-    ``shard_level`` pyramid settings taken into account.
+    level is not sharded) of a derived level, with the ``chunk_level_offset``
+    and ``shard_level`` pyramid settings taken into account.
     """
-    if not _explicit_layout(level, pyramid):
+    if pyramid.chunk_level_offset is None:
         return _derived_chunk_level(
             level, native_level, native_chunk_level, coarsest_level
         )
 
-    assert pyramid.chunk_level is not None
-    level_cells = (
-        pyramid.chunk_level if pyramid.shard_level is None else pyramid.shard_level
+    chunk, shard = chunk_shard_levels(
+        level, pyramid.chunk_level_offset, pyramid.shard_level, coarsest_level
     )
-    return max(level_cells, coarsest_level)
+    return chunk if shard is None else shard
 
 
 def derived_inner_chunk_level(
@@ -264,14 +253,13 @@ def derived_inner_chunk_level(
     """Refinement level of the cells of the chunks inside the shards of a
     derived level, None if the level is not sharded.
 
-    ``outer_level`` is the one of its shards (:py:func:`derived_chunk_level`).
+    ``outer_level`` is the one of its files (:py:func:`derived_chunk_level`).
     """
-    if pyramid.shard_level is None or not _explicit_layout(level, pyramid):
+    if pyramid.chunk_level_offset is None or pyramid.shard_level is None:
         return None
 
-    assert pyramid.chunk_level is not None
-    inner = max(pyramid.chunk_level, outer_level)
-    return inner if inner > outer_level else None
+    chunk = max(level - pyramid.chunk_level_offset, outer_level)
+    return chunk if chunk > outer_level else None
 
 
 def _derived_level_sources(
