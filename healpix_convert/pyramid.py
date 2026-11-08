@@ -36,6 +36,7 @@ import xarray as xr
 import zarr.api.synchronous as zarr
 
 import healpix_convert.core.utils as utils
+from healpix_convert.cache import derived_inner_chunk_level
 from healpix_convert.core.coarsen import (
     coarsen_healpix_group,
     codecs_encoding,
@@ -235,6 +236,9 @@ def _build_derived_levels(
 
     for level_path, (healpix, chunk_level) in info.derived_levels.items():
         assert healpix.refinement_level is not None
+        inner_level = derived_inner_chunk_level(
+            healpix.refinement_level, chunk_level, pyramid
+        )
 
         ds = _build_derived_level(
             datasets,
@@ -244,6 +248,11 @@ def _build_derived_levels(
             templates=templates,
             # a chunk holds the children of one HEALPix cell of the chunk level
             chunk_size=4 ** (healpix.refinement_level - chunk_level),
+            inner_chunk_size=(
+                None
+                if inner_level is None
+                else 4 ** (healpix.refinement_level - inner_level)
+            ),
         )
         ds = _set_cf_grid_mapping(ds, healpix)
         ds.attrs = get_healpix_group_attrs(healpix, settings.metadata)
@@ -260,6 +269,7 @@ def _build_derived_level(
     pyramid: PyramidSettings,
     templates: Mapping[str, xr.Variable],
     chunk_size: int,
+    inner_chunk_size: int | None = None,
 ) -> xr.Dataset:
     """Build the dataset of one derived level, from the converted levels of its
     multiscale group.
@@ -293,9 +303,15 @@ def _build_derived_level(
 
     ds = encode_like(ds, templates)
 
+    encoding: dict[str, Any] = {}
     if pyramid.codecs is not None:
+        encoding.update(codecs_encoding(pyramid.codecs))
+    if inner_chunk_size is not None:
+        # a shard (one Dask chunk) holds several chunks, which the codecs code
+        encoding.update(chunks=(inner_chunk_size,), shards=(chunk_size,))
+
+    if encoding:
         # the aggregated variables only (not the cell ids coordinate)
-        encoding = codecs_encoding(pyramid.codecs)
         for name, var in ds.data_vars.items():
             if healpix.spatial_dimension in var.dims:
                 var.encoding.update(encoding)

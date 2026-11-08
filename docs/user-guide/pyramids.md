@@ -136,6 +136,40 @@ where $l$ is the refinement level of the derived level, $l_n$ and $l_{n_c}$
 those of the associated native level and of its chunk cells, and
 $l_\text{cov}$ the coarsest level entirely covered by converted data.
 
+### Chunks and shards set explicitly
+
+By default, the chunks of a derived level hold as many cells as the converted
+ones, shards included: a native level whose shards (the `sharding_indexed`
+codec of its `codecs` setting) are large gives its derived levels chunks as
+large as those shards, written in a single file, although a viewer reads only
+small inner chunks of the native levels. The `chunk_level` and `shard_level`
+pyramid settings give the derived levels their own layout, with the vocabulary
+of the chunk settings of a native level (HEALPix refinement levels of cells):
+
+```json
+"pyramid_groups": {
+    "measurements": {
+        "derived_levels": [18, 16, 14],
+        "chunk_level": 11,
+        "shard_level": 9
+    }
+}
+```
+
+- `chunk_level`: a chunk holds the children of one cell of that level, so
+  `4 ** (level - chunk_level)` cells at the derived level `level`.
+- `shard_level` (optional, not finer than `chunk_level`): the chunks are
+  grouped in shards (Zarr's `sharding_indexed` codec), one shard holding the
+  children of one cell of that level. The `codecs` setting codes the chunks
+  inside the shards. Without it, the derived levels are not sharded.
+
+Both settings apply to a derived level when it is at least 4 levels deeper
+than `chunk_level` (a chunk holds at least 256 cells); the coarser levels keep
+the default layout described above. As for the default layout, the chunk and
+shard cells stop at the coarsest level entirely covered by converted data; a
+level whose shard cells are then not coarser than its chunk cells is written
+in chunks, without shards. Without these settings, nothing changes.
+
 ## Codecs of the derived levels
 
 The aggregated variables are written with Zarr's default codecs, unless the

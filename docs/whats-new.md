@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- New `chunk_level` and `shard_level` pyramid settings: the chunks (and,
+  optionally, the shards) of the derived levels of a pyramid are the children of
+  one HEALPix cell of these refinement levels, instead of following the chunks
+  of the converted levels, whose shards the derived chunks could be as large as.
+  Without them the layout of the derived levels is unchanged.
 - New `finalize_healpix_dataset` conversion stage, the last one, run once every
   group of the output dataset has been written: it consolidates the Zarr
   metadata of the output dataset. No other stage writes consolidated metadata

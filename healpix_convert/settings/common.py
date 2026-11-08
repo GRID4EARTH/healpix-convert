@@ -620,6 +620,47 @@ class PyramidSettings(BaseModel):
     ) -> list[CodecSettings] | None:
         return check_codecs_available(value)
 
+    chunk_level: Annotated[int, Field(ge=0, le=29)] | None = None
+    """HEALPix refinement level of the cells that give the chunks of the derived
+    levels: a chunk holds the children of one cell of that level, e.g. 11
+    (``4 ** (level - 11)`` cells at the derived level ``level``).
+
+    If None (default), the chunks of a derived level hold as many cells as the
+    ones of the finest converted level (including its shards, if it has any):
+    the derived levels just below it are then written in a few chunks, or in
+    a single one, that is larger than the chunks read when zoomed in.
+
+    The setting applies to the derived levels that are at least
+    ``MIN_CHUNK_DEPTH`` = 4 levels deeper than this level (a chunk holds at
+    least 256 cells); the coarser ones keep the default layout. The chunk cells
+    stop at the coarsest level that the converted data covers entirely.
+    """
+
+    shard_level: Annotated[int, Field(ge=0, le=29)] | None = None
+    """HEALPix refinement level of the cells that give the shards of the derived
+    levels (Zarr's ``sharding_indexed`` codec): a shard is one file holding the
+    chunks of the children of one cell of that level. It requires
+    :py:attr:`chunk_level` and must not be finer than it.
+
+    If None (default), the derived levels are not sharded. Where the
+    :py:attr:`chunk_level` setting applies, a level is sharded when the shard
+    cells are coarser than the chunk cells (the shard of a level is then at
+    most as large as the one of the converted levels); the ``codecs`` of the
+    derived levels code the chunks inside the shards.
+    """
+
+    @model_validator(mode="after")
+    def validate_layout(self) -> PyramidSettings:
+        if self.shard_level is not None:
+            if self.chunk_level is None:
+                raise ValueError("'shard_level' requires 'chunk_level'")
+            if self.shard_level > self.chunk_level:
+                raise ValueError(
+                    f"'shard_level' ({self.shard_level}) must not be finer than "
+                    f"'chunk_level' ({self.chunk_level})"
+                )
+        return self
+
     coarsen_from: Literal["nearest", "finest"] = "nearest"
     """Which native level a variable converted at several levels is aggregated
     from: the nearest level at or finer than the derived level (default),
