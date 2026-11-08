@@ -23,6 +23,7 @@ from zarr.core.sync import sync
 from zarr.dtype import parse_dtype
 
 import healpix_convert.core.utils as utils
+from healpix_convert.core.layout import chunk_shard_levels
 from healpix_convert.core.conversion_models import (
     ConvertStagingCache,
     InputGroupSpatialInfo,
@@ -451,7 +452,7 @@ class HealpixGroupConverter(ABC):
                     dtype=dtype,
                     chunks=chunks,
                     dimension_names=[str(d) for d in dims],
-                    codecs=cast(Iterable[dict[str, JSON]], self.settings.codecs),
+                    codecs=self._data_codecs(chunks),
                     attributes=attributes,
                     fill_value=fill_value,
                 )
@@ -470,6 +471,57 @@ class HealpixGroupConverter(ABC):
                 )
 
         return zarrays
+
+    def _data_codecs(self, chunks: tuple[int, ...]) -> Iterable[dict[str, JSON]] | None:
+        """Codecs of a resampled data variable of the group, given its zarr
+        chunks (the shards, if the group is sharded).
+
+        With the ``chunk_level_offset`` setting the chunks are the ones of a
+        level ``chunk_level_offset`` levels above the group's: the codecs of
+        the settings code the chunks inside shards (``sharding_indexed``), unless
+        the chunk cells are not finer than the shard cells.
+
+        """
+        codecs = cast(Iterable[dict[str, JSON]] | None, self.settings.codecs)
+        offset = self.settings.chunk_level_offset
+
+        if offset is None:
+            return codecs
+
+        level = self.healpix.refinement_level
+        assert isinstance(self.settings.chunk, HealpixDenseChunkSettings)
+        shard_level = self.settings.chunk.healpix.refinement_level
+        assert level is not None and shard_level is not None
+
+        chunk_level, sharded = chunk_shard_levels(
+            level, offset, shard_level, shard_level
+        )
+        if sharded is None:
+            return codecs
+
+        inner = (*chunks[:-1], 4 ** (level - chunk_level))
+        inner_codecs = (
+            list(codecs)
+            if codecs is not None
+            else [
+                {"name": "bytes", "configuration": {"endian": "little"}},
+                {"name": "zstd", "configuration": {"level": 0, "checksum": False}},
+            ]
+        )
+
+        return [
+            {
+                "name": "sharding_indexed",
+                "configuration": {
+                    "chunk_shape": list(inner),
+                    "codecs": inner_codecs,
+                    "index_codecs": [
+                        {"name": "bytes", "configuration": {"endian": "little"}},
+                        {"name": "crc32c"},
+                    ],
+                },
+            }
+        ]
 
     def load_datasets(self, client: dask.distributed.Client | None = None) -> None:
         """Preload all input datasets or persist them in distributed memory when using dask."""
