@@ -29,6 +29,8 @@ from healpix_convert.cache import (
     _coarsest_whole_level,
     _derived_chunk_level,
     _derived_level_sources,
+    derived_chunk_level,
+    derived_inner_chunk_level,
     _multiscales_metadata,
     _set_pyramid_multiscale_groups,
 )
@@ -44,7 +46,7 @@ from healpix_convert.core.metadata import (
 )
 from healpix_convert.core.multiscales_conventions import HealpixMultiscales
 from healpix_convert.pyramid import create_derived_level_groups
-from healpix_convert.settings.common import MetadataSettings
+from healpix_convert.settings.common import MetadataSettings, PyramidSettings
 from healpix_convert.tests.test_batch_resample import STAC_ITEM
 
 GROUP = "measurements"
@@ -1668,3 +1670,218 @@ def test_consolidated_metadata_on_a_listing_cache(
     parents = converted_ds["cell_ids"].values >> np.uint64(4)
     expected = _block_means(converted_ds["a"].values, parents)
     np.testing.assert_allclose(dt[GROUP]["1"]["a"].values, expected, atol=1e-12)
+
+
+@pytest.fixture
+def converted_fine(tmp_path):
+    """A full-earth dataset converted at the level 7 (dense chunks of one
+    level-1 cell, i.e. 4 ** 6 cells).
+    """
+    cell_ids = _dense_cells(7)
+    path = _write_converted(
+        tmp_path / "converted.zarr",
+        {7: _level_dataset(7, cell_ids, a=np.arange(cell_ids.size, dtype="f8"))},
+    )
+    return path, cell_ids
+
+
+def _derived_arrays(cache, dt, name="a"):
+    info = cache.output_groups.pyramid_multiscale_groups[PurePath(GROUP)]
+    return {
+        healpix.refinement_level: dt[level_path.as_posix()][name]
+        for level_path, (healpix, _) in info.derived_levels.items()
+    }
+
+
+def test_derived_levels_default_layout_unchanged(converted_fine):
+    path, _ = converted_fine
+    cache, settings = _cache_and_settings([7], {"derived_levels": [6, 5]})
+
+    dt = _generate_pyramids(cache, settings, path)
+
+    # the chunks hold as many cells as the converted ones (up to the cells of
+    # the level itself), without shards
+    for level, array in _derived_arrays(cache, dt).items():
+        assert array.encoding["chunks"] == (4 ** min(level, 6),)
+        assert not array.encoding.get("shards")
+
+
+def test_derived_levels_chunk_level_offset(converted_fine):
+    path, _ = converted_fine
+    cache, settings = _cache_and_settings(
+        [7], {"derived_levels": [6, 3, 2], "chunk_level_offset": 3}
+    )
+
+    dt = _generate_pyramids(cache, settings, path)
+
+    arrays = _derived_arrays(cache, dt)
+    # 4 ** 3 cells per chunk at every level, no shards
+    assert arrays[6].encoding["chunks"] == (4**3,)
+    assert arrays[3].encoding["chunks"] == (4**3,)
+    # the clamp: the chunk cells stop at the base cells (a single chunk per
+    # base cell, here all the cells of the level)
+    assert arrays[2].encoding["chunks"] == (4**2,)
+    assert not arrays[6].encoding.get("shards")
+
+
+def test_derived_levels_sharded(converted_fine):
+    path, _ = converted_fine
+    cache, settings = _cache_and_settings(
+        [7],
+        {"derived_levels": [6, 5, 4, 3], "chunk_level_offset": 3, "shard_level": 1},
+    )
+
+    dt = _generate_pyramids(cache, settings, path)
+
+    arrays = _derived_arrays(cache, dt)
+    info = cache.output_groups.pyramid_multiscale_groups[PurePath(GROUP)]
+    files = {h.refinement_level: c for h, c in info.derived_levels.values()}
+
+    # chunks of 4 ** 3 cells in shards of one level-1 cell
+    assert arrays[6].encoding["chunks"] == (4**3,)
+    assert arrays[6].encoding["shards"] == (4**5,)
+    assert arrays[5].encoding["shards"] == (4**4,)
+    assert files[6] == 1 and files[5] == 1
+    # the shard would hold a single chunk: plain chunks, no sharding
+    assert arrays[4].encoding["chunks"] == (4**3,)
+    assert not arrays[4].encoding.get("shards")
+    # clamped chunk: one chunk of the level-0 cells, no sharding
+    assert arrays[3].encoding["chunks"] == (4**3,)
+    assert not arrays[3].encoding.get("shards")
+
+    # the values are the ones of the default layout
+    cache0, settings0 = _cache_and_settings([7], {"derived_levels": [6]})
+    expected = _derived_arrays(cache0, _generate_pyramids(cache0, settings0, path))[
+        6
+    ].values
+    np.testing.assert_array_equal(arrays[6].values, expected)
+
+
+def test_derived_layout_levels():
+    # a parent level 7 array of the level 20: chunks of 4 ** 9 cells in shards
+    # of one level-8 cell
+    pyramid = PyramidSettings(derived_levels=[19], chunk_level_offset=9, shard_level=8)
+    for level, outer, inner in [
+        (19, 8, 10),
+        (18, 8, 9),
+        (17, 8, None),
+        (16, 7, None),
+    ]:
+        got = derived_chunk_level(level, 20, 11, 7, pyramid)
+        assert got == outer
+        assert derived_inner_chunk_level(level, got, pyramid) == inner
+    # no shard setting: plain chunks
+    pyramid = PyramidSettings(derived_levels=[19], chunk_level_offset=9)
+    assert derived_chunk_level(19, 20, 11, 7, pyramid) == 10
+    assert derived_inner_chunk_level(19, 10, pyramid) is None
+    # no setting: the default layout
+    pyramid = PyramidSettings(derived_levels=[19])
+    assert derived_chunk_level(19, 20, 12, 0, pyramid) == _derived_chunk_level(
+        19, 20, 12, 0
+    )
+
+
+def test_pyramid_shard_level_settings():
+    with pytest.raises(ValueError, match="requires 'chunk_level_offset'"):
+        PyramidSettings(derived_levels=[6], shard_level=1)
+
+
+@pytest.mark.parametrize("dims", [("time", "cells"), ("cells", "time")])
+def test_derived_levels_sharded_with_extra_dimension(tmp_path, dims):
+    cell_ids = _dense_cells(7)
+    base = np.arange(cell_ids.size, dtype="f8")
+    values = np.stack([base, base + 1])
+    ds = _level_dataset(7, cell_ids, a=base)
+    ds["t"] = (dims, values if dims[0] == "time" else values.T)
+    ds = ds.chunk({"time": 2, "cells": 4**6})
+    path = _write_converted(tmp_path / "converted.zarr", {7: ds})
+    cache, settings = _cache_and_settings(
+        [7],
+        {"derived_levels": [6], "chunk_level_offset": 3, "shard_level": 1},
+        variables={7: ["a", "t"]},
+    )
+
+    dt = _generate_pyramids(cache, settings, path)
+
+    t = _derived_arrays(cache, dt, "t")[6]
+    cells = dims.index("cells")
+    assert t.encoding["chunks"][cells] == 4**3
+    assert t.encoding["shards"][cells] == 4**5
+    assert t.encoding["chunks"][1 - cells] == 2
+    expected = values.reshape(2, -1, 4).mean(axis=2)
+    np.testing.assert_allclose(t.values, expected if cells == 1 else expected.T)
+
+
+def test_derived_levels_layout_in_memory_same_as_on_the_store(
+    converted_fine, tmp_path, monkeypatch
+):
+    """The chunk_level_offset / shard_level layout gives the same arrays with
+    generate_pyramids(in_memory=True), whose shards are encoded in processes."""
+    import shutil
+
+    monkeypatch.setenv("HEALPIX_CONVERT_PYRAMID_PROCESSES", "2")
+    path, _ = converted_fine
+    pyramid = {
+        "derived_levels": [6, 5, 4, 3],
+        "chunk_level_offset": 3,
+        "shard_level": 1,
+    }
+    copy = str(tmp_path / "in_memory.zarr")
+    shutil.copytree(path, copy)
+
+    _generate_pyramids(*_cache_and_settings([7], pyramid), path)
+    _generate_pyramids(*_cache_and_settings([7], pyramid), copy, in_memory=True)
+
+    for level in [6, 5, 4, 3]:
+        a = zarr.open_group(path, path=f"{GROUP}/{level}", mode="r")["a"]
+        b = zarr.open_group(copy, path=f"{GROUP}/{level}", mode="r")["a"]
+        assert a.metadata.to_dict() == b.metadata.to_dict()
+        np.testing.assert_allclose(b[...], a[...], rtol=1e-12, equal_nan=True)
+    # sharded where a shard holds several chunks
+    a6 = zarr.open_group(path, path=f"{GROUP}/6", mode="r")["a"]
+    assert a6.shards == (4**5,) and a6.chunks == (4**3,)
+    a4 = zarr.open_group(path, path=f"{GROUP}/4", mode="r")["a"]
+    assert a4.shards is None and a4.chunks == (4**3,)
+
+
+def test_derived_levels_sharded_keep_the_pyramid_codecs(converted_fine):
+    path, _ = converted_fine
+    cache, settings = _cache_and_settings(
+        [7],
+        {
+            "derived_levels": [6],
+            "chunk_level_offset": 3,
+            "shard_level": 1,
+            "codecs": [
+                {"name": "bytes", "configuration": {"endian": "little"}},
+                {"name": "gzip", "configuration": {"level": 1}},
+            ],
+        },
+    )
+
+    _generate_pyramids(cache, settings, path)
+
+    a = zarr.open_group(path, path=f"{GROUP}/6", mode="r")["a"]
+    (sharding,) = a.metadata.codecs
+    assert sharding.to_dict()["name"] == "sharding_indexed"
+    inner = [codec["name"] for codec in sharding.to_dict()["configuration"]["codecs"]]
+    assert inner == ["bytes", "gzip"]
+
+
+def test_chunk_level_offset_refuses_a_sharding_codec():
+    with pytest.raises(ValueError, match="must not contain 'sharding_indexed'"):
+        PyramidSettings(
+            derived_levels=[6],
+            chunk_level_offset=3,
+            codecs=[
+                {
+                    "name": "sharding_indexed",
+                    "configuration": {
+                        "chunk_shape": [64],
+                        "codecs": [
+                            {"name": "bytes", "configuration": {"endian": "little"}}
+                        ],
+                    },
+                }
+            ],
+        )

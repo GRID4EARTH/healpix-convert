@@ -29,6 +29,16 @@
   is exact for a field linear in longitude and latitude, and much faster and
   lighter on large grids. It is only available with a healpix-resample version
   that provides `GridBilinearResampler`.
+- New `chunk_level_offset` and `shard_level` pyramid settings, and a
+  `chunk_level_offset` group setting: one layout rule for every level of a
+  group. A chunk holds `4 ** chunk_level_offset` cells (the children of one
+  cell of the level `level - chunk_level_offset`) and a shard the chunks of one
+  cell of the level `shard_level`, with no shard where it would hold a single
+  chunk. Before, the chunks of a derived level followed the chunks of the
+  converted levels, whose shards they could be as large as. With
+  `chunk_level_offset`, `codecs` are the codecs of the chunks inside the shards
+  and must not contain a `sharding_indexed` codec of their own. Without these
+  settings the layout is unchanged.
 - New `finalize_healpix_dataset` conversion stage, the last one, run once every
   group of the output dataset has been written: it consolidates the Zarr
   metadata of the output dataset. No other stage writes consolidated metadata

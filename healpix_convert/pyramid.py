@@ -40,6 +40,7 @@ import xarray as xr
 import zarr.api.synchronous as zarr
 
 import healpix_convert.core.utils as utils
+from healpix_convert.cache import derived_inner_chunk_level
 from healpix_convert.core.coarsen import (
     coarsen_healpix_group,
     codecs_encoding,
@@ -284,6 +285,9 @@ def _build_derived_levels(
 
     for level_path, (healpix, chunk_level) in info.derived_levels.items():
         assert healpix.refinement_level is not None
+        inner_level = derived_inner_chunk_level(
+            healpix.refinement_level, chunk_level, pyramid
+        )
 
         ds = _build_derived_level(
             datasets,
@@ -294,6 +298,11 @@ def _build_derived_levels(
             # a chunk holds the children of one HEALPix cell of the chunk level
             chunk_size=4 ** (healpix.refinement_level - chunk_level),
             means=means,
+            inner_chunk_size=(
+                None
+                if inner_level is None
+                else 4 ** (healpix.refinement_level - inner_level)
+            ),
         )
         ds = _set_cf_grid_mapping(ds, healpix)
         ds.attrs = get_healpix_group_attrs(healpix, settings.metadata)
@@ -311,6 +320,7 @@ def _build_derived_level(
     templates: Mapping[str, xr.Variable],
     chunk_size: int,
     means: _BlockMeans | None = None,
+    inner_chunk_size: int | None = None,
 ) -> xr.Dataset:
     """Build the dataset of one derived level, from the converted levels of its
     multiscale group.
@@ -351,18 +361,26 @@ def _build_derived_level(
             _cell_ids_encoding(templates[coordinate], chunk_size)
         )
 
-    if pyramid.codecs is not None:
-        # the aggregated variables only (not the cell ids coordinate)
-        encoding = codecs_encoding(pyramid.codecs)
-        for name, var in ds.data_vars.items():
-            if healpix.spatial_dimension in var.dims:
-                var.encoding.update(
-                    _fit_inner_chunks(
-                        encoding, var.dims.index(healpix.spatial_dimension), chunk_size
-                    )
-                )
+    encoding = codecs_encoding(pyramid.codecs) if pyramid.codecs is not None else {}
 
-    return ds.chunk({healpix.spatial_dimension: chunk_size})
+    # one Dask chunk per Zarr chunk (a shard, if the level is sharded)
+    ds = ds.chunk({healpix.spatial_dimension: chunk_size})
+
+    # the aggregated variables only (not the cell ids coordinate)
+    for name, var in ds.data_vars.items():
+        if healpix.spatial_dimension not in var.dims:
+            continue
+        axis = var.dims.index(healpix.spatial_dimension)
+        if inner_chunk_size is not None:
+            # the chunk_level_offset / shard_level layout: the codecs code
+            # the chunks inside the shards
+            var.encoding.update(
+                _sharding_encoding(encoding, var, axis, inner_chunk_size)
+            )
+        elif encoding:
+            var.encoding.update(_fit_inner_chunks(encoding, axis, chunk_size))
+
+    return ds
 
 
 def _cell_ids_encoding(template: xr.Variable, chunk_size: int) -> dict[str, Any]:
@@ -418,6 +436,38 @@ def _fit_inner_chunks(
     )
 
     return {**encoding, "serializer": fitted}
+
+
+def _sharding_encoding(
+    encoding: Mapping[str, Any], var: xr.DataArray, axis: int, inner_chunk_size: int
+) -> dict[str, Any]:
+    """The encoding of a sharded variable of a derived level (``chunk_level_offset``
+    and ``shard_level`` pyramid settings): the codecs of ``encoding`` (Zarr's
+    defaults if empty) wrapped in a sharding serializer whose inner chunks hold
+    ``inner_chunk_size`` cells along ``axis``, and the Dask chunks of ``var``
+    along its other dimensions. A shard is one Dask chunk of ``var``.
+
+    """
+    from zarr.codecs import BytesCodec, ShardingCodec, ZstdCodec
+
+    inner = tuple(
+        inner_chunk_size if i == axis else var.chunksizes[dim][0]
+        for i, dim in enumerate(var.dims)
+    )
+    if encoding:
+        codecs = [
+            *encoding.get("filters", []),
+            encoding.get("serializer") or BytesCodec(),
+            *encoding.get("compressors", []),
+        ]
+    else:
+        codecs = [BytesCodec(), ZstdCodec()]
+
+    return {
+        "filters": [],
+        "compressors": [],
+        "serializer": ShardingCodec(chunk_shape=inner, codecs=codecs),
+    }
 
 
 def _set_cf_grid_mapping(ds: xr.Dataset, healpix: Healpix) -> xr.Dataset:

@@ -23,11 +23,13 @@ from healpix_convert.core.conversion_models import (
     zarr_group_path,
 )
 from healpix_convert.core.healpix_conventions import Healpix
+from healpix_convert.core.layout import chunk_shard_levels
 from healpix_convert.core.multiscales_conventions import HealpixMultiscales
 from healpix_convert.settings.common import (
     ConvertSettings,
     HealpixDenseChunkSettings,
     HealpixGroupSettings,
+    PyramidSettings,
     validate_convert_settings,
 )
 
@@ -221,6 +223,43 @@ def _derived_chunk_level(
     native_depth = native_level - native_chunk_level
 
     return max(level - max(native_depth, MIN_CHUNK_DEPTH), coarsest_level)
+
+
+def derived_chunk_level(
+    level: int,
+    native_level: int,
+    native_chunk_level: int,
+    coarsest_level: int,
+    pyramid: PyramidSettings,
+) -> int:
+    """Refinement level of the cells of the files (shards, or chunks if the
+    level is not sharded) of a derived level, with the ``chunk_level_offset``
+    and ``shard_level`` pyramid settings taken into account.
+    """
+    if pyramid.chunk_level_offset is None:
+        return _derived_chunk_level(
+            level, native_level, native_chunk_level, coarsest_level
+        )
+
+    chunk, shard = chunk_shard_levels(
+        level, pyramid.chunk_level_offset, pyramid.shard_level, coarsest_level
+    )
+    return chunk if shard is None else shard
+
+
+def derived_inner_chunk_level(
+    level: int, outer_level: int, pyramid: PyramidSettings
+) -> int | None:
+    """Refinement level of the cells of the chunks inside the shards of a
+    derived level, None if the level is not sharded.
+
+    ``outer_level`` is the one of its files (:py:func:`derived_chunk_level`).
+    """
+    if pyramid.chunk_level_offset is None or pyramid.shard_level is None:
+        return None
+
+    chunk = max(level - pyramid.chunk_level_offset, outer_level)
+    return chunk if chunk > outer_level else None
 
 
 def _derived_level_sources(
@@ -437,7 +476,9 @@ def _set_pyramid_multiscale_groups(
         for level in sorted(pyramid.derived_levels, reverse=True):
             derived_levels[derived_path / str(level)] = (
                 healpix.model_copy(update={"refinement_level": level}),
-                _derived_chunk_level(level, finest_level, chunk_level, coarsest_level),
+                derived_chunk_level(
+                    level, finest_level, chunk_level, coarsest_level, pyramid
+                ),
             )
 
         pyramid_multiscale_groups[path] = PyramidMultiscaleGroupInfo(
