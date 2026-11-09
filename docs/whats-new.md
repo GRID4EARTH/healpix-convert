@@ -201,6 +201,19 @@
   `processing:expression` property of the output records it as the `format` of
   the settings, pinned to the tag or the commit of the `healpix-convert`
   version that produced the dataset ({issue}`19`).
+- healpix-resample 2026.10.3 or later is required. Its release changes the
+  results of the `"bicubic"` resampler and of the samples tied with the
+  `Npt`-th nearest cell; the neighbour search accepts `coarse_level_delta` in
+  the resampler `init_params` ({pull}`92`).
+- The pyramid stage no longer fails on an output dataset written with storage
+  options, e.g. the credentials of an object store ({pull}`90`).
+- The `"mean"` and `"sum"` reductions of the pyramids sum `float16` variables
+  in `float32`: a block whose `float16` sum was above 65504 (e.g. 64 cells of
+  1100.0) got an infinite mean ({issue}`102`). A `"sum"` above 65504 is still
+  infinite: it is written as `float16`.
+
+## v2026.10.1 (2026-10-16)
+
 - The CAMS converter's nearest-neighbour method now assigns the input points
   to cells with healpix-geo on the WGS84 ellipsoid that the output declares,
   instead of healpy on the sphere. Some points move to a neighbouring cell,
@@ -211,10 +224,6 @@
 - The variables of a chunk are resampled in one batched call ({pull}`31`) and
   the output arrays of a chunk are written concurrently ({pull}`39`).
 - The group codecs are checked when the settings are created ({pull}`27`).
-- healpix-resample 2026.10.3 or later is required. Its release changes the
-  results of the `"bicubic"` resampler and of the samples tied with the
-  `Npt`-th nearest cell; the neighbour search accepts `coarse_level_delta` in
-  the resampler `init_params` ({pull}`92`).
 - The cell ids can be delta-coded before compression ({pull}`42`, {pull}`47`).
 - Object string arrays are written as variable-length strings ({pull}`40`).
 - The affine transform derived from x / y coordinates points at the top-left
@@ -224,12 +233,6 @@
 - Sparse chunks are written with the data type of the input variable
   ({pull}`46`).
 - Documentation site, built with Sphinx and published on GitHub Pages.
-- The pyramid stage no longer fails on an output dataset written with storage
-  options, e.g. the credentials of an object store ({pull}`90`).
-- The `"mean"` and `"sum"` reductions of the pyramids sum `float16` variables
-  in `float32`: a block whose `float16` sum was above 65504 (e.g. 64 cells of
-  1100.0) got an infinite mean ({issue}`102`). A `"sum"` above 65504 is still
-  infinite: it is written as `float16`.
 
 ## v2026.10.0 (2026-10-08)
 
