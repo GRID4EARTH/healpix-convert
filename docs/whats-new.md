@@ -27,8 +27,10 @@
   nodes around its centre (healpix-resample's `GridBilinearResampler`), instead
   of the inverse-distance mean of the nearby input points of `"bilinear"`. It
   is exact for a field linear in longitude and latitude, and much faster and
-  lighter on large grids. It is only available with a healpix-resample version
-  that provides `GridBilinearResampler`.
+  lighter on large grids. Inputs side by side at the same latitudes (e.g. the
+  coarse meteorology grids of neighbouring tiles) are interpolated each on its
+  own and averaged where they overlap. It is only available with a
+  healpix-resample version that provides `GridBilinearResampler`.
 - New `chunk_level_offset` and `shard_level` pyramid settings, and a
   `chunk_level_offset` group setting: one layout rule for every level of a
   group. A chunk holds `4 ** chunk_level_offset` cells (the children of one
