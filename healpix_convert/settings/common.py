@@ -696,7 +696,7 @@ class PyramidSettings(BaseModel):
         return check_codecs_available(value)
 
     chunk_level_offset: Annotated[int, Field(ge=0, le=29)] | None = None
-    """Size of the chunks of the derived levels, relative to their level: a
+    """Size of the chunks of the derived levels, relative to their level. A
     chunk holds the children of one HEALPix cell of the level ``level -
     chunk_level_offset``, i.e. ``4 ** chunk_level_offset`` cells at every
     derived level ``level``, e.g. 9 for chunks of 262,144 cells.

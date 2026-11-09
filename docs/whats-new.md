@@ -1,6 +1,6 @@
 # What's new
 
-## Unreleased
+## v2026.11.0 (2026-11-09)
 
 - The ClimateDT converter now always resamples the native (spherical) HEALPix
   level 7 fields onto the level 7 grid on the WGS84 ellipsoid, the grid its
