@@ -341,23 +341,59 @@ def test_grid_bilinear_chunks_match_one_resampler_call(monkeypatch):
 
 
 @needs_grid_bilinear
-def test_grid_bilinear_inputs_side_by_side(monkeypatch):
-    # two inputs at the same latitudes, west and east of the chunk centre
+@pytest.mark.parametrize(
+    "west_lon, east_lon",
+    [
+        # two inputs at the same latitudes, west and east of the chunk centre,
+        # sharing the column at 6 E (no gap between their nodes)
+        (np.arange(5.5, 6.001, 1 / 120), np.arange(6.0, 6.5, 1 / 120)),
+        # overlapping tiles with their own (shifted) nodes, as the coarse
+        # meteorology grids of neighbouring tiles of a projected product
+        (np.arange(5.5, 6.1, 1 / 50), np.arange(5.93, 6.5, 1 / 60)),
+    ],
+)
+def test_grid_bilinear_inputs_side_by_side(monkeypatch, west_lon, east_lon):
+    # each input is resampled on its own, the cells covered by both get the
+    # mean: exact for a field linear in lon/lat
     cell = healpix_geo.nested.lonlat_to_healpix(6.0, 45.0, 8, ellipsoid="WGS84")[0]
     lat = np.arange(44.5, 45.5, 1 / 120)
-    west = plane_grid(np.arange(5.5, 6.0, 1 / 120), lat)
-    east = plane_grid(np.arange(6.0, 6.5, 1 / 120), lat)
     converter = make_converter(
         monkeypatch,
-        [west, east],
+        [plane_grid(west_lon, lat), plane_grid(east_lon, lat)],
         cell,
         chunk_level=8,
         level=12,
         buffer=1000,
         resampler="grid-bilinear",
     )
-    with pytest.raises(ValueError, match="do not overlap in latitude"):
-        converter.convert(0)
+    actual, outlon, outlat = converted_cells(converter, cell, 8, 12)
+    np.testing.assert_allclose(actual, plane(outlon, outlat), atol=1e-6)
+
+
+@needs_grid_bilinear
+def test_grid_bilinear_tiles_overlap_both_ways(monkeypatch):
+    # three tiles that share their edge rows and columns (as neighbouring
+    # tiles of a projected product): two side by side, a third one south of
+    # both; every cell is inside at least one of them
+    cell = healpix_geo.nested.lonlat_to_healpix(6.0, 45.0, 8, ellipsoid="WGS84")[0]
+    step = 1 / 120
+    north = np.arange(45.0, 45.5, step)
+    south = np.arange(44.5, 45.001, step)
+    converter = make_converter(
+        monkeypatch,
+        [
+            plane_grid(np.arange(5.5, 6.001, step), north),
+            plane_grid(np.arange(6.0, 6.5, step), north),
+            plane_grid(np.arange(5.5, 6.5, step), south),
+        ],
+        cell,
+        chunk_level=8,
+        level=12,
+        buffer=1000,
+        resampler="grid-bilinear",
+    )
+    actual, outlon, outlat = converted_cells(converter, cell, 8, 12)
+    np.testing.assert_allclose(actual, plane(outlon, outlat), atol=1e-6)
 
 
 def test_grid_bilinear_needs_dense_chunks():

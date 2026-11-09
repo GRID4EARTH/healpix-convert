@@ -7,8 +7,10 @@
   nodes around its centre (healpix-resample's `GridBilinearResampler`), instead
   of the inverse-distance mean of the nearby input points of `"bilinear"`. It
   is exact for a field linear in longitude and latitude, and much faster and
-  lighter on large grids. It is only available with a healpix-resample version
-  that provides `GridBilinearResampler`.
+  lighter on large grids. Inputs side by side at the same latitudes (e.g. the
+  coarse meteorology grids of neighbouring tiles) are interpolated each on its
+  own and averaged where they overlap. It is only available with a
+  healpix-resample version that provides `GridBilinearResampler`.
 - New `finalize_healpix_dataset` conversion stage, the last one, run once every
   group of the output dataset has been written: it consolidates the Zarr
   metadata of the output dataset. No other stage writes consolidated metadata

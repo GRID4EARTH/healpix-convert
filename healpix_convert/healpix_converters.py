@@ -598,7 +598,7 @@ if hasattr(healpix_resample, "GridBilinearResampler"):
     _RESAMPLER_NAME_CLS["grid-bilinear"] = healpix_resample.GridBilinearResampler
 
 # resamplers built from the 1-D axes of a rectilinear lon/lat grid instead of
-# the input points (see `_grid_resampler_axes`)
+# the input points (see `_grid_resampler_layers`)
 _GRID_RESAMPLERS = {"grid-bilinear"}
 
 # attribute of the input points of a chunk holding the 1-D axes of each input
@@ -616,30 +616,91 @@ def _get_resampler_cls(name: str) -> type:
         ) from None
 
 
-def _grid_resampler_axes(ds_input_points: xr.Dataset) -> tuple[list, list]:
-    """Longitude and latitude axes (one per input dataset) of the input points of
-    a chunk, for the resamplers that take the grid axes (``_GRID_RESAMPLERS``)."""
+def _grid_resampler_layers(
+    ds_input_points: xr.Dataset,
+) -> list[tuple[np.ndarray, list, list]]:
+    """Split the input datasets of a chunk into layers for the resamplers that take
+    the grid axes (``_GRID_RESAMPLERS``).
+
+    The inputs of one layer are bands of rows, one above the other, that one
+    resampler call interpolates together (also across the gap between two
+    bands). Inputs that lie side by side at the same latitudes (e.g. tiles of a
+    projected product, each with its own coarse lon/lat grid) go to different
+    layers: each layer is resampled on its own and the layers are combined per
+    cell (see :func:`_mean_of_layers`).
+
+    Returns, per layer, the positions of its points in ``ds_input_points`` and
+    the longitude and latitude axes of its inputs.
+    """
     axes = ds_input_points.attrs.get(_GRID_AXES_ATTR)
     if axes is None:
         raise ValueError(
             "the 'grid-bilinear' resampler needs input data on a rectilinear "
             "longitude/latitude grid (1-D coordinates)"
         )
-    # the input datasets are bands of rows, one above the other: two inputs at
-    # the same latitudes (e.g. tiles side by side) cannot be interpolated
-    # across their seam
-    spans = sorted((float(np.min(lat)), float(np.max(lat))) for _, lat in axes)
-    north = -np.inf
-    for south, top in spans:
-        if south <= north:
-            raise ValueError(
-                "the 'grid-bilinear' resampler needs input datasets that do not "
-                "overlap in latitude (one per band of rows), but two inputs of "
-                f"this chunk cover the same latitudes ({south} to {min(top, north)}): "
-                "mosaic the inputs that lie side by side into one dataset"
-            )
-        north = max(north, top)
-    return [lon for lon, _ in axes], [lat for _, lat in axes]
+    # the points of each input are stacked in C order of (lat, lon), the
+    # inputs one after the other
+    starts = np.cumsum([0] + [np.size(lon) * np.size(lat) for lon, lat in axes])
+    spans = [(float(np.min(lat)), float(np.max(lat))) for _, lat in axes]
+
+    # first layer whose inputs are all north or south of this one
+    layers: list[list[int]] = []
+    for i in sorted(range(len(axes)), key=lambda i: spans[i]):
+        south, north = spans[i]
+        for layer in layers:
+            if all(north < spans[j][0] or south > spans[j][1] for j in layer):
+                layer.append(i)
+                break
+        else:
+            layers.append([i])
+
+    return [
+        (
+            np.concatenate([np.arange(starts[i], starts[i + 1]) for i in sorted(layer)]),
+            [axes[i][0] for i in sorted(layer)],
+            [axes[i][1] for i in sorted(layer)],
+        )
+        for layer in layers
+    ]
+
+
+class _NoLog:
+    def warning(self, *args, **kwargs):
+        pass
+
+
+_NO_LOG = _NoLog()
+
+
+def _mean_of_layers(results: list[dict[str, np.ndarray]]) -> dict[str, np.ndarray]:
+    """Combine the dense results of several layers (same cells): the mean of the
+    finite values of each cell, NaN where no layer has one."""
+    combined = {}
+    for name in results[0]:
+        stack = np.stack([r[name] for r in results])
+        valid = np.isfinite(stack)
+        count = valid.sum(axis=0)
+        total = np.where(valid, stack, 0.0).sum(axis=0)
+        combined[name] = np.where(count > 0, total / np.maximum(count, 1), np.nan)
+    return combined
+
+
+def _warn_if_layers_lost_data(
+    logger, ds_input_points: xr.Dataset, resampled: dict[str, np.ndarray]
+) -> None:
+    """:func:`_warn_if_resampling_lost_data` on the combined result of the layers
+    of a chunk (one layer may have no cell in the chunk, the chunk as a whole
+    should have)."""
+    for name, cell_data in resampled.items():
+        var = ds_input_points.variables[name]
+        extra_dims = [d for d in var.dims if d != "points"]
+        values = var.transpose(*extra_dims, "points").values
+        _warn_if_resampling_lost_data(
+            logger,
+            name,
+            values.reshape(-1, values.shape[-1]),
+            cell_data.reshape(-1, cell_data.shape[-1]),
+        )
 
 
 class UniformChunkConverter(HealpixGroupConverter, ABC):
@@ -1075,22 +1136,12 @@ class DenseChunkConverter(UniformChunkConverter):
         # in case all arrays to resample have the same dtype
 
         if resampler_settings.name in _GRID_RESAMPLERS:
-            lon_deg, lat_deg = _grid_resampler_axes(ds_input_points)
+            layers = _grid_resampler_layers(ds_input_points)
         else:
-            lon_deg = ds_input_points.lon.values
-            lat_deg = ds_input_points.lat.values
+            layers = [
+                (None, ds_input_points.lon.values, ds_input_points.lat.values)
+            ]
 
-        log.debug("initialize resampler")
-        resampler = resampler_cls(
-            lon_deg=lon_deg,
-            lat_deg=lat_deg,
-            level=self.healpix.refinement_level,
-            verbose=False,
-            out_cell_ids=out_cell_ids,
-            nest=self.healpix.indexing_scheme == "nested",
-            ellipsoid=self.healpix.ellipsoid.name,
-            **dict(resampler_settings.init_params),
-        )
         # resample arrays (data variables)
         var_names = [
             str(name)
@@ -1100,16 +1151,46 @@ class DenseChunkConverter(UniformChunkConverter):
         resample_params = broadcast_params(
             resampler_settings.resample_params, var_names
         )
+        chunk_log = log.bind(group=self.group_path, chunk_index=chunk_index)
 
-        log.debug(f"resample {len(var_names)} arrays")
-        resampled = _resample_variables(
-            resampler,
-            ds_input_points,
-            var_names,
-            resample_params,
-            chunk_cell_ids=cell_ids,
-            logger=log.bind(group=self.group_path, chunk_index=chunk_index),
-        )
+        layer_results = []
+        for points, lon_deg, lat_deg in layers:
+            ds_layer = (
+                ds_input_points
+                if len(layers) == 1
+                else ds_input_points.isel(points=points)
+            )
+            log.debug("initialize resampler")
+            resampler = resampler_cls(
+                lon_deg=lon_deg,
+                lat_deg=lat_deg,
+                level=self.healpix.refinement_level,
+                verbose=False,
+                out_cell_ids=out_cell_ids,
+                nest=self.healpix.indexing_scheme == "nested",
+                ellipsoid=self.healpix.ellipsoid.name,
+                **dict(resampler_settings.init_params),
+            )
+            log.debug(f"resample {len(var_names)} arrays")
+            layer_results.append(
+                _resample_variables(
+                    resampler,
+                    ds_layer,
+                    var_names,
+                    resample_params,
+                    chunk_cell_ids=cell_ids,
+                    # a layer may have no cell in this chunk: checked below on
+                    # the combined result
+                    logger=chunk_log if len(layers) == 1 else _NO_LOG,
+                )
+            )
+            del resampler
+
+        if len(layers) == 1:
+            resampled = layer_results[0]
+        else:
+            resampled = _mean_of_layers(layer_results)
+            _warn_if_layers_lost_data(chunk_log, ds_input_points, resampled)
 
         writes = []
         for name, cell_data in resampled.items():
