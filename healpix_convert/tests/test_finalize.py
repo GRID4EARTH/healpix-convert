@@ -283,3 +283,28 @@ def test_the_one_call_conversion_finalizes_the_output(tmp_path, input_path) -> N
     # settings
     assert _consolidated_groups(output_path) == {"", MULTISCALE_GROUP}
     assert set(dt[MULTISCALE_GROUP].children) == {"3", "2", "1"}
+
+
+def test_a_lost_group_document_fails_the_last_stage(converted) -> None:
+    cache, settings, output_path = converted(_settings())
+    # the arrays below the multiscale group are written, its own metadata
+    # document is lost (e.g., an object store write that never arrived)
+    (Path(output_path) / MULTISCALE_GROUP / "zarr.json").unlink()
+
+    # Zarr would leave the whole multiscale group out of the consolidated
+    # metadata, with a warning only
+    with pytest.raises(RuntimeError, match=f"'{MULTISCALE_GROUP}'"):
+        finalize_healpix_dataset(cache, settings, output_path)
+
+    assert _consolidated_groups(output_path) == set()
+
+
+def test_a_lost_root_document_fails_the_last_stage(converted) -> None:
+    cache, settings, output_path = converted(_settings())
+    (Path(output_path) / "zarr.json").unlink()
+
+    # not a new empty root group, without the attributes of the converted one
+    with pytest.raises(FileNotFoundError):
+        finalize_healpix_dataset(cache, settings, output_path)
+
+    assert not (Path(output_path) / "zarr.json").exists()

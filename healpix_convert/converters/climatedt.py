@@ -3,13 +3,13 @@ healpix_convert/converters/climatedt.py
 ==========================================
 ClimateDT (IFS-NEMO) legacy converter.
 
-ClimateDT data is natively on HEALPix level 7 NESTED — no regridding needed.
-This converter downloads via Polytope, reads the GRIB (already on HEALPix),
-and packs it directly into an EOPF-compliant zarr dataset.
+ClimateDT data is natively on HEALPix level 7 NESTED, on the sphere. This
+converter downloads via Polytope, reads the GRIB and resamples it onto the
+level 7 NESTED grid on the WGS84 ellipsoid (the grid the output declares),
+then packs it into an EOPF-compliant zarr dataset. The two grids are up to
+~14 km apart (at 45°), so the values cannot be copied as they are.
 
-Optional sphere → WGS84 ellipsoid correction (PSFResampler) can be enabled
-for rigorous treatment of the coordinate system difference. It adds ~5-10 s
-per timestep but is usually not needed at level 7 precision.
+The resampler is set in ``CDT_SFC_CONVERT_SETTINGS`` (PSF for now, as for ERA5).
 
 Usage
 -----
@@ -101,7 +101,8 @@ class ClimateDTConverter:
     """
     Converter for ClimateDT IFS-NEMO output to EOPF-DGGS HEALPix zarr.
 
-    Data is natively on HEALPix level 7 — direct copy, no reprojection.
+    Data is natively on HEALPix level 7 on the sphere; it is resampled once
+    per variable/timestep onto the same level on the WGS84 ellipsoid.
 
     Parameters
     ----------
@@ -111,7 +112,6 @@ class ClimateDTConverter:
     levtype             : "sfc" | "o3d"
     levelist            : depth levels for ocean 3D (e.g. "1/2/3/4/5")
     activity            : ScenarioMIP | ...
-    ellipsoid_correction: if True, apply PSF sphere→WGS84 correction (~5-10 s/timestep)
     local_dir           : cache directory
     """
 
@@ -129,7 +129,6 @@ class ClimateDTConverter:
         model: str = CDT_MODEL,
         resolution: str = CDT_RESOLUTION,
         realization: str = "1",
-        ellipsoid_correction: bool = False,
         local_dir: Path = Path("."),
         metadata: MetadataSettings | None = None,
     ):
@@ -146,11 +145,11 @@ class ClimateDTConverter:
         self.model = model
         self.resolution = resolution
         self.realization = realization
-        self.ellipsoid_correction = ellipsoid_correction
         self.local_dir = Path(local_dir)
 
         self._ds: xr.Dataset | None = None
-        self._nr: healpix_resample.PSFResampler | None = None
+        self._resamplers: dict = {}  # valid-point mask -> resampler
+        self._map_cache: dict = {}  # (var, t) -> full-sphere WGS84 map
         self._result: CDTPrepareResult | None = None
 
     # ── Step 1: prepare ───────────────────────────────────────────────────────
@@ -197,7 +196,7 @@ class ClimateDTConverter:
     # ── Step 2: convert_group ─────────────────────────────────────────────────
 
     def convert_group(self, chunk_index: int) -> None:
-        """Copy (or correct) ClimateDT data for one HEALPix parent cell."""
+        """Write the WGS84 ClimateDT data of one HEALPix parent cell."""
         assert self._result is not None, "call prepare() first"
         self._load_dataset(self._result.grib_path)
 
@@ -217,29 +216,10 @@ class ClimateDTConverter:
         for var in r.var_meta:
             if var not in self._ds.data_vars:
                 continue
-            da = self._ds[var]
             zarr_a = grp[var]
-
             for t in range(r.n_times):
-                vals = (
-                    da.isel({t_dim: t}).values.ravel().astype(np.float32)
-                    if t_dim
-                    else da.values.ravel().astype(np.float32)
-                )
-
-                if self.ellipsoid_correction:
-                    # Sphere → WGS84 ellipsoid via PSFResampler
-                    if self._nr is None:
-                        self._build_resampler()
-                    res = self._nr.resample(vals.astype(np.float64), lam=0.0)
-                    full_map = np.full(_N_CHILD, np.nan, dtype=np.float32)
-                    full_map[res.cell_ids] = res.cell_data.astype(np.float32)
-                    zarr_a[t, chunk_sl] = full_map[
-                        cell_ids.astype(int) - cell_ids[0].astype(int)
-                    ]
-                else:
-                    # Direct copy: data is already on the target HEALPix grid
-                    zarr_a[t, chunk_sl] = vals[cell_ids.astype(int)]
+                full_map = self._wgs84_map(var, t, t_dim)
+                zarr_a[t, chunk_sl] = full_map[cell_ids.astype(int)]
 
         grp["cell_ids"][chunk_sl] = cell_ids
         log.debug(f"Chunk {chunk_index + 1}/{_N_PARENT} written.")
@@ -309,17 +289,58 @@ class ClimateDTConverter:
             )
             log.info(f"  {dict(self._ds.sizes)}  vars: {list(self._ds.data_vars)}")
 
-    def _build_resampler(self) -> None:
-        """Build PSFResampler from native pixel centres (sphere → WGS84 correction)."""
-        log.info("Building PSFResampler for sphere→WGS84 ellipsoid correction …")
-        self._nr = healpix_resample.PSFResampler(
-            lon_deg=self._ds.longitude.values.ravel().astype(float),
-            lat_deg=self._ds.latitude.values.ravel().astype(float),
-            level=_CHILD_LEVEL,
-            threshold=0.5,
-            verbose=False,
-            ellipsoid="WGS84",
-        )
+    def _wgs84_map(self, var: str, t: int, t_dim: str | None) -> np.ndarray:
+        """Full-sphere WGS84 map for one variable/timestep.
+
+        Computed once per (var, t) and cached, so the global resampling is not
+        repeated for each of the 192 spatial chunks. Masked fields (NaN in the
+        source, e.g. ocean fields over land) are resampled from their valid
+        points only, so the masked cells stay NaN. As for ERA5, the result is
+        clipped to the source range, which removes the PSF overshoot only.
+        """
+        key = (var, t)
+        full_map = self._map_cache.get(key)
+        if full_map is not None:
+            return full_map
+
+        da = self._ds[var]
+        if t_dim:
+            da = da.isel({t_dim: t})
+        if da.size != _N_CHILD:
+            # e.g. ocean fields with depth levels: one map per level is not
+            # written yet (before, only the first level was)
+            raise NotImplementedError(
+                f"{var}: dimensions {dict(da.sizes)} besides time and cells"
+            )
+        vals = da.values.ravel().astype(np.float64)
+        full_map = np.full(_N_CHILD, np.nan, dtype=np.float32)
+        valid = np.isfinite(vals)
+        if valid.any():
+            res = self._resampler(valid).resample(
+                vals[valid], **_g["resampler"]["resample_params"]
+            )
+            full_map[res.cell_ids] = res.cell_data.astype(np.float32)
+            full_map = np.clip(full_map, vals[valid].min(), vals[valid].max())
+
+        self._map_cache[key] = full_map
+        return full_map
+
+    def _resampler(self, valid: np.ndarray) -> healpix_resample.PSFResampler:
+        """Sphere → WGS84 resampler on the valid native points (built once per mask)."""
+        key = valid.tobytes()
+        if key not in self._resamplers:
+            log.info(
+                f"Building the sphere→WGS84 resampler on {int(valid.sum()):,} points …"
+            )
+            self._resamplers[key] = healpix_resample.PSFResampler(
+                lon_deg=self._ds.longitude.values.ravel().astype(float)[valid],
+                lat_deg=self._ds.latitude.values.ravel().astype(float)[valid],
+                level=_CHILD_LEVEL,
+                ellipsoid="WGS84",
+                verbose=False,
+                **_g["resampler"]["init_params"],
+            )
+        return self._resamplers[key]
 
     def _get_time_range(self) -> tuple[datetime, datetime]:
         import pandas as pd
@@ -438,7 +459,6 @@ class ClimateDTConverter:
                 "healpix:ordering": "NESTED",
                 "source_grid": f"Native HEALPix L{_CHILD_LEVEL} (IFS-NEMO, DestinE)",
                 "source_dataset": CDT_DATASET,
-                "ellipsoid_correction": self.ellipsoid_correction,
             },
             links=[],
             assets={},

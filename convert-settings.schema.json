@@ -244,6 +244,39 @@
       "title": "ExtraDimensionSettings",
       "type": "object"
     },
+    "GridBilinearResamplerSettings": {
+      "description": "Settings for resampling a regular longitude/latitude grid onto HEALPix by\nbilinear interpolation of the 4 grid nodes around each cell centre.\n\nOnly for groups with rectilinear (1-D) longitude/latitude coordinates,\nconverted by dense chunks. Needs a healpix-resample version that provides\n``GridBilinearResampler``.",
+      "properties": {
+        "init_params": {
+          "additionalProperties": true,
+          "description": "Parameters passed to the resampler constructor.",
+          "title": "Init Params",
+          "type": "object"
+        },
+        "resample_params": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {}
+            ]
+          },
+          "description": "Parameters passed to the resampler's `resample()` method.\n\nParameter values may be given either like:\n- a common value used for all arrays (data variables) in the group\n- a value for each array in the group (dictionary where keys are\n  variable names)",
+          "title": "Resample Params",
+          "type": "object"
+        },
+        "name": {
+          "const": "grid-bilinear",
+          "default": "grid-bilinear",
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "title": "GridBilinearResamplerSettings",
+      "type": "object"
+    },
     "Healpix": {
       "description": "HEALPix grid.\n\nCompliant with the DGGS Zarr convention.",
       "properties": {
@@ -372,6 +405,7 @@
             "mapping": {
               "bilinear": "#/$defs/BilinearResamplerSettings",
               "cell-point": "#/$defs/CellPointResamplerSettings",
+              "grid-bilinear": "#/$defs/GridBilinearResamplerSettings",
               "k-nearest": "#/$defs/KNearestNeighborsResamplerSettings",
               "nearest": "#/$defs/NearestResamplerSettings",
               "psf": "#/$defs/PSFResamplerSettings"
@@ -387,6 +421,9 @@
             },
             {
               "$ref": "#/$defs/BilinearResamplerSettings"
+            },
+            {
+              "$ref": "#/$defs/GridBilinearResamplerSettings"
             },
             {
               "$ref": "#/$defs/PSFResamplerSettings"
@@ -440,6 +477,21 @@
           "default": null,
           "description": "Zarr codecs of the group's resampled data variables (other arrays use\nzarr's defaults).\n\nEach codec is looked up by name in zarr's codec registry, so the package\nthat provides it must be installed where the settings are created, e.g.\n``healpix-compress`` for ``hcc-sentinel2-pyramid``.",
           "title": "Codecs"
+        },
+        "chunk_level_offset": {
+          "anyOf": [
+            {
+              "maximum": 29,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Size of the storage chunks of the group's data variables, relative to the\nrefinement level of the group: a chunk holds ``4 ** chunk_level_offset``\ncells, the children of one cell of the level ``level - chunk_level_offset``\n(see the ``chunk_level_offset`` pyramid setting, which gives the derived\nlevels the same chunks).\n\nThe ``healpix_cell_dense`` chunk setting then gives the shards (the\nconverted cells of one chunk cell are written as one Zarr shard, with\n``sharding_indexed`` codec) and ``codecs`` the codecs of the chunks inside\nthe shards. If the chunk cells are not finer than the chunk setting's, the\narrays are written in plain chunks, without sharding.\n\nIf None (default), the chunks are the ones of the chunk setting, and\n``codecs`` may contain a ``sharding_indexed`` codec of its own.",
+          "title": "Chunk Level Offset"
         },
         "output_dtype": {
           "anyOf": [
@@ -762,13 +814,14 @@
         },
         "reduce": {
           "default": "mean",
-          "description": "How the values of the children cells are aggregated.\n\nMissing (NaN) values are skipped. The mean does not suit categorical data\n(masks, classifications): aggregate those with \"mode\", the most frequent\nvalue of the cells of a block (the smallest of them in case of a tie).",
+          "description": "How the values of the children cells are aggregated.\n\nMissing (NaN) values are skipped. The mean does not suit categorical data\n(masks, classifications): aggregate those with \"mode\", the most frequent\nvalue of the cells of a block (the smallest of them in case of a tie).\n\nBit flags (integer variables where each bit is a flag of its own, e.g.\nquality flags) are aggregated with \"bitwise_or\": a flag is set in a coarser\ncell if it is set in any of its cells (missing cells are skipped). It needs\ninteger variables only, the data type of which is preserved.",
           "enum": [
             "mean",
             "min",
             "max",
             "sum",
-            "mode"
+            "mode",
+            "bitwise_or"
           ],
           "title": "Reduce",
           "type": "string"
@@ -788,6 +841,36 @@
           "default": null,
           "description": "Zarr codecs of the aggregated data variables of every derived level\n(Zarr's defaults if None), e.g. a serializer that codes the cells of one\nHEALPix cell per chunk, which the chunks of the derived levels are.\n\nAs for the ``codecs`` group setting, each codec is looked up by name in\nZarr's codec registry where the settings are created. The converted levels\nkeep the codecs they were written with.",
           "title": "Codecs"
+        },
+        "chunk_level_offset": {
+          "anyOf": [
+            {
+              "maximum": 29,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Size of the chunks of the derived levels, relative to their level. A\nchunk holds the children of one HEALPix cell of the level ``level -\nchunk_level_offset``, i.e. ``4 ** chunk_level_offset`` cells at every\nderived level ``level``, e.g. 9 for chunks of 262,144 cells.\n\nA level whose chunk would hold all its cells (or all the cells of the\ncoarsest level that the converted data covers entirely) is written in a\nsingle chunk per such cell. The same setting of a group of the converted\nlevels (see the ``chunk_level_offset`` group setting) gives them the same\nchunks.\n\nIf None (default), the chunks of a derived level hold as many cells as the\nones of the finest converted level (including its shards, if it has any):\nthe derived levels just below it are then written in a few chunks, or in\na single one, that is larger than the chunks read when zoomed in.",
+          "title": "Chunk Level Offset"
+        },
+        "shard_level": {
+          "anyOf": [
+            {
+              "maximum": 29,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "HEALPix refinement level of the cells that give the shards of the derived\nlevels (Zarr's ``sharding_indexed`` codec): a shard is one file holding the\nchunks of the children of one cell of that level, e.g. one level below the\nparent cell of the converted data for four shards per array. It requires\n:py:attr:`chunk_level_offset`.\n\nA level whose shards would hold at most one chunk (shard cells not larger\nthan the chunk cells) is written in plain chunks, without sharding. If None\n(default), the derived levels are not sharded. The ``codecs`` of the\nderived levels code the chunks inside the shards.",
+          "title": "Shard Level"
         },
         "coarsen_from": {
           "default": "nearest",

@@ -95,7 +95,16 @@ reduction (`"min"`, `"max"`, `"sum"`): these are the reductions that give, for
 a whole block of cells, the same result as aggregating all its cells at once.
 The mean does not suit categorical data such as masks or classifications:
 aggregate those with `"mode"`, the most frequent value of the cells of a block
-(the smallest of them in case of a tie).
+(the smallest of them in case of a tie). Bit flags, i.e. integer variables
+where each bit is a flag of its own (e.g. quality flags), are aggregated with
+`"bitwise_or"`: a flag is set in a coarser cell if it is set in any of its
+cells, even in a minority of them, which `"mode"` would drop. Missing cells
+(the fill value) are skipped, and a coarser cell with no data gets the fill
+value. Signed and unsigned integers are both supported (the sign bit is a flag
+like the others); a floating point variable is an error, as is a packed integer
+variable (`scale_factor`, `add_offset`) and a 64-bit integer variable with a
+fill value, whose values are decoded as floating point values that do not hold
+all their bits.
 
 The data type and the fill value of each variable are preserved, an integer
 variable being rounded instead of truncated.
@@ -136,6 +145,56 @@ where $l$ is the refinement level of the derived level, $l_n$ and $l_{n_c}$
 those of the associated native level and of its chunk cells, and
 $l_\text{cov}$ the coarsest level entirely covered by converted data.
 
+### Chunks and shards set explicitly
+
+By default, the chunks of a derived level hold as many cells as the converted
+ones, shards included: a native level whose shards (the `sharding_indexed`
+codec of its `codecs` setting) are large gives its derived levels chunks as
+large as those shards, written in a single file (one chunk, or one shard of a
+`sharding_indexed` serializer in the `codecs` pyramid setting below), although
+a viewer reads only small inner chunks of the native levels. The `chunk_level_offset` and
+`shard_level` settings give every level of a group the same layout rule:
+
+- `chunk_level_offset` is *relative* to the level of the array: a chunk holds
+  the children of one cell of the level `level - chunk_level_offset`, i.e.
+  `4 ** chunk_level_offset` cells at every level. If that is not smaller than
+  the array (or than the cells of the coarsest level entirely covered by
+  converted data), the array is written in a single chunk per such cell.
+- `shard_level` is *absolute*: a shard (Zarr's `sharding_indexed` codec) holds
+  the chunks of the children of one cell of that level. A level whose shards
+  would hold at most one chunk is written in plain chunks, without sharding.
+  Without `shard_level` the derived levels are not sharded. The `codecs`
+  setting codes the chunks inside the shards (they are wrapped in a
+  `sharding_indexed` serializer) and must not contain one of its own.
+
+For example, with a parent cell of level 7 (the whole array), a native level 20
+and derived levels 19 to 14, `chunk_level_offset` 9 and `shard_level` 8 give:
+
+| level | chunk (cells) | shards |
+|-------|---------------|--------|
+| 20    | 262,144       | 4 of 16,777,216 cells |
+| 19    | 262,144       | 4 of 4,194,304 cells |
+| 18    | 262,144       | 4 of 1,048,576 cells |
+| 17    | 262,144       | none: a shard holds one chunk, 4 chunk files |
+| 16 and below | the whole array | none: a single chunk |
+
+```json
+"pyramid_groups": {
+    "measurements": {
+        "derived_levels": [19, 18, 17, 16, 15, 14],
+        "chunk_level_offset": 9,
+        "shard_level": 8
+    }
+}
+```
+
+The same `chunk_level_offset` can be given in the settings of the converted
+groups. Their `healpix_cell_dense` chunk setting then gives the shards (a shard
+is one conversion chunk, so `shard_level` is that chunk's level), and their
+`codecs` the codecs inside the shards; a level whose chunk cells are not finer
+than the chunk setting's is written in plain chunks. Without these settings,
+nothing changes.
+
 ## Codecs of the derived levels
 
 The aggregated variables are written with Zarr's default codecs, unless the
@@ -145,12 +204,12 @@ of every derived level (not to their cell ids). It takes the same form as the
 
 ```python
 "pyramid_groups": {
-    "measurements/reflectance": {
+    "data/var": {
         "derived_levels": [18, 16, 15, 14, 13, 12],
         "codecs": [
             {
-                "name": "hcc-sentinel2-pyramid",
-                "configuration": {"quantification_value": 10000.0, "add_offset": -1000.0},
+                "name": "zstd",
+                "configuration": {"level": 5},
             }
         ],
     },
@@ -158,10 +217,29 @@ of every derived level (not to their cell ids). It takes the same form as the
 ```
 
 Since a chunk of a derived level holds the cells of one HEALPix cell, codecs
-that code one parent cell per chunk, like the Sentinel-2 serializers of
+that code one parent cell per chunk, like the HEALPix serializers of
 `healpix-compress`, can encode them. The converted levels keep the codecs they
 were written with: the codecs of a lossy serializer are not reused implicitly,
 as they would code the aggregated values a second time.
+
+A `sharding_indexed` serializer writes one shard per chunk of a derived level,
+with the inner chunks it gives. The chunks of the coarsest derived levels may
+hold fewer cells than those inner chunks: there, the inner chunks are cut to
+the chunk, i.e. each shard holds one inner chunk. Whether the aggregated
+variables are sharded depends on this setting only: the derived levels of
+sharded converted levels are not sharded without a `sharding_indexed`
+serializer here, and they can be sharded when the converted levels are not.
+
+With the `chunk_level_offset` pyramid setting (see above), the shards and the
+inner chunks are given by the layout settings instead: the `codecs` are then
+the codecs of the chunks inside the shards, wrapped in a `sharding_indexed`
+serializer where a level is sharded, and must not contain one of their own.
+
+The cell ids of the derived levels are written with the codecs of the cell ids
+of the converted level (the `healpix_coordinate_codecs` group setting, e.g. a
+delta filter), on the chunks of the derived level. Sharded converted cell ids
+give one shard per chunk of a derived level, with the same inner chunks, or the
+whole chunk where it is smaller.
 
 ## Groups converted at several levels
 

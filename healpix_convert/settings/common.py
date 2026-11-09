@@ -36,6 +36,7 @@ from healpix_convert.settings.conventions import (
     DGGSConventionSelector,
     MultiscalesConventionSelector,
 )
+from healpix_convert.settings.dem import DEM_GLO30_CONVERT_SETTINGS
 from healpix_convert.settings.era5 import ERA5_CONVERT_SETTINGS
 from healpix_convert.settings.stac import STACSettings
 
@@ -107,6 +108,18 @@ class BilinearResamplerSettings(BaseResamplerSettings):
     name: Literal["bilinear"] = "bilinear"
 
 
+class GridBilinearResamplerSettings(BaseResamplerSettings):
+    """Settings for resampling a regular longitude/latitude grid onto HEALPix by
+    bilinear interpolation of the 4 grid nodes around each cell centre.
+
+    Only for groups with rectilinear (1-D) longitude/latitude coordinates,
+    converted by dense chunks. Needs a healpix-resample version that provides
+    ``GridBilinearResampler``.
+    """
+
+    name: Literal["grid-bilinear"] = "grid-bilinear"
+
+
 class PSFResamplerSettings(BaseResamplerSettings):
     """Settings for resampling data onto HEALPix using PSF interpolation."""
 
@@ -125,6 +138,7 @@ ResamplerSettings: TypeAlias = (
     KNearestNeighborsResamplerSettings
     | NearestResamplerSettings
     | BilinearResamplerSettings
+    | GridBilinearResamplerSettings
     | PSFResamplerSettings
     | CellPointResamplerSettings
 )
@@ -405,6 +419,21 @@ def check_codecs_available(
     return value
 
 
+def _check_no_sharding_codec(
+    chunk_level_offset: int | None, codecs: list[CodecSettings] | None
+) -> None:
+    """With ``chunk_level_offset`` the shards are set by the layout settings:
+    the ``codecs`` are the codecs of the chunks inside them, and must not hold
+    a sharding codec of their own."""
+    if chunk_level_offset is None or codecs is None:
+        return
+    if any(codec["name"] == "sharding_indexed" for codec in codecs):
+        raise ValueError(
+            "with 'chunk_level_offset', 'codecs' are the codecs of the chunks "
+            "inside the shards and must not contain 'sharding_indexed'"
+        )
+
+
 class HealpixGroupSettings(BaseModel):
     """Settings for converting a single Zarr group onto HEALPix."""
 
@@ -456,6 +485,23 @@ class HealpixGroupSettings(BaseModel):
     ``healpix-compress`` for ``hcc-sentinel2-pyramid``.
     """
 
+    chunk_level_offset: Annotated[int, Field(ge=0, le=29)] | None = None
+    """Size of the storage chunks of the group's data variables, relative to the
+    refinement level of the group: a chunk holds ``4 ** chunk_level_offset``
+    cells, the children of one cell of the level ``level - chunk_level_offset``
+    (see the ``chunk_level_offset`` pyramid setting, which gives the derived
+    levels the same chunks).
+
+    The ``healpix_cell_dense`` chunk setting then gives the shards (the
+    converted cells of one chunk cell are written as one Zarr shard, with
+    ``sharding_indexed`` codec) and ``codecs`` the codecs of the chunks inside
+    the shards. If the chunk cells are not finer than the chunk setting's, the
+    arrays are written in plain chunks, without sharding.
+
+    If None (default), the chunks are the ones of the chunk setting, and
+    ``codecs`` may contain a ``sharding_indexed`` codec of its own.
+    """
+
     output_dtype: str | None = Field(default=None)
     """Data type of the group's resampled data variables, e.g.
     ``"float16"`` or ``"float32"``.
@@ -494,6 +540,18 @@ class HealpixGroupSettings(BaseModel):
         return check_codecs_available(value)
 
     @model_validator(mode="after")
+    def validate_chunk_level_offset(self) -> HealpixGroupSettings:
+        if self.chunk_level_offset is not None and not isinstance(
+            self.chunk, HealpixDenseChunkSettings
+        ):
+            raise ValueError(
+                "'chunk_level_offset' requires the 'healpix_cell_dense' chunk method"
+            )
+        _check_no_sharding_codec(self.chunk_level_offset, self.codecs)
+
+        return self
+
+    @model_validator(mode="after")
     def validate_extra_dimensions(self) -> HealpixGroupSettings:
         if self.healpix.spatial_dimension in self.extra_dimensions:
             raise ValueError(
@@ -509,6 +567,18 @@ class HealpixGroupSettings(BaseModel):
             raise ValueError(
                 "HEALPix refinement level must be equal to 29 when the 'cell-point' resampler "
                 "is used."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_grid_bilinear_resampler_chunk(self) -> HealpixGroupSettings:
+        if self.resampler.name == "grid-bilinear" and not isinstance(
+            self.chunk, HealpixDenseChunkSettings
+        ):
+            raise ValueError(
+                "the 'grid-bilinear' resampler needs dense chunks "
+                "(chunk method 'healpix_cell_dense')"
             )
 
         return self
@@ -601,6 +671,11 @@ class PyramidSettings(BaseModel):
     Missing (NaN) values are skipped. The mean does not suit categorical data
     (masks, classifications): aggregate those with "mode", the most frequent
     value of the cells of a block (the smallest of them in case of a tie).
+
+    Bit flags (integer variables where each bit is a flag of its own, e.g.
+    quality flags) are aggregated with "bitwise_or": a flag is set in a coarser
+    cell if it is set in any of its cells (missing cells are skipped). It needs
+    integer variables only, the data type of which is preserved.
     """
 
     codecs: list[CodecSettings] | None = Field(default=None)
@@ -619,6 +694,44 @@ class PyramidSettings(BaseModel):
         cls, value: list[CodecSettings] | None
     ) -> list[CodecSettings] | None:
         return check_codecs_available(value)
+
+    chunk_level_offset: Annotated[int, Field(ge=0, le=29)] | None = None
+    """Size of the chunks of the derived levels, relative to their level. A
+    chunk holds the children of one HEALPix cell of the level ``level -
+    chunk_level_offset``, i.e. ``4 ** chunk_level_offset`` cells at every
+    derived level ``level``, e.g. 9 for chunks of 262,144 cells.
+
+    A level whose chunk would hold all its cells (or all the cells of the
+    coarsest level that the converted data covers entirely) is written in a
+    single chunk per such cell. The same setting of a group of the converted
+    levels (see the ``chunk_level_offset`` group setting) gives them the same
+    chunks.
+
+    If None (default), the chunks of a derived level hold as many cells as the
+    ones of the finest converted level (including its shards, if it has any):
+    the derived levels just below it are then written in a few chunks, or in
+    a single one, that is larger than the chunks read when zoomed in.
+    """
+
+    shard_level: Annotated[int, Field(ge=0, le=29)] | None = None
+    """HEALPix refinement level of the cells that give the shards of the derived
+    levels (Zarr's ``sharding_indexed`` codec): a shard is one file holding the
+    chunks of the children of one cell of that level, e.g. one level below the
+    parent cell of the converted data for four shards per array. It requires
+    :py:attr:`chunk_level_offset`.
+
+    A level whose shards would hold at most one chunk (shard cells not larger
+    than the chunk cells) is written in plain chunks, without sharding. If None
+    (default), the derived levels are not sharded. The ``codecs`` of the
+    derived levels code the chunks inside the shards.
+    """
+
+    @model_validator(mode="after")
+    def validate_layout(self) -> PyramidSettings:
+        if self.shard_level is not None and self.chunk_level_offset is None:
+            raise ValueError("'shard_level' requires 'chunk_level_offset'")
+        _check_no_sharding_codec(self.chunk_level_offset, self.codecs)
+        return self
 
     coarsen_from: Literal["nearest", "finest"] = "nearest"
     """Which native level a variable converted at several levels is aggregated
@@ -1006,6 +1119,8 @@ def get_settings(name: str) -> ConvertSettings:
         return ConvertSettings.model_validate(CAMS_CONVERT_SETTINGS)
     elif name == "climatedt-sfc":
         return ConvertSettings.model_validate(CDT_SFC_CONVERT_SETTINGS)
+    elif name == "dem-glo30":
+        return ConvertSettings.model_validate(DEM_GLO30_CONVERT_SETTINGS)
 
     else:
         raise ValueError(f"settings not found for {name!r}")
