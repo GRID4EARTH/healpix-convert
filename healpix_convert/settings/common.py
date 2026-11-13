@@ -453,6 +453,26 @@ class HealpixGroupSettings(BaseModel):
     to the output group.
     """
 
+    coordinates_group: PurePath | None = None
+    """Group of the input dataset(s) whose latitude / longitude coordinates the
+    group takes, for a group that has no coordinates of its own (e.g. quality
+    flags stored next to the measurements of the same image grid, or angles on
+    the tie-point grid of another group), given as a path in the input datasets
+    (e.g. ``"measurements"``).
+
+    The coordinates of that group with the CF ``standard_name`` ``latitude`` /
+    ``longitude`` are added to the group when the input datasets are opened, so
+    that the group is converted as if it held them. Their dimensions must be
+    dimensions of the group, with the same sizes. If None (default), the group
+    is converted from its own coordinates (a group without any is not spatial
+    and is not converted).
+    """
+
+    @field_serializer("coordinates_group")
+    def serialize_coordinates_group(self, value: PurePath | None) -> str | None:
+        # always convert paths to strings (unix-style)
+        return None if value is None else value.as_posix()
+
     healpix_coordinate_codecs: list[CodecSettings] | None = Field(default=None)
     """Zarr codecs of the HEALPix cell ids coordinate (zarr's defaults if None).
 
@@ -1052,6 +1072,19 @@ class ConvertSettings(BaseModel):
             for path, settings in self.group_settings.items()
             if path.parent in self.multiscale_settings.groups
             and path.name == str(settings.healpix.refinement_level)
+        }
+
+    def coordinates_groups(self) -> dict[PurePath, PurePath]:
+        """The groups that take their latitude / longitude from another group
+        (input group path -> coordinates group path, see the
+        ``coordinates_group`` group setting). The input group of the level group
+        of a multiscale group converted from its own variables is the multiscale
+        group (see :py:meth:`own_level_groups`)."""
+        own = self.own_level_groups()
+        return {
+            own.get(path, path): settings.coordinates_group
+            for path, settings in self.group_settings.items()
+            if settings.coordinates_group is not None
         }
 
     @field_serializer("exclude_groups")

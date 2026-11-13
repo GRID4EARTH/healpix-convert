@@ -438,6 +438,20 @@
           "$ref": "#/$defs/InputMetadataSettings",
           "description": "Settings for the metadata read from the input dataset(s) and propagated\nto the output group."
         },
+        "coordinates_group": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Group of the input dataset(s) whose latitude / longitude coordinates the\ngroup takes, for a group that has no coordinates of its own (e.g. quality\nflags stored next to the measurements of the same image grid, or angles on\nthe tie-point grid of another group), given as a path in the input datasets\n(e.g. ``\"measurements\"``).\n\nThe coordinates of that group with the CF ``standard_name`` ``latitude`` /\n``longitude`` are added to the group when the input datasets are opened, so\nthat the group is converted as if it held them. Their dimensions must be\ndimensions of the group, with the same sizes. If None (default), the group\nis converted from its own coordinates (a group without any is not spatial\nand is not converted).",
+          "title": "Coordinates Group"
+        },
         "healpix_coordinate_codecs": {
           "anyOf": [
             {
