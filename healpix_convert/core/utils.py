@@ -181,6 +181,38 @@ def add_coordinates_from_groups(
     return dt
 
 
+def drop_matching_variables(ds: xr.Dataset, patterns: Iterable[str]) -> xr.Dataset:
+    """Return ``ds`` without its variables (data variables or coordinates) whose
+    name matches one of ``patterns`` (names or regular expressions matched
+    against the whole name), see the ``drop_variables`` group setting."""
+    patterns = list(patterns)
+    names = [str(k) for k in ds.variables if matches_any(str(k), patterns)]
+    return ds.drop_vars(names) if names else ds
+
+
+def drop_variables_from_groups(
+    dt: xr.DataTree, patterns: Mapping[Any, Iterable[str]]
+) -> xr.DataTree:
+    """Return a (shallow) copy of ``dt`` without the variables of each group
+    (key) that match its patterns (value), see :py:func:`drop_matching_variables`.
+    A group missing from ``dt`` is skipped."""
+    groups = set(dt.groups)
+    todo = []
+    for group, pats in patterns.items():
+        group = "/" + str(PurePath(str(group))).strip("/")
+        if group in groups:
+            todo.append((group, list(pats)))
+    if not todo:
+        return dt
+
+    dt = dt.copy()
+    for group, pats in todo:
+        node = dt[group]
+        node.dataset = drop_matching_variables(node.to_dataset(inherit=False), pats)
+
+    return dt
+
+
 def open_datasets(
     paths: list[str], group: str, chunks: dict | None = None
 ) -> list[xr.Dataset]:
