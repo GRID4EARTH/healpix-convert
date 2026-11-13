@@ -750,7 +750,13 @@ class MultiscaleSettings(BaseModel):
     """List of all multiscale groups in input dataset(s).
 
     Each Zarr group must contain children groups with defined
-    HEALPix conversion settings.
+    HEALPix conversion settings, or have conversion settings itself: the
+    variables of a multiscale group that has its own settings are converted
+    into a level group of its own, named after the refinement level (e.g. the
+    group ``measurements`` converted at level 15 gives ``measurements/15``),
+    which is how a single-resolution input group gets a pyramid. Its settings
+    are given under the group path and kept under the path of that level group
+    (see :py:func:`ConvertSettings.move_own_level_settings`).
 
     The metadata that will be added to the corresponding ouput group
     is compliant with the "multiscales" Zarr convention.
@@ -972,6 +978,81 @@ class ConvertSettings(BaseModel):
         settings["group_settings"] = new_group_settings
 
         return ConvertSettings.model_validate(settings)
+
+    @model_validator(mode="before")
+    @classmethod
+    def move_own_level_settings(cls, data: Any) -> Any:
+        """Give the settings of a multiscale group's own variables to its level group.
+
+        A multiscale group with conversion settings of its own (its variables
+        are converted, not those of child groups) is converted into a child
+        group named after the refinement level: its settings are moved from
+        the group path to the path of that level group (``measurements`` ->
+        ``measurements/15``), the input dataset(s) get that child group when
+        they are opened (see ``healpix_convert.cache``), and the rest of the
+        conversion treats it like any other level group.
+        """
+        if not isinstance(data, Mapping):
+            return data
+        multiscale = data.get("multiscale_settings") or {}
+        if isinstance(multiscale, MultiscaleSettings):
+            ms_groups = multiscale.groups
+        else:
+            ms_groups = multiscale.get("groups", [])
+        ms_groups = {PurePath(str(g)) for g in ms_groups}
+        group_settings = data.get("group_settings")
+        if not ms_groups or not isinstance(group_settings, Mapping):
+            return data
+
+        keys = {PurePath(str(k)): k for k in group_settings}
+        moved = {}
+        for path in ms_groups & set(keys):
+            settings = group_settings[keys[path]]
+            healpix = (
+                settings.healpix
+                if isinstance(settings, HealpixGroupSettings)
+                else (settings.get("healpix") or {})
+            )
+            level = (
+                healpix.refinement_level
+                if isinstance(healpix, Healpix)
+                else healpix.get("refinement_level")
+            )
+            if level is None:
+                raise ValueError(
+                    f"multiscale group {path.as_posix()!r} has conversion settings of "
+                    "its own without a HEALPix refinement level"
+                )
+            level_path = path / str(level)
+            if level_path in keys:
+                raise ValueError(
+                    f"multiscale group {path.as_posix()!r}: its own variables are "
+                    f"converted into {level_path.as_posix()!r}, which has settings "
+                    "of its own already"
+                )
+            moved[keys[path]] = level_path
+
+        if not moved:
+            return data
+
+        new_group_settings = {
+            (moved[k].as_posix() if k in moved else k): v
+            for k, v in group_settings.items()
+        }
+        return {**data, "group_settings": new_group_settings}
+
+    def own_level_groups(self) -> dict[PurePath, PurePath]:
+        """The level groups that hold the own variables of their multiscale group
+        (level group path -> multiscale group path): the settings of a level group
+        named after its refinement level, whose input group does not exist and is
+        made from the variables of the multiscale group when the input is opened.
+        """
+        return {
+            path: path.parent
+            for path, settings in self.group_settings.items()
+            if path.parent in self.multiscale_settings.groups
+            and path.name == str(settings.healpix.refinement_level)
+        }
 
     @field_serializer("exclude_groups")
     def serialize_exclude_groups(self, value):

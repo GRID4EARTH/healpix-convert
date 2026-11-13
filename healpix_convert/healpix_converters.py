@@ -254,6 +254,10 @@ class HealpixGroupConverter(ABC):
         self.healpix = self.settings.healpix
 
         self.group_path = str(path)
+        # the group of the input stores holding its variables (another group
+        # for the level group of a multiscale group converted from its own
+        # variables), reopened by ``load_datasets``
+        self.input_group_path = cache.input_group(path)
         self.input_paths = [str(p) for p in cache.input_datatrees]
         self.datasets = [
             dt[self.group_path].dataset for dt in cache.input_datatrees.values()
@@ -528,7 +532,7 @@ class HealpixGroupConverter(ABC):
         if client is not None:
             # re-open input datasets with chunks={} -> set chunks aligned with zarr
             reopened_datasets = utils.open_datasets(
-                self.input_paths, self.group_path, chunks={}
+                self.input_paths, self.input_group_path, chunks={}
             )
             reopened_datasets = align_extra_dimensions(
                 reopened_datasets,
