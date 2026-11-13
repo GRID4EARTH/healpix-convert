@@ -1123,11 +1123,18 @@ class ConvertSettings(BaseModel):
         of a multiscale group converted from its own variables is the multiscale
         group (see :py:meth:`own_level_groups`)."""
         own = self.own_level_groups()
-        return {
-            own.get(path, path): settings.coordinates_group
-            for path, settings in self.group_settings.items()
-            if settings.coordinates_group is not None
-        }
+        groups: dict[PurePath, PurePath] = {}
+        for path, settings in self.group_settings.items():
+            if settings.coordinates_group is None:
+                continue
+            group = own.get(path, path)
+            if groups.setdefault(group, settings.coordinates_group) != settings.coordinates_group:
+                raise ValueError(
+                    f"group {group.as_posix()!r} is converted at several levels with "
+                    "different 'coordinates_group' settings "
+                    f"({groups[group].as_posix()!r}, {settings.coordinates_group.as_posix()!r})"
+                )
+        return groups
 
     def drop_variables_groups(self) -> dict[PurePath, list[str]]:
         """The variables left out of each input group (input group path -> names
@@ -1135,11 +1142,12 @@ class ConvertSettings(BaseModel):
         of a level group converted from its own variables being its multiscale
         group (see :py:meth:`own_level_groups`)."""
         own = self.own_level_groups()
-        return {
-            own.get(path, path): list(settings.drop_variables)
-            for path, settings in self.group_settings.items()
-            if settings.drop_variables
-        }
+        groups: dict[PurePath, list[str]] = {}
+        for path, settings in self.group_settings.items():
+            # a group converted at several levels: the variables any of them leaves out
+            patterns = groups.setdefault(own.get(path, path), [])
+            patterns += [p for p in settings.drop_variables if p not in patterns]
+        return {group: patterns for group, patterns in groups.items() if patterns}
 
     @field_serializer("exclude_groups")
     def serialize_exclude_groups(self, value):
