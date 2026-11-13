@@ -146,6 +146,39 @@ variables are written as `float64`. The other methods keep the data type of the 
 - `coordinates_group`: another group of the input datasets whose latitude /
   longitude coordinates the group takes, for a group that has none of its own
   (see below).
+- `drop_variables`: variables of the input group (data variables or
+  coordinates) that are not written, as names or regular expressions matched
+  against the whole name, e.g. the projected distances `["x", "y"]` of a swath
+  image grid.
+- `nearest_variables`: variables written as the value of the nearest input
+  point of each cell, whatever the group's resampler (see below).
+
+Every variable of a spatial group other than its latitude / longitude is
+resampled with the group's resampler and written with `output_dtype`,
+coordinates of the image grid included: e.g. the row / column indices and the
+acquisition time of each row of a swath come out as interpolated float32
+values (a time in nanoseconds then loses about 100 s). `drop_variables` leaves
+such variables out; `nearest_variables` writes, for each cell, the value of its
+nearest input point, in the variable's own data type (no rounding): the row /
+column index of the pixel a cell comes from, or the exact time of its row.
+
+```python
+"measurements": {
+    ...,
+    "resampler": {"name": "psf", ...},
+    "output_dtype": "float32",
+    "drop_variables": ["x", "y"],
+    "nearest_variables": ["rows", "columns", "time_stamp"],
+}
+```
+
+A nearest variable is written only on the cells where the group's resampler
+gives a value (a cell off the input does not take the value of the input's
+edge; with the `nearest` resampler, its `max_distance_m` applies). Elsewhere it
+holds its fill value: `NaN` for a floating type, `-1` for a signed integer, the
+largest value for an unsigned one. It is written at the converted level only:
+the derived levels of a pyramid do not aggregate it. It requires the
+`healpix_cell_dense` chunk method.
 
 A group is converted from its own latitude / longitude coordinates (or its
 projected `x` / `y` grid): a group without any is not spatial and is left out

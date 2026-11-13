@@ -155,6 +155,15 @@ def write_derived_levels(
 
     writes = []
 
+    # the variables written as the value of the nearest input point
+    # (``nearest_variables``) are not aggregated (converted level -> patterns)
+    io_path_map = cache.output_groups.io_path_map
+    not_aggregated = {
+        io_path_map[path]: gs.nearest_variables
+        for path, gs in settings.group_settings.items()
+        if gs.nearest_variables and path in io_path_map
+    }
+
     for path, info in cache.output_groups.pyramid_multiscale_groups.items():
         pyramid = settings.multiscale_settings.pyramid_groups[path]
         log.info(
@@ -164,7 +173,13 @@ def write_derived_levels(
         )
 
         for level_path, ds in _build_derived_levels(
-            dt, info, pyramid, settings, direct=direct, loader=loader
+            dt,
+            info,
+            pyramid,
+            settings,
+            direct=direct,
+            loader=loader,
+            not_aggregated=not_aggregated,
         ).items():
             to_zarr = dict(
                 group=level_path.as_posix(),
@@ -203,18 +218,26 @@ def _levels(levels: Mapping[PurePath, HealpixLevelInfo]) -> list[int]:
 
 
 def _native_datasets(
-    dt: xr.DataTree, info: PyramidMultiscaleGroupInfo
+    dt: xr.DataTree,
+    info: PyramidMultiscaleGroupInfo,
+    not_aggregated: Mapping[PurePath, list[str]] | None = None,
 ) -> dict[int, xr.Dataset]:
     """The converted groups of a pyramid multiscale group, with lazy (Dask)
-    arrays (refinement level -> dataset).
+    arrays (refinement level -> dataset), without the variables that are not
+    aggregated (``not_aggregated``: converted level path -> names or patterns,
+    the ``nearest_variables`` of its group).
     """
     datasets = {}
 
     for level_path, (healpix, _) in info.native_levels.items():
         assert healpix.refinement_level is not None
-        datasets[healpix.refinement_level] = dt[level_path.as_posix()].to_dataset(
-            inherit=False
-        )
+        ds = dt[level_path.as_posix()].to_dataset(inherit=False)
+        patterns = (not_aggregated or {}).get(level_path)
+        if patterns:
+            ds = ds.drop_vars(
+                [n for n in ds.data_vars if utils.matches_any(str(n), patterns)]
+            )
+        datasets[healpix.refinement_level] = ds
 
     return datasets
 
@@ -252,11 +275,12 @@ def _build_derived_levels(
     *,
     direct: bool = False,
     loader: Callable[[str], np.ndarray] | None = None,
+    not_aggregated: Mapping[PurePath, list[str]] | None = None,
 ) -> dict[PurePath, xr.Dataset]:
     """Build the datasets of the derived levels of one pyramid multiscale group
     (group path -> dataset).
     """
-    datasets = _native_datasets(dt, info)
+    datasets = _native_datasets(dt, info, not_aggregated)
     native_healpix = {
         healpix.refinement_level: healpix for healpix, _ in info.native_levels.values()
     }

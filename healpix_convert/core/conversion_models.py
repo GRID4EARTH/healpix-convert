@@ -26,6 +26,7 @@ from healpix_convert.core.healpix_conventions import Healpix
 from healpix_convert.core.multiscales_conventions import HealpixMultiscales
 from healpix_convert.core.utils import (
     add_coordinates_from_groups,
+    drop_variables_from_groups,
     move_group_variables_to_child,
     open_datatrees,
 )
@@ -345,6 +346,11 @@ class ConvertStagingCache(BaseModel):
     from another group (input group path -> coordinates group path, see the
     ``coordinates_group`` group setting)."""
 
+    input_group_drop_variables: dict[PurePath, list[str]] = Field(default_factory=dict)
+    """The variables left out of each group of the input Zarr datasets (input
+    group path -> names or patterns, see the ``drop_variables`` group
+    setting)."""
+
     @field_validator("input_datatrees", mode="before")
     @classmethod
     def maybe_open_datatrees(
@@ -362,6 +368,11 @@ class ConvertStagingCache(BaseModel):
     def serialize_datatrees(self, dts: dict[str, xr.DataTree]) -> list[str]:
         return list(dts)
 
+    @field_serializer("input_group_drop_variables")
+    def serialize_input_group_drop_variables(self, value):
+        # always convert paths to strings (unix-style)
+        return {k.as_posix(): list(v) for k, v in value.items()}
+
     @field_serializer("input_group_sources", "input_group_coordinates")
     def serialize_input_group_sources(self, value):
         # always convert paths to strings (unix-style)
@@ -371,13 +382,19 @@ class ConvertStagingCache(BaseModel):
     def restore_level_groups(self) -> ConvertStagingCache:
         """Input datasets reopened from their paths (a cache read back from
         JSON) lack the coordinates taken from another group
-        (:py:attr:`input_group_coordinates`) and the level groups made from the
-        variables of a multiscale group (:py:attr:`input_group_sources`): add
-        them again (the coordinates first, as when the cache was made). Applied
-        to datasets that have them already, it changes nothing."""
+        (:py:attr:`input_group_coordinates`), still hold the variables left out
+        (:py:attr:`input_group_drop_variables`) and lack the level groups made
+        from the variables of a multiscale group (:py:attr:`input_group_sources`):
+        do it again, in the order of the cache creation. Applied to datasets
+        that have it done already, it changes nothing."""
         if self.input_group_coordinates:
             self.input_datatrees = {
                 key: add_coordinates_from_groups(dt, self.input_group_coordinates)
+                for key, dt in self.input_datatrees.items()
+            }
+        if self.input_group_drop_variables:
+            self.input_datatrees = {
+                key: drop_variables_from_groups(dt, self.input_group_drop_variables)
                 for key, dt in self.input_datatrees.items()
             }
         moves = [
