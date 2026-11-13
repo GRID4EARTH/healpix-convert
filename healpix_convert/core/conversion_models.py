@@ -19,11 +19,12 @@ from pydantic import (
     PlainSerializer,
     field_serializer,
     field_validator,
+    model_validator,
 )
 
 from healpix_convert.core.healpix_conventions import Healpix
 from healpix_convert.core.multiscales_conventions import HealpixMultiscales
-from healpix_convert.core.utils import open_datatrees
+from healpix_convert.core.utils import move_group_variables_to_child, open_datatrees
 
 #: One (single-scale) HEALPix group of the output dataset: the HEALPix grid of
 #: its cells and the refinement level of its chunk cells (each chunk holds the
@@ -327,6 +328,12 @@ class ConvertStagingCache(BaseModel):
     output_groups: OutputGroupInfo = Field(default_factory=OutputGroupInfo)
     """Information about groups in the output Zarr dataset."""
 
+    input_group_sources: dict[PurePath, PurePath] = Field(default_factory=dict)
+    """Groups to convert that are not groups of the input Zarr datasets: the level
+    group of a multiscale group converted from its own variables -> that
+    multiscale group, whose variables it holds in :py:attr:`input_datatrees`
+    (see ``ConvertSettings.move_own_level_settings``)."""
+
     @field_validator("input_datatrees", mode="before")
     @classmethod
     def maybe_open_datatrees(
@@ -343,6 +350,33 @@ class ConvertStagingCache(BaseModel):
     @field_serializer("input_datatrees", mode="plain")
     def serialize_datatrees(self, dts: dict[str, xr.DataTree]) -> list[str]:
         return list(dts)
+
+    @field_serializer("input_group_sources")
+    def serialize_input_group_sources(self, value):
+        # always convert paths to strings (unix-style)
+        return {k.as_posix(): v.as_posix() for k, v in value.items()}
+
+    @model_validator(mode="after")
+    def restore_level_groups(self) -> ConvertStagingCache:
+        """Input datasets reopened from their paths (a cache read back from
+        JSON) lack the level groups made from the variables of a multiscale
+        group (:py:attr:`input_group_sources`): make them again."""
+        moves = [
+            (source.as_posix(), level.as_posix())
+            for level, source in self.input_group_sources.items()
+        ]
+        if moves:
+            self.input_datatrees = {
+                key: move_group_variables_to_child(dt, moves)
+                for key, dt in self.input_datatrees.items()
+            }
+        return self
+
+    def input_group(self, path: PurePath | str) -> str:
+        """The group of the input Zarr datasets that holds the variables of the
+        group to convert ``path`` (``path`` itself, or its source group)."""
+        path = PurePath(str(path).lstrip("/"))
+        return self.input_group_sources.get(path, path).as_posix()
 
     @field_serializer("input_spatial_groups")
     def serialize_input_spatial_groups(self, value):

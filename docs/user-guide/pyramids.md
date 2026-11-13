@@ -241,6 +241,47 @@ delta filter), on the chunks of the derived level. Sharded converted cell ids
 give one shard per chunk of a derived level, with the same inner chunks, or the
 whole chunk where it is smaller.
 
+## A group without child groups
+
+An input group may hold its variables directly, at a single resolution, with
+no child group per resolution to convert. Give the conversion settings to the
+group itself and list it as a multiscale group: its variables are converted
+into a level group of its own, named after the refinement level, next to the
+derived levels.
+
+```python
+settings = hc.ConvertSettings.from_dict(
+    {
+        "multiscale_settings": {
+            "groups": ["measurements"],
+            "pyramid_groups": {"measurements": {"derived_levels": [14, 13, 12]}},
+        },
+        "group_settings": {
+            "measurements": {"healpix": {"refinement_level": 15}, ...},
+        },
+    }
+)
+```
+
+```text
+converted.zarr
+└── measurements        (multiscale group)
+    ├── 15              (converted from the variables of measurements)
+    ├── 14              (derived)
+    ├── 13              (derived)
+    └── 12              (derived)
+```
+
+The settings of the group are kept under the path of its level group
+(`settings.group_settings` has `measurements/15`, not `measurements`), and the
+input datasets get that child group, holding the variables of the group, when
+the staging cache opens them (or reopens them, from a cache read back from
+JSON). From then on it is converted like any other level group:
+`convert_group_to_healpix("measurements/15", ...)`. The other child groups of
+the multiscale group, if any, are left where they are, and the `groups`
+argument of {py:func}`~healpix_convert.create_staging_cache` selects input
+groups as they are in the input datasets.
+
 ## Groups converted at several levels
 
 The native levels of a multiscale group are kept as they are. Generating

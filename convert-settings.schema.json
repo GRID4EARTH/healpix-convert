@@ -643,7 +643,7 @@
       "description": "Settings for a multiscale Zarr groups.",
       "properties": {
         "groups": {
-          "description": "List of all multiscale groups in input dataset(s).\n\nEach Zarr group must contain children groups with defined\nHEALPix conversion settings.\n\nThe metadata that will be added to the corresponding ouput group\nis compliant with the \"multiscales\" Zarr convention.",
+          "description": "List of all multiscale groups in input dataset(s).\n\nEach Zarr group must contain children groups with defined\nHEALPix conversion settings, or have conversion settings itself: the\nvariables of a multiscale group that has its own settings are converted\ninto a level group of its own, named after the refinement level (e.g. the\ngroup ``measurements`` converted at level 15 gives ``measurements/15``),\nwhich is how a single-resolution input group gets a pyramid. Its settings\nare given under the group path and kept under the path of that level group\n(see :py:func:`ConvertSettings.move_own_level_settings`).\n\nThe metadata that will be added to the corresponding ouput group\nis compliant with the \"multiscales\" Zarr convention.",
           "items": {
             "format": "path",
             "type": "string"
