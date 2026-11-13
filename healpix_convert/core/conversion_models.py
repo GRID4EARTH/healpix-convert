@@ -329,10 +329,12 @@ class ConvertStagingCache(BaseModel):
     """Information about groups in the output Zarr dataset."""
 
     input_group_sources: dict[PurePath, PurePath] = Field(default_factory=dict)
-    """Groups to convert that are not groups of the input Zarr datasets: the level
-    group of a multiscale group converted from its own variables -> that
-    multiscale group, whose variables it holds in :py:attr:`input_datatrees`
-    (see ``ConvertSettings.move_own_level_settings``)."""
+    """The source group of each group to convert that is not a group of the
+    input Zarr datasets (level group path -> multiscale group path).
+
+    Such a level group holds, in :py:attr:`input_datatrees`, the variables of
+    a multiscale group converted from its own variables (see
+    ``ConvertSettings.move_own_level_settings``)."""
 
     @field_validator("input_datatrees", mode="before")
     @classmethod
