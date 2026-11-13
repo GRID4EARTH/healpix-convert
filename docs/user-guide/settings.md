@@ -143,6 +143,32 @@ variables are written as `float64`. The other methods keep the data type of the 
   pyramid have the data type of the converted level.
 - `extra_dimensions`: how several input datasets are aligned along a
   non-spatial dimension (see below).
+- `coordinates_group`: another group of the input datasets whose latitude /
+  longitude coordinates the group takes, for a group that has none of its own
+  (see below).
+
+A group is converted from its own latitude / longitude coordinates (or its
+projected `x` / `y` grid): a group without any is not spatial and is left out
+of the output. Some products store variables of an image grid in a group of
+their own, without the coordinates of that grid, e.g. quality flags next to the
+measurements, or angles on the tie-point grid of another group.
+`coordinates_group` gives such a group the coordinates of the group that has
+them:
+
+```python
+"group_settings": {
+    "measurements": {...},
+    "quality": {..., "coordinates_group": "measurements"},
+}
+```
+
+Only the coordinates with the CF `standard_name` `latitude` or `longitude` are
+taken (not the other coordinates or variables of that group); their dimensions
+must be dimensions of the group, with the same sizes. They are added when the
+input datasets are opened (and again when a staging cache read back from JSON,
+or a converter with `load_input_data` and a Dask client, opens them again).
+With a multiscale group converted from its own variables, the setting goes with
+its other settings, and the coordinates with its variables.
 
 When a group is converted from several input datasets, they must agree on
 every non-spatial dimension: same size and, where there is a coordinate, same

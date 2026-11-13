@@ -709,8 +709,15 @@ def create_staging_cache(
     # --- open and filter input Zarr datasets
     log.info("••• reading Zarr datasets...")
 
+    # groups that take their latitude / longitude from another group get them
+    # first (before the filtering, which may leave the other group out)
+    cache.input_group_coordinates = settings.coordinates_groups()
     input_datatrees = _check_and_filter_input_groups(
-        utils.open_datatrees(list(input_paths)), groups
+        [
+            utils.add_coordinates_from_groups(dt, cache.input_group_coordinates)
+            for dt in utils.open_datatrees(list(input_paths))
+        ],
+        groups,
     )
     input_datatrees, cache.input_group_sources = _move_own_variables_to_level_groups(
         input_datatrees, settings

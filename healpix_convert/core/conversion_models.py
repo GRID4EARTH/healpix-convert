@@ -24,7 +24,11 @@ from pydantic import (
 
 from healpix_convert.core.healpix_conventions import Healpix
 from healpix_convert.core.multiscales_conventions import HealpixMultiscales
-from healpix_convert.core.utils import move_group_variables_to_child, open_datatrees
+from healpix_convert.core.utils import (
+    add_coordinates_from_groups,
+    move_group_variables_to_child,
+    open_datatrees,
+)
 
 #: One (single-scale) HEALPix group of the output dataset: the HEALPix grid of
 #: its cells and the refinement level of its chunk cells (each chunk holds the
@@ -336,6 +340,11 @@ class ConvertStagingCache(BaseModel):
     a multiscale group converted from its own variables (see
     ``ConvertSettings.move_own_level_settings``)."""
 
+    input_group_coordinates: dict[PurePath, PurePath] = Field(default_factory=dict)
+    """The groups of the input Zarr datasets that take their latitude / longitude
+    from another group (input group path -> coordinates group path, see the
+    ``coordinates_group`` group setting)."""
+
     @field_validator("input_datatrees", mode="before")
     @classmethod
     def maybe_open_datatrees(
@@ -353,7 +362,7 @@ class ConvertStagingCache(BaseModel):
     def serialize_datatrees(self, dts: dict[str, xr.DataTree]) -> list[str]:
         return list(dts)
 
-    @field_serializer("input_group_sources")
+    @field_serializer("input_group_sources", "input_group_coordinates")
     def serialize_input_group_sources(self, value):
         # always convert paths to strings (unix-style)
         return {k.as_posix(): v.as_posix() for k, v in value.items()}
@@ -361,8 +370,16 @@ class ConvertStagingCache(BaseModel):
     @model_validator(mode="after")
     def restore_level_groups(self) -> ConvertStagingCache:
         """Input datasets reopened from their paths (a cache read back from
-        JSON) lack the level groups made from the variables of a multiscale
-        group (:py:attr:`input_group_sources`): make them again."""
+        JSON) lack the coordinates taken from another group
+        (:py:attr:`input_group_coordinates`) and the level groups made from the
+        variables of a multiscale group (:py:attr:`input_group_sources`): add
+        them again (the coordinates first, as when the cache was made). Applied
+        to datasets that have them already, it changes nothing."""
+        if self.input_group_coordinates:
+            self.input_datatrees = {
+                key: add_coordinates_from_groups(dt, self.input_group_coordinates)
+                for key, dt in self.input_datatrees.items()
+            }
         moves = [
             (source.as_posix(), level.as_posix())
             for level, source in self.input_group_sources.items()
