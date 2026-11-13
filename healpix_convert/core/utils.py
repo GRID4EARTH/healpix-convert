@@ -65,6 +65,41 @@ def open_datatrees(
     ]
 
 
+def move_group_variables_to_child(
+    dt: xr.DataTree, moves: Iterable[tuple[str, str]]
+) -> xr.DataTree:
+    """Return a (shallow) copy of ``dt`` where the variables of each group are
+    moved into a new child group, given as ``(group path, child path)`` pairs.
+
+    The group keeps its attributes and its other child groups; the new child
+    gets the variables (and coordinates) and a copy of the attributes. A pair
+    is skipped when the child exists already, or when the group is missing or
+    has no data variable.
+
+    """
+    groups = set(dt.groups)
+    todo = []
+    for group, child in moves:
+        group, child = "/" + group.strip("/"), "/" + child.strip("/")
+        if (
+            group in groups
+            and child not in groups
+            and dt[group].to_dataset(inherit=False).data_vars
+        ):
+            todo.append((group, child))
+    if not todo:
+        return dt
+
+    dt = dt.copy()
+    for group, child in todo:
+        node = dt[group]
+        ds = node.to_dataset(inherit=False)
+        node.dataset = xr.Dataset(attrs=ds.attrs)
+        dt[child] = xr.DataTree(ds)
+
+    return dt
+
+
 def open_datasets(
     paths: list[str], group: str, chunks: dict | None = None
 ) -> list[xr.Dataset]:

@@ -1,5 +1,16 @@
 # What's new
 
+## Unreleased
+
+- A multiscale group can be converted from its own variables: an input group
+  that holds its variables directly (a single resolution, no child group per
+  resolution) gets its settings under its own path and is listed as a
+  multiscale group, and its variables are converted into a level group named
+  after the refinement level (`measurements` at level 15 gives
+  `measurements/15`), with the derived levels of its pyramid next to it. Before,
+  these settings were refused ("multiscale group ... has no child group to
+  convert to HEALPix"). See {doc}`user-guide/pyramids`.
+
 ## v2026.11.0 (2026-11-09)
 
 - The ClimateDT converter now always resamples the native (spherical) HEALPix

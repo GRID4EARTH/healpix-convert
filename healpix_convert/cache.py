@@ -63,6 +63,33 @@ def _check_and_filter_input_groups(
     return [dt.filter_like(dt0) for dt in datatrees]
 
 
+def _move_own_variables_to_level_groups(
+    datatrees: list[xr.DataTree], settings: ConvertSettings
+) -> tuple[list[xr.DataTree], dict[PurePath, PurePath]]:
+    """Move the variables of the multiscale groups converted with settings of
+    their own into their level group (see
+    :py:meth:`ConvertSettings.move_own_level_settings`): the multiscale group
+    keeps its attributes and its other child groups.
+
+    A level group that exists in the input already is left as it is. Returns
+    the datatrees and the level groups made (level group -> source group).
+    """
+    own = settings.own_level_groups()
+    if not own or not datatrees:
+        return datatrees, {}
+
+    moves = [(group.as_posix(), level.as_posix()) for level, group in own.items()]
+    before = set(datatrees[0].groups)
+    datatrees = [utils.move_group_variables_to_child(dt, moves) for dt in datatrees]
+    after = set(datatrees[0].groups)
+    made = {
+        level: group
+        for level, group in own.items()
+        if "/" + level.as_posix() in after - before
+    }
+    return datatrees, made
+
+
 def _extract_root_spatial_info(datatrees: list[xr.DataTree]) -> InputSpatialInfo:
     """Extract spatial information from input Zarr datasets (root group)."""
 
@@ -684,6 +711,9 @@ def create_staging_cache(
 
     input_datatrees = _check_and_filter_input_groups(
         utils.open_datatrees(list(input_paths)), groups
+    )
+    input_datatrees, cache.input_group_sources = _move_own_variables_to_level_groups(
+        input_datatrees, settings
     )
     cache.input_datatrees = {path: dt for path, dt in zip(input_paths, input_datatrees)}
 
