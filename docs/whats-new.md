@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A multiscale group converted from its own variables can be converted at
+  several levels, each with settings of its own: the settings of the group give
+  one level, and settings under `<group>/<level>` the others. Before, only the
+  first level group got the variables and the others were converted from an
+  empty group. The `drop_variables` of all the levels apply to the group, and
+  the levels must agree on its `coordinates_group`. See
+  {doc}`user-guide/pyramids`.
 - New group settings `drop_variables` (variables of the input group that are
   not written, e.g. the projected distances `x` / `y` of a swath grid) and
   `nearest_variables` (variables written as the value of the nearest input point
