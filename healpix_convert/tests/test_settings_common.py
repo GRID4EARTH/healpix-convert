@@ -277,9 +277,15 @@ def test_pyramid_settings_derived_level_not_coarser() -> None:
 
 
 def test_pyramid_settings_derived_level_already_converted() -> None:
+    # a coarser native level may be a derived level (it is completed with the
+    # variables converted at a finer level only), but not in a subgroup
+    ConvertSettings.model_validate(_multiscale_settings_dict({"derived_levels": [5]}))
+
     with pytest.raises(ValidationError, match="converted from the input data"):
         ConvertSettings.model_validate(
-            _multiscale_settings_dict({"derived_levels": [5]})
+            _multiscale_settings_dict(
+                {"derived_levels": [5], "subgroup_name": "pyramids"}
+            )
         )
 
 

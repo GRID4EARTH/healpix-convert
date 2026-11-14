@@ -60,6 +60,34 @@ def select_source_levels(
     return sources
 
 
+def missing_variables(
+    variables: Mapping[int, Collection[str]],
+    level: int,
+    *,
+    coarsen_from: str = "nearest",
+) -> dict[str, int]:
+    """Variables that the converted level ``level`` does not hold although a
+    finer converted level does, with the converted level each of them is
+    aggregated from (variable name -> converted level).
+
+    These are the variables added to a native level that is also a derived
+    level of a pyramid: the variables converted at ``level`` are left as they
+    are, whatever ``coarsen_from``, and the others are aggregated from the
+    finer levels as :py:func:`select_source_levels` selects them.
+
+    """
+    held = set(variables.get(level, ()))
+    finer = {lvl: names for lvl, names in variables.items() if lvl > level}
+
+    return {
+        name: source
+        for name, source in select_source_levels(
+            finer, level, coarsen_from=coarsen_from
+        ).items()
+        if name not in held
+    }
+
+
 def nanmode(values: np.ndarray, axis: int | tuple[int, ...] = -1) -> np.ndarray:
     """Most frequent value along ``axis``, missing (NaN) values skipped.
 

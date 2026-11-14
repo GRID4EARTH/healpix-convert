@@ -247,7 +247,15 @@ class PyramidMultiscaleGroupInfo(BaseModel):
     derived level groups in the output dataset).
     """
 
-    @field_serializer("native_levels", "derived_levels")
+    completed_levels: dict[PurePath, HealpixLevelInfo] = Field(default_factory=dict)
+    """HEALPix grid and chunk level of the added arrays of each native level
+    that is also a derived level of the pyramid settings (keys: paths of those
+    converted groups, which are keys of ``native_levels`` too). The variables
+    that such a group does not hold are aggregated from the finer native levels
+    and added to it; the chunk level is the one of the added arrays.
+    """
+
+    @field_serializer("native_levels", "derived_levels", "completed_levels")
     def serialize_levels(self, value):
         # always convert paths to strings (unix-style)
         return {k.as_posix(): v for k, v in value.items()}
