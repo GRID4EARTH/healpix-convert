@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- A derived level of a pyramid (`derived_levels`) may be one of the coarser
+  native levels of its multiscale group. Such a level is completed: the
+  variables that its converted group does not hold (variables converted at a
+  finer level only) are aggregated like those of any derived level and added
+  to the group, and the converted arrays and the attributes of the group are
+  left as they are. Before, such a level was refused by the settings
+  validation, so a variable converted at a finer level was absent from the
+  coarser native levels. The multiscales metadata describes the added arrays
+  one item per array (`asset_type` "auto" or "array"); `subgroup_name` cannot
+  be combined with it. Without a native level in `derived_levels` nothing
+  changes. See {doc}`user-guide/pyramids`.
 - A multiscale group converted from its own variables can be converted at
   several levels, each with settings of its own: the settings of the group give
   one level, and settings under `<group>/<level>` the others. Before, only the

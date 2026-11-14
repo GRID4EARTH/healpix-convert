@@ -66,6 +66,8 @@ def consolidation_paths(
     if consolidate.derived_level_groups:
         for info in output_groups.pyramid_multiscale_groups.values():
             paths.extend(info.derived_levels)
+            # the native levels the pyramid added arrays to
+            paths.extend(info.completed_levels)
 
     paths.extend(consolidate.groups)
 

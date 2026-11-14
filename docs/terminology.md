@@ -68,7 +68,10 @@ Pyramid multiscale group
 
 Derived level
   A refinement level of a pyramid multiscale group that is aggregated from its
-  native levels, as opposed to being converted from the input data.
+  native levels, as opposed to being converted from the input data. A coarser
+  native level may also be listed as a derived level: it is then completed with
+  the variables converted at a finer level only, aggregated the same way and
+  added to its converted group, whose own arrays are left as they are.
 
 Derived level group
   A group holding one derived level, named after its refinement level. It is a
