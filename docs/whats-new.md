@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- New group settings `drop_variables` (variables of the input group that are
+  not written, e.g. the projected distances `x` / `y` of a swath grid) and
+  `nearest_variables` (variables written as the value of the nearest input point
+  of each cell, in their own data type, at the converted level only, e.g. the
+  row / column indices of a swath pixel or the time of its row). Before, every
+  variable of a spatial group was resampled with the group's resampler and cast
+  to `output_dtype`: indices came out as interpolated floats and a time in
+  nanoseconds stored as float32 lost about 100 s. Without the settings nothing
+  changes. See {doc}`user-guide/settings`.
 - A group without latitude / longitude coordinates of its own can take those of
   another group of the input with the new `coordinates_group` group setting,
   e.g. quality flags stored next to the measurements of the same image grid, or

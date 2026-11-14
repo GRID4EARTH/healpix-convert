@@ -528,6 +528,13 @@ def _converted_arrays(
     return () if group_spatial is None else group_spatial.spatial_arrays
 
 
+def _nearest_variables(settings: ConvertSettings, path: PurePath) -> list[str]:
+    """The ``nearest_variables`` of the group to convert ``path`` (none for a
+    group without settings)."""
+    gs = settings.group_settings.get(path)
+    return list(gs.nearest_variables) if isinstance(gs, HealpixGroupSettings) else []
+
+
 def _set_output_groups(
     datatrees: list[xr.DataTree],
     input_spatial_groups: dict[PurePath, InputGroupSpatialInfo],
@@ -591,8 +598,16 @@ def _set_output_groups(
 
     # the arrays a native level holds once converted, which tell the levels
     # the variables of a derived level are aggregated from
+    # (without the variables written as the value of the nearest input point,
+    # ``nearest_variables``, which are not aggregated)
     native_variables = {
-        io_path_map[input_path]: group_spatial.spatial_arrays
+        io_path_map[input_path]: [
+            name
+            for name in group_spatial.spatial_arrays
+            if not utils.matches_any(
+                name, _nearest_variables(settings, input_path)
+            )
+        ]
         for input_path, group_spatial in input_spatial_groups.items()
         if input_path in io_path_map
     }
@@ -712,9 +727,14 @@ def create_staging_cache(
     # groups that take their latitude / longitude from another group get them
     # first (before the filtering, which may leave the other group out)
     cache.input_group_coordinates = settings.coordinates_groups()
+    # then the variables left out of the conversion (``drop_variables``)
+    cache.input_group_drop_variables = settings.drop_variables_groups()
     input_datatrees = _check_and_filter_input_groups(
         [
-            utils.add_coordinates_from_groups(dt, cache.input_group_coordinates)
+            utils.drop_variables_from_groups(
+                utils.add_coordinates_from_groups(dt, cache.input_group_coordinates),
+                cache.input_group_drop_variables,
+            )
             for dt in utils.open_datatrees(list(input_paths))
         ],
         groups,

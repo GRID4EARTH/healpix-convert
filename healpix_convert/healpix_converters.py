@@ -266,6 +266,10 @@ class HealpixGroupConverter(ABC):
         self.coordinates_group_path = (
             None if coordinates_group is None else coordinates_group.as_posix()
         )
+        # the variables left out of the input group (``drop_variables``)
+        self.drop_variables = cache.input_group_drop_variables.get(
+            PurePath(self.input_group_path), []
+        )
         self.input_paths = [str(p) for p in cache.input_datatrees]
         self.datasets = [
             dt[self.group_path].dataset for dt in cache.input_datatrees.values()
@@ -418,7 +422,14 @@ class HealpixGroupConverter(ABC):
                     shape = (self.cell_dim_size,)
                     chunks = (self.cell_dim_chunk_size,)
 
-                if self.settings.output_dtype is not None:
+                nearest = utils.matches_any(str(name), self.settings.nearest_variables)
+                nearest_fill = None
+                if nearest:
+                    # the value of the nearest input point: the input's own type,
+                    # the stored one for an integer variable with a fill value
+                    # (decoded as floats with NaN when the input is opened)
+                    dtype, nearest_fill = _nearest_dtype_and_fill(var)
+                elif self.settings.output_dtype is not None:
                     dtype = np.dtype(self.settings.output_dtype)
                 elif self.settings.resampler.name in [
                     "bilinear",
@@ -453,6 +464,9 @@ class HealpixGroupConverter(ABC):
                 # a lossy serializer codes as values next to the real ones
                 if np.dtype(dtype).kind == "f":
                     fill_value = np.nan
+                elif nearest:
+                    # an index or a count: 0 is a value, not a fill
+                    fill_value = nearest_fill
                 else:
                     fill_value = parse_dtype(
                         np.dtype(dtype), zarr_format=3
@@ -552,6 +566,11 @@ class HealpixGroupConverter(ABC):
                     )
                     for ds, src in zip(reopened_datasets, sources)
                 ]
+            if self.drop_variables:
+                reopened_datasets = [
+                    utils.drop_matching_variables(ds, self.drop_variables)
+                    for ds in reopened_datasets
+                ]
             reopened_datasets = align_extra_dimensions(
                 reopened_datasets,
                 self.settings.extra_dimensions,
@@ -598,6 +617,92 @@ class HealpixGroupConverter(ABC):
 
         """
         ...
+
+
+def _nearest_int_fill(dtype: np.dtype) -> Any:
+    """Fill value of an integer variable written with ``nearest_variables``
+    without a fill value of its own: -1 for a signed type, the largest value
+    for an unsigned one."""
+    return -1 if dtype.kind == "i" else np.iinfo(dtype).max
+
+
+def _nearest_dtype_and_fill(var: xr.Variable) -> tuple[np.dtype, Any]:
+    """Data type and fill value of a variable written with ``nearest_variables``.
+
+    Its own type; for an integer variable stored with a ``_FillValue`` (and not
+    packed with ``scale_factor`` / ``add_offset``), which the input decoding
+    turned into floats with NaN, its stored integer type and that fill value.
+    Otherwise the fill value is NaN for a floating type, -1 or the largest
+    value for an integer one.
+    """
+    dtype = np.dtype(var.dtype)
+    stored = var.encoding.get("dtype")
+    if (
+        dtype.kind == "f"
+        and stored is not None
+        and np.dtype(stored).kind in "iu"
+        and not {"scale_factor", "add_offset"} & set(var.encoding)
+    ):
+        dtype = np.dtype(stored)
+        fill = var.encoding.get("_FillValue")
+        return dtype, (_nearest_int_fill(dtype) if fill is None else dtype.type(fill))
+    if dtype.kind in "iu":
+        return dtype, _nearest_int_fill(dtype)
+    return dtype, np.nan
+
+
+def _nearest_values(
+    ds_input_points: xr.Dataset,
+    names: list[str],
+    lon_deg: np.ndarray,
+    lat_deg: np.ndarray,
+    chunk_cell_ids: np.ndarray,
+    level: int,
+    nest: bool,
+    ellipsoid: str,
+    observed: np.ndarray | None,
+    max_distance_m: float | None = None,
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """The values of the nearest input point of each cell of a dense chunk, for
+    the variables written with ``nearest_variables``, in their own data type.
+
+    Returns, per variable, the values of the cells that have a nearest point
+    (non-spatial dimensions first) and the positions of those cells in the chunk.
+    With ``observed`` (a boolean mask of the chunk cells, e.g. the cells where
+    the group's resampler returned a value), only those cells are filled.
+    """
+    kwargs: dict[str, Any] = {"search": "kdtree"}
+    if max_distance_m is not None:
+        kwargs["max_distance_m"] = max_distance_m
+    with device_slot():
+        resampler = build_resampler(
+            healpix_resample.NearestResampler,
+            "nearest",
+            lon_deg=lon_deg,
+            lat_deg=lat_deg,
+            level=level,
+            verbose=False,
+            out_cell_ids=chunk_cell_ids,
+            nest=nest,
+            ellipsoid=ellipsoid,
+            **kwargs,
+        )
+        source = np.asarray(resampler.hi_k.cpu()).astype("int64")
+        cells = np.asarray(resampler.cell_ids.cpu()).astype("uint64")
+        del resampler
+    positions = (cells - chunk_cell_ids[0]).astype("int64")
+    keep = (positions >= 0) & (positions < chunk_cell_ids.size)
+    if observed is not None:
+        keep[keep] &= observed[positions[keep]]
+    source, positions = source[keep], positions[keep]
+
+    results = {}
+    for name in names:
+        var = ds_input_points.variables[name]
+        extra_dims = [d for d in var.dims if d != "points"]
+        values = np.asarray(var.transpose(*extra_dims, "points").values)
+        results[name] = (values[..., source], positions)
+    return results
 
 
 def _warn_if_resampling_lost_data(
@@ -1246,19 +1351,26 @@ class DenseChunkConverter(UniformChunkConverter):
                 (None, ds_input_points.lon.values, ds_input_points.lat.values)
             ]
 
-        # resample arrays (data variables)
+        # resample arrays (data variables); the ``nearest_variables`` take the
+        # value of the nearest input point (below)
         var_names = [
             str(name)
             for name in ds_input_points.variables
             if name in self.spatial_info.spatial_arrays
         ]
+        nearest_names = [
+            name
+            for name in var_names
+            if utils.matches_any(name, self.settings.nearest_variables)
+        ]
+        var_names = [name for name in var_names if name not in nearest_names]
         resample_params = broadcast_params(
             resampler_settings.resample_params, var_names
         )
         chunk_log = log.bind(group=self.group_path, chunk_index=chunk_index)
 
         layer_results = []
-        for points, lon_deg, lat_deg in layers:
+        for points, lon_deg, lat_deg in layers if var_names else []:
             ds_layer = (
                 ds_input_points
                 if len(layers) == 1
@@ -1293,13 +1405,55 @@ class DenseChunkConverter(UniformChunkConverter):
                 )
                 del resampler
 
-        if len(layers) == 1:
+        if not var_names:
+            resampled = {}
+        elif len(layers) == 1:
             resampled = layer_results[0]
         else:
             resampled = _mean_of_layers(layer_results)
             _warn_if_layers_lost_data(chunk_log, ds_input_points, resampled)
 
         writes = []
+        if nearest_names:
+            # the cells where the resampler gave a value: the nearest point of a
+            # cell outside the input (e.g. off the swath) is not taken
+            observed = None
+            if resampled:
+                observed = np.zeros(cell_ids.size, dtype=bool)
+                for cell_data in resampled.values():
+                    finite = np.isfinite(cell_data)
+                    observed |= finite.reshape(-1, cell_ids.size).any(axis=0)
+            max_distance_m = (
+                dict(resampler_settings.init_params).get("max_distance_m")
+                if resampler_settings.name == "nearest"
+                else None
+            )
+            log.debug(f"nearest values of {len(nearest_names)} arrays")
+            nearest = _nearest_values(
+                ds_input_points,
+                nearest_names,
+                ds_input_points.lon.values,
+                ds_input_points.lat.values,
+                cell_ids,
+                self.healpix.refinement_level,
+                self.healpix.indexing_scheme == "nested",
+                self.healpix.ellipsoid.name,
+                observed,
+                max_distance_m,
+            )
+            for name, (values, positions) in nearest.items():
+                zarray = self.output_arrays[name]
+                out = np.full(
+                    values.shape[:-1] + (cell_ids.size,),
+                    zarray.fill_value,
+                    dtype=zarray.dtype,
+                )
+                if values.dtype.kind == "f" and out.dtype.kind in "iu":
+                    # an integer variable decoded with NaN for its fill value
+                    values = np.where(np.isnan(values), zarray.fill_value, values)
+                out[..., positions] = values.astype(out.dtype)
+                writes.append((zarray, (..., chunk_slice), out))
+
         for name, cell_data in resampled.items():
             zarray = self.output_arrays[name]
             # cells without data (TODO: get the right fill_value and dtype)

@@ -473,6 +473,37 @@ class HealpixGroupSettings(BaseModel):
         # always convert paths to strings (unix-style)
         return None if value is None else value.as_posix()
 
+    drop_variables: list[str] = Field(default_factory=list)
+    """Variables (data variables or coordinates) of the input group that are not
+    written, given as names or regular expressions matched against the whole
+    name, e.g. the projected distances ``["x", "y"]`` of a swath image grid.
+
+    They are removed when the input datasets are opened: they are neither
+    resampled nor copied. By default every variable of a spatial group other
+    than its latitude / longitude is resampled with the group's resampler.
+    """
+
+    nearest_variables: list[str] = Field(default_factory=list)
+    """Variables of the input group written as the value of the nearest input
+    point of each cell, whatever the group's resampler, given as names or regular
+    expressions matched against the whole name, e.g. the image row / column
+    indices ``["rows", "columns"]`` of a swath (to trace a cell back to its input
+    pixel) or the acquisition time of each row ``["time_stamp"]``.
+
+    They keep their data type (``output_dtype`` does not apply): integers stay
+    integers, with the fill value -1 (signed) or the largest value (unsigned)
+    where no input point is near (``NaN`` for floating types), and the values
+    are not rounded to float32 on the way. They are written at the converted
+    level only: the derived levels of a pyramid do not aggregate them. It
+    requires the ``healpix_cell_dense`` chunk method.
+    """
+
+    @field_validator("drop_variables", "nearest_variables")
+    @classmethod
+    def validate_variable_patterns(cls, value: list[str]) -> list[str]:
+        check_patterns(value)
+        return value
+
     healpix_coordinate_codecs: list[CodecSettings] | None = Field(default=None)
     """Zarr codecs of the HEALPix cell ids coordinate (zarr's defaults if None).
 
@@ -569,6 +600,17 @@ class HealpixGroupSettings(BaseModel):
             )
         _check_no_sharding_codec(self.chunk_level_offset, self.codecs)
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_nearest_variables(self) -> HealpixGroupSettings:
+        if self.nearest_variables and not isinstance(
+            self.chunk, HealpixDenseChunkSettings
+        ):
+            raise ValueError(
+                "'nearest_variables' requires the 'healpix_cell_dense' chunk method, "
+                f"got {self.chunk.method!r}"
+            )
         return self
 
     @model_validator(mode="after")
@@ -1085,6 +1127,18 @@ class ConvertSettings(BaseModel):
             own.get(path, path): settings.coordinates_group
             for path, settings in self.group_settings.items()
             if settings.coordinates_group is not None
+        }
+
+    def drop_variables_groups(self) -> dict[PurePath, list[str]]:
+        """The variables left out of each input group (input group path -> names
+        or patterns, see the ``drop_variables`` group setting), the input group
+        of a level group converted from its own variables being its multiscale
+        group (see :py:meth:`own_level_groups`)."""
+        own = self.own_level_groups()
+        return {
+            own.get(path, path): list(settings.drop_variables)
+            for path, settings in self.group_settings.items()
+            if settings.drop_variables
         }
 
     @field_serializer("exclude_groups")
