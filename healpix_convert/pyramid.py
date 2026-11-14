@@ -43,6 +43,7 @@ import healpix_convert.core.utils as utils
 from healpix_convert.cache import derived_inner_chunk_level
 from healpix_convert.core.coarsen import (
     coarsen_healpix_group,
+    missing_variables,
     codecs_encoding,
     encode_like,
     select_source_levels,
@@ -95,6 +96,11 @@ def create_derived_level_groups(
         log.info(
             f"••• created the derived level groups of '{path.as_posix()}': "
             f"levels {_levels(info.derived_levels)}"
+            + (
+                f" (completed native levels: {_levels(info.completed_levels)})"
+                if info.completed_levels
+                else ""
+            )
         )
 
 
@@ -169,7 +175,8 @@ def write_derived_levels(
         log.info(
             f"••• aggregating the derived levels of '{path.as_posix()}' "
             f"({pyramid.reduce} of the converted levels "
-            f"{_levels(info.native_levels)}): levels {_levels(info.derived_levels)}"
+            f"{_levels(info.native_levels)}): levels "
+            f"{_levels(info.derived_levels | info.completed_levels)}"
         )
 
         for level_path, ds in _build_derived_levels(
@@ -180,6 +187,11 @@ def write_derived_levels(
             direct=direct,
             loader=loader,
             not_aggregated=not_aggregated,
+            added=_added_variables(
+                cache.output_groups.multiscale_groups.get(path),
+                io_path_map[path],
+                info,
+            ),
         ).items():
             to_zarr = dict(
                 group=level_path.as_posix(),
@@ -195,7 +207,9 @@ def write_derived_levels(
                 continue
             # the arrays and their metadata as Xarray writes them; their data
             # (the variables on the cells) encoded in the processes of the pool
-            dim = info.derived_levels[level_path][0].spatial_dimension
+            dim = (info.derived_levels | info.completed_levels)[level_path][
+                0
+            ].spatial_dimension
             cell_vars = [str(n) for n, v in ds.data_vars.items() if dim in v.dims]
             ds.to_zarr(output_store, **to_zarr)
             writes.append(ds.drop_vars(cell_vars).to_zarr(output_store, **to_zarr))
@@ -217,10 +231,36 @@ def _levels(levels: Mapping[PurePath, HealpixLevelInfo]) -> list[int]:
     )
 
 
+def _added_variables(
+    multiscales: Any, group_path: PurePath, info: PyramidMultiscaleGroupInfo
+) -> dict[PurePath, set[str]]:
+    """Variables that the pyramid adds to the native levels it completes
+    (converted level path -> names), read from the multiscales metadata of the
+    group: its layout items that name an array of such a level and what it is
+    derived from.
+
+    They are not converted from the input data: once written (the pyramid of a
+    store may be generated again), they must not be taken for converted
+    variables, neither as the source of a coarser level nor as arrays to leave
+    as they are.
+    """
+    added: dict[PurePath, set[str]] = {}
+
+    for item in getattr(multiscales, "layout", ()):
+        if not isinstance(getattr(item, "derived_from", None), PurePath):
+            continue
+        level_path = group_path / item.asset.parent
+        if level_path in info.completed_levels and level_path != group_path:
+            added.setdefault(level_path, set()).add(item.asset.name)
+
+    return added
+
+
 def _native_datasets(
     dt: xr.DataTree,
     info: PyramidMultiscaleGroupInfo,
     not_aggregated: Mapping[PurePath, list[str]] | None = None,
+    added: Mapping[PurePath, set[str]] | None = None,
 ) -> dict[int, xr.Dataset]:
     """The converted groups of a pyramid multiscale group, with lazy (Dask)
     arrays (refinement level -> dataset), without the variables that are not
@@ -237,23 +277,35 @@ def _native_datasets(
             ds = ds.drop_vars(
                 [n for n in ds.data_vars if utils.matches_any(str(n), patterns)]
             )
+        # the variables a previous run added to a completed level
+        names = (added or {}).get(level_path)
+        if names:
+            ds = ds.drop_vars([n for n in ds.data_vars if n in names])
         datasets[healpix.refinement_level] = ds
 
     return datasets
 
 
 def _variable_sources(
-    datasets: Mapping[int, xr.Dataset], level: int, *, coarsen_from: str
+    datasets: Mapping[int, xr.Dataset],
+    level: int,
+    *,
+    coarsen_from: str,
+    only_missing: bool = False,
 ) -> dict[int, list[str]]:
     """Converted level each data variable of a derived level is aggregated
     from (converted level -> variable names).
 
     Which level feeds a variable is decided by
     :py:func:`~healpix_convert.core.coarsen.select_source_levels`, the same
-    rule the multiscales metadata of the pyramid describes.
+    rule the multiscales metadata of the pyramid describes. With
+    ``only_missing``, ``level`` is a converted level and only the variables its
+    group does not hold are selected
+    (:py:func:`~healpix_convert.core.coarsen.missing_variables`).
 
     """
-    selected = select_source_levels(
+    select = missing_variables if only_missing else select_source_levels
+    selected = select(
         {lvl: set(ds.data_vars) for lvl, ds in datasets.items()},
         level,
         coarsen_from=coarsen_from,
@@ -276,11 +328,12 @@ def _build_derived_levels(
     direct: bool = False,
     loader: Callable[[str], np.ndarray] | None = None,
     not_aggregated: Mapping[PurePath, list[str]] | None = None,
+    added: Mapping[PurePath, set[str]] | None = None,
 ) -> dict[PurePath, xr.Dataset]:
     """Build the datasets of the derived levels of one pyramid multiscale group
     (group path -> dataset).
     """
-    datasets = _native_datasets(dt, info, not_aggregated)
+    datasets = _native_datasets(dt, info, not_aggregated, added)
     native_healpix = {
         healpix.refinement_level: healpix for healpix, _ in info.native_levels.values()
     }
@@ -328,8 +381,56 @@ def _build_derived_levels(
                 else 4 ** (healpix.refinement_level - inner_level)
             ),
         )
+        assert ds is not None
         ds = _set_cf_grid_mapping(ds, healpix)
         ds.attrs = get_healpix_group_attrs(healpix, settings.metadata)
+        derived[level_path] = ds
+
+    # the native levels that are derived levels too: the variables their
+    # converted group does not hold, added to that group
+    for level_path, (healpix, chunk_level) in info.completed_levels.items():
+        level = healpix.refinement_level
+        assert level is not None
+        inner_level = derived_inner_chunk_level(level, chunk_level, pyramid)
+
+        ds = _build_derived_level(
+            datasets,
+            healpix,
+            native_healpix=native_healpix,
+            pyramid=pyramid,
+            templates=templates,
+            chunk_size=4 ** (level - chunk_level),
+            means=means,
+            inner_chunk_size=(
+                None if inner_level is None else 4 ** (level - inner_level)
+            ),
+            only_missing=True,
+        )
+        if ds is None:
+            # the converted group holds every variable: nothing to add
+            continue
+
+        dim = healpix.spatial_dimension
+        if ds.sizes[dim] != datasets[level].sizes[dim]:
+            raise ValueError(
+                f"the level {level_path.as_posix()!r} holds "
+                f"{datasets[level].sizes[dim]} cells but the finer levels "
+                f"aggregate to {ds.sizes[dim]} cells: the variables converted "
+                "at a finer level cannot be added to it"
+            )
+        ds = _set_cf_grid_mapping(ds, healpix)
+        # the added variables only: the arrays the converted group holds (its
+        # cell ids and grid mapping among them) are left as they were written.
+        # Xarray replaces the attributes of a group it appends to: the
+        # dataset carries the ones the group has, so that they stay the same
+        # (every array of the stored group, the variables that are not
+        # aggregated included, except the ones a previous run added)
+        stored = set(dt[level_path.as_posix()].to_dataset(inherit=False).variables)
+        stored -= (added or {}).get(level_path, set())
+        ds = ds.drop_vars([n for n in ds.variables if n in stored])
+        if not ds.data_vars:
+            continue
+        ds.attrs = dict(datasets[level].attrs)
         derived[level_path] = ds
 
     return derived
@@ -345,14 +446,26 @@ def _build_derived_level(
     chunk_size: int,
     means: _BlockMeans | None = None,
     inner_chunk_size: int | None = None,
-) -> xr.Dataset:
+    only_missing: bool = False,
+) -> xr.Dataset | None:
     """Build the dataset of one derived level, from the converted levels of its
     multiscale group.
+
+    With ``only_missing``, the level is a converted level: the dataset holds
+    the variables its group does not have, aggregated from the finer converted
+    levels (None if it has them all).
     """
     level = healpix.refinement_level
     assert level is not None
 
-    sources = _variable_sources(datasets, level, coarsen_from=pyramid.coarsen_from)
+    sources = _variable_sources(
+        datasets,
+        level,
+        coarsen_from=pyramid.coarsen_from,
+        only_missing=only_missing,
+    )
+    if not sources:
+        return None
     parts = []
 
     for source, names in sources.items():

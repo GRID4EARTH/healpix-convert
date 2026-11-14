@@ -12,7 +12,7 @@ import structlog
 import xarray as xr
 
 import healpix_convert.core.utils as utils
-from healpix_convert.core.coarsen import select_source_levels
+from healpix_convert.core.coarsen import missing_variables, select_source_levels
 from healpix_convert.core.conversion_models import (
     ConvertStagingCache,
     InputGroupSpatialInfo,
@@ -323,6 +323,18 @@ def _derived_level_sources(
             name: native[source] for name, source in selected.items()
         }
 
+    # a native level that is also a derived level: only the variables its
+    # converted group does not hold are aggregated (none: nothing is added)
+    for level_path, (healpix, _) in info.completed_levels.items():
+        assert healpix.refinement_level is not None
+        missing = missing_variables(
+            variables, healpix.refinement_level, coarsen_from=coarsen_from
+        )
+        if missing:
+            sources[level_path] = {
+                name: native[source] for name, source in missing.items()
+            }
+
     return sources
 
 
@@ -365,6 +377,13 @@ def _multiscales_metadata(
         for level_path, sources in derived_from.items()
         if len(set(sources.values())) > 1
     ]
+    # native levels completed with variables aggregated from finer levels: they
+    # hold converted arrays (no source) and aggregated ones
+    completed = [
+        level_path
+        for level_path in derived_from
+        if set(variables.get(level_path, ())) - set(derived_from[level_path])
+    ]
 
     if asset_type == "group" and mixed:
         sources = derived_from[mixed[0]]
@@ -377,7 +396,19 @@ def _multiscales_metadata(
             "set the 'asset_type' multiscale setting to 'array' or 'auto'"
         )
 
-    per_array = asset_type == "array" or (asset_type == "auto" and bool(mixed))
+    if asset_type == "group" and completed:
+        raise ValueError(
+            f"the level {completed[0].relative_to(group_path).as_posix()!r} of "
+            f"the multiscale group {group_path.as_posix()!r} holds arrays "
+            "converted from the input data and arrays aggregated from a finer "
+            "level, which one multiscales layout item per group cannot "
+            "describe: set the 'asset_type' multiscale setting to 'array' or "
+            "'auto'"
+        )
+
+    per_array = asset_type == "array" or (
+        asset_type == "auto" and bool(mixed or completed)
+    )
 
     def derived_fields(
         level_healpix: Healpix, source_path: PurePath, name: str | None = None
@@ -412,7 +443,9 @@ def _multiscales_metadata(
             layout.append(item)
             continue
 
-        names = sorted(sources) if sources else sorted(variables.get(level_path, ()))
+        # the arrays of a derived level are the aggregated ones, those of a
+        # native level the converted ones, and a completed native level has both
+        names = sorted(set(sources) | set(variables.get(level_path, ())))
 
         if not names:
             raise ValueError(
@@ -423,7 +456,7 @@ def _multiscales_metadata(
 
         for name in names:
             array_item = item | {"asset": asset / name}
-            if sources:
+            if name in sources:
                 array_item |= derived_fields(level_healpix, sources[name], name)
             layout.append(array_item)
 
@@ -500,17 +533,30 @@ def _set_pyramid_multiscale_groups(
         healpix = finest_settings.healpix
         derived_levels = {}
 
+        completed_levels = {}
+
         for level in sorted(pyramid.derived_levels, reverse=True):
+            level_chunk = derived_chunk_level(
+                level, finest_level, chunk_level, coarsest_level, pyramid
+            )
+            if level in native_paths:
+                # a derived level that is a native level: the variables its
+                # converted group does not hold are added to that group
+                native_path = io_path_map[native_paths[level]]
+                completed_levels[native_path] = (
+                    native_levels[native_path][0],
+                    level_chunk,
+                )
+                continue
             derived_levels[derived_path / str(level)] = (
                 healpix.model_copy(update={"refinement_level": level}),
-                derived_chunk_level(
-                    level, finest_level, chunk_level, coarsest_level, pyramid
-                ),
+                level_chunk,
             )
 
         pyramid_multiscale_groups[path] = PyramidMultiscaleGroupInfo(
             native_levels=native_levels,
             derived_levels=derived_levels,
+            completed_levels=completed_levels,
         )
 
     return pyramid_multiscale_groups
@@ -797,7 +843,8 @@ def create_staging_cache(
 
     for path, info in cache.output_groups.pyramid_multiscale_groups.items():
         levels = [
-            healpix.refinement_level for healpix, _ in info.derived_levels.values()
+            healpix.refinement_level
+            for healpix, _ in (info.derived_levels | info.completed_levels).values()
         ]
         pyramid_group_lines.append(
             f"  - {path} (derived levels: {sorted(levels, reverse=True)})"
