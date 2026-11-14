@@ -5,7 +5,8 @@ import random
 import re
 import time
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
+from pathlib import PurePath
 from typing import Any, Literal, TypeVar, cast
 
 import affine
@@ -96,6 +97,86 @@ def move_group_variables_to_child(
         ds = node.to_dataset(inherit=False)
         node.dataset = xr.Dataset(attrs=ds.attrs)
         dt[child] = xr.DataTree(ds)
+
+    return dt
+
+
+LATLON_STANDARD_NAMES = ("latitude", "longitude")
+
+
+def add_coordinates_from(
+    ds: xr.Dataset, source: xr.Dataset, name: str = "", source_name: str = ""
+) -> xr.Dataset:
+    """Return ``ds`` with the latitude / longitude coordinates of ``source``
+    (the coordinates with the CF ``standard_name`` ``latitude`` or
+    ``longitude``), for a group whose own variables have none (see the
+    ``coordinates_group`` group setting).
+
+    Only those coordinates are taken (not the other coordinates or variables of
+    ``source``). Their dimensions must be dimensions of ``ds``, with the same
+    sizes. ``name`` and ``source_name`` (group paths) are used in the error
+    messages.
+
+    """
+    coords = {
+        k: v.variable
+        for k, v in source.coords.items()
+        if v.attrs.get("standard_name") in LATLON_STANDARD_NAMES
+    }
+    if not coords:
+        raise ValueError(
+            f"group {source_name!r} (coordinates of group {name!r}) has no "
+            "latitude / longitude coordinates (CF standard_name)"
+        )
+    for k, var in coords.items():
+        for dim, size in zip(var.dims, var.shape):
+            if ds.sizes.get(dim) != size:
+                raise ValueError(
+                    f"group {name!r} cannot take the coordinate {k!r} of group "
+                    f"{source_name!r}: dimension {dim!r} of size {size} not in "
+                    f"the group (dimensions {dict(ds.sizes)})"
+                )
+    return ds.assign_coords(coords)
+
+
+def add_coordinates_from_groups(
+    dt: xr.DataTree, pairs: Mapping[Any, Any]
+) -> xr.DataTree:
+    """Return a (shallow) copy of ``dt`` where each group (key) gets the latitude
+    / longitude coordinates of another group (value), see
+    :py:func:`add_coordinates_from`.
+
+    A group missing from ``dt`` (e.g. filtered out of the conversion) or
+    without data variables (e.g. moved already into the level group of a
+    multiscale group converted from its own variables, with the coordinates) is
+    skipped; its coordinates group must exist when it is there.
+
+    """
+    groups = set(dt.groups)
+    todo = []
+    for group, source in pairs.items():
+        group = "/" + str(PurePath(str(group))).strip("/")
+        source = "/" + str(PurePath(str(source))).strip("/")
+        if group not in groups or not dt[group].to_dataset(inherit=False).data_vars:
+            continue
+        if source not in groups:
+            raise ValueError(
+                f"group {group!r} takes its coordinates from group {source!r}, "
+                "which is not in the input dataset"
+            )
+        todo.append((group, source))
+    if not todo:
+        return dt
+
+    dt = dt.copy()
+    for group, source in todo:
+        node = dt[group]
+        node.dataset = add_coordinates_from(
+            node.to_dataset(inherit=False),
+            dt[source].to_dataset(inherit=False),
+            name=group,
+            source_name=source,
+        )
 
     return dt
 

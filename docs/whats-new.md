@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A group without latitude / longitude coordinates of its own can take those of
+  another group of the input with the new `coordinates_group` group setting,
+  e.g. quality flags stored next to the measurements of the same image grid, or
+  angles on the tie-point grid of another group. Before, such a group was not
+  spatial and was left out of the output. See {doc}`user-guide/settings`.
 - A multiscale group can be converted from its own variables: an input group
   that holds its variables directly (a single resolution, no child group per
   resolution) gets its settings under its own path and is listed as a

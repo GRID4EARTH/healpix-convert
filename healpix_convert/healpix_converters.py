@@ -258,6 +258,14 @@ class HealpixGroupConverter(ABC):
         # for the level group of a multiscale group converted from its own
         # variables), reopened by ``load_datasets``
         self.input_group_path = cache.input_group(path)
+        # the group whose latitude / longitude the input group takes (the
+        # ``coordinates_group`` group setting), added again by ``load_datasets``
+        coordinates_group = cache.input_group_coordinates.get(
+            PurePath(self.input_group_path)
+        )
+        self.coordinates_group_path = (
+            None if coordinates_group is None else coordinates_group.as_posix()
+        )
         self.input_paths = [str(p) for p in cache.input_datatrees]
         self.datasets = [
             dt[self.group_path].dataset for dt in cache.input_datatrees.values()
@@ -534,6 +542,16 @@ class HealpixGroupConverter(ABC):
             reopened_datasets = utils.open_datasets(
                 self.input_paths, self.input_group_path, chunks={}
             )
+            if self.coordinates_group_path is not None:
+                sources = utils.open_datasets(
+                    self.input_paths, self.coordinates_group_path, chunks={}
+                )
+                reopened_datasets = [
+                    utils.add_coordinates_from(
+                        ds, src, self.input_group_path, self.coordinates_group_path
+                    )
+                    for ds, src in zip(reopened_datasets, sources)
+                ]
             reopened_datasets = align_extra_dimensions(
                 reopened_datasets,
                 self.settings.extra_dimensions,
