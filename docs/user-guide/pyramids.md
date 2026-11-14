@@ -254,6 +254,29 @@ multi-resolution product. Since all the variables of a derived level share the
 same cell ids, the cells of the level are the union of the cells of its
 variables (no data cells filled with the variable's fill value).
 
+### Completing a native level
+
+A variable is never written at a level where it was not converted, so a
+variable converted at the finest level only is absent from the coarser native
+levels: with "a" at the level 3 and "b" at the level 2, the level 2 has no "a".
+List that native level in `derived_levels` to complete it:
+
+```python
+"pyramid_groups": {"measurements": {"derived_levels": [2, 1]}},
+```
+
+The variables that the converted group of the level 2 does not hold ("a") are
+aggregated from the finer native levels, like those of a derived level and with
+the same settings (`reduce`, `coarsen_from`, `codecs`, chunks), and added to
+that group. The arrays converted from the input data ("b", the cell ids) and
+the attributes of the group are not rewritten, and a variable that the group
+already holds, e.g. the provider's own coarser copy of "a", is kept whatever
+`coarsen_from`: nothing is added for it. The finest native level cannot be
+listed (nothing is finer), and `subgroup_name` cannot be combined with a
+completed level, which is written in the converted group itself. The
+multiscales metadata describes such a group array by array (see below), so the
+`asset_type` multiscale setting must be `"auto"` or `"array"`.
+
 This is also why all the native levels of a multiscale group must be chunked
 with HEALPix cells of the same refinement level, which is enforced when the
 conversion settings are validated: the cells are aggregated by position and the

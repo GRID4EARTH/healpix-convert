@@ -635,8 +635,15 @@ class PyramidSettings(BaseModel):
     """HEALPix refinement levels to derive, e.g. ``[18, 16]``.
 
     Each of them must be coarser than the finest native level of the multiscale
-    group and must not be one of its native levels (which are converted from
-    the input data).
+    group.
+
+    A derived level may be one of the coarser native levels (the levels
+    converted from the input data). Such a level is completed, not rewritten:
+    the variables that its converted group does not hold (variables converted
+    at a finer level only) are aggregated like those of any derived level and
+    added to the group, next to the converted ones, which are left as they
+    are (arrays and attributes). Nothing is added if the group already holds
+    every variable. This requires :py:attr:`subgroup_name` to be None.
     """
 
     subgroup_name: str | None = None
@@ -1035,11 +1042,14 @@ class ConvertSettings(BaseModel):
                 )
 
             for level in pyramid.derived_levels:
-                if level in levels:
+                if level in levels and pyramid.subgroup_name is not None:
                     raise ValueError(
                         f"pyramid multiscale group {path.as_posix()!r}: the "
                         f"derived level {level} is one of the levels converted "
-                        f"from the input data {levels}"
+                        f"from the input data {levels}, whose missing variables "
+                        "are added in the converted group itself: this cannot "
+                        f"be combined with 'subgroup_name' "
+                        f"({pyramid.subgroup_name!r})"
                     )
                 if level >= levels[-1]:
                     raise ValueError(
