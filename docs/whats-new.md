@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- A multiscale group converted from its own variables can be converted at
+  several levels, each with settings of its own: the settings of the group give
+  one level, and settings under `<group>/<level>` the others. Before, only the
+  first level group got the variables and the others were converted from an
+  empty group. The `drop_variables` of all the levels apply to the group, and
+  the levels must agree on its `coordinates_group`. See
+  {doc}`user-guide/pyramids`.
+- New group settings `drop_variables` (variables of the input group that are
+  not written, e.g. the projected distances `x` / `y` of a swath grid) and
+  `nearest_variables` (variables written as the value of the nearest input point
+  of each cell, in their own data type, at the converted level only, e.g. the
+  row / column indices of a swath pixel or the time of its row). Before, every
+  variable of a spatial group was resampled with the group's resampler and cast
+  to `output_dtype`: indices came out as interpolated floats and a time in
+  nanoseconds stored as float32 lost about 100 s. Without the settings nothing
+  changes. See {doc}`user-guide/settings`.
+- A group without latitude / longitude coordinates of its own can take those of
+  another group of the input with the new `coordinates_group` group setting,
+  e.g. quality flags stored next to the measurements of the same image grid, or
+  angles on the tie-point grid of another group. Before, such a group was not
+  spatial and was left out of the output. See {doc}`user-guide/settings`.
 - A multiscale group can be converted from its own variables: an input group
   that holds its variables directly (a single resolution, no child group per
   resolution) gets its settings under its own path and is listed as a

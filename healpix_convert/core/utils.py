@@ -5,7 +5,8 @@ import random
 import re
 import time
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
+from pathlib import PurePath
 from typing import Any, Literal, TypeVar, cast
 
 import affine
@@ -72,9 +73,10 @@ def move_group_variables_to_child(
     moved into a new child group, given as ``(group path, child path)`` pairs.
 
     The group keeps its attributes and its other child groups; the new child
-    gets the variables (and coordinates) and a copy of the attributes. A pair
-    is skipped when the child exists already, or when the group is missing or
-    has no data variable.
+    gets the variables (and coordinates) and a copy of the attributes. A group
+    given in several pairs (a group converted at several levels) gives its
+    variables to each of those children. A pair is skipped when the child
+    exists already, or when the group is missing or has no data variable.
 
     """
     groups = set(dt.groups)
@@ -91,11 +93,127 @@ def move_group_variables_to_child(
         return dt
 
     dt = dt.copy()
+    # the variables of each group, taken before any of them moves
+    datasets = {}
+    for group, _ in todo:
+        if group not in datasets:
+            datasets[group] = dt[group].to_dataset(inherit=False)
+    for group, ds in datasets.items():
+        dt[group].dataset = xr.Dataset(attrs=ds.attrs)
     for group, child in todo:
+        dt[child] = xr.DataTree(datasets[group])
+
+    return dt
+
+
+LATLON_STANDARD_NAMES = ("latitude", "longitude")
+
+
+def add_coordinates_from(
+    ds: xr.Dataset, source: xr.Dataset, name: str = "", source_name: str = ""
+) -> xr.Dataset:
+    """Return ``ds`` with the latitude / longitude coordinates of ``source``
+    (the coordinates with the CF ``standard_name`` ``latitude`` or
+    ``longitude``), for a group whose own variables have none (see the
+    ``coordinates_group`` group setting).
+
+    Only those coordinates are taken (not the other coordinates or variables of
+    ``source``). Their dimensions must be dimensions of ``ds``, with the same
+    sizes. ``name`` and ``source_name`` (group paths) are used in the error
+    messages.
+
+    """
+    coords = {
+        k: v.variable
+        for k, v in source.coords.items()
+        if v.attrs.get("standard_name") in LATLON_STANDARD_NAMES
+    }
+    if not coords:
+        raise ValueError(
+            f"group {source_name!r} (coordinates of group {name!r}) has no "
+            "latitude / longitude coordinates (CF standard_name)"
+        )
+    for k, var in coords.items():
+        for dim, size in zip(var.dims, var.shape):
+            if ds.sizes.get(dim) != size:
+                raise ValueError(
+                    f"group {name!r} cannot take the coordinate {k!r} of group "
+                    f"{source_name!r}: dimension {dim!r} of size {size} not in "
+                    f"the group (dimensions {dict(ds.sizes)})"
+                )
+    return ds.assign_coords(coords)
+
+
+def add_coordinates_from_groups(
+    dt: xr.DataTree, pairs: Mapping[Any, Any]
+) -> xr.DataTree:
+    """Return a (shallow) copy of ``dt`` where each group (key) gets the latitude
+    / longitude coordinates of another group (value), see
+    :py:func:`add_coordinates_from`.
+
+    A group missing from ``dt`` (e.g. filtered out of the conversion) or
+    without data variables (e.g. moved already into the level group of a
+    multiscale group converted from its own variables, with the coordinates) is
+    skipped; its coordinates group must exist when it is there.
+
+    """
+    groups = set(dt.groups)
+    todo = []
+    for group, source in pairs.items():
+        group = "/" + str(PurePath(str(group))).strip("/")
+        source = "/" + str(PurePath(str(source))).strip("/")
+        if group not in groups or not dt[group].to_dataset(inherit=False).data_vars:
+            continue
+        if source not in groups:
+            raise ValueError(
+                f"group {group!r} takes its coordinates from group {source!r}, "
+                "which is not in the input dataset"
+            )
+        todo.append((group, source))
+    if not todo:
+        return dt
+
+    dt = dt.copy()
+    for group, source in todo:
         node = dt[group]
-        ds = node.to_dataset(inherit=False)
-        node.dataset = xr.Dataset(attrs=ds.attrs)
-        dt[child] = xr.DataTree(ds)
+        node.dataset = add_coordinates_from(
+            node.to_dataset(inherit=False),
+            dt[source].to_dataset(inherit=False),
+            name=group,
+            source_name=source,
+        )
+
+    return dt
+
+
+def drop_matching_variables(ds: xr.Dataset, patterns: Iterable[str]) -> xr.Dataset:
+    """Return ``ds`` without its variables (data variables or coordinates) whose
+    name matches one of ``patterns`` (names or regular expressions matched
+    against the whole name), see the ``drop_variables`` group setting."""
+    patterns = list(patterns)
+    names = [str(k) for k in ds.variables if matches_any(str(k), patterns)]
+    return ds.drop_vars(names) if names else ds
+
+
+def drop_variables_from_groups(
+    dt: xr.DataTree, patterns: Mapping[Any, Iterable[str]]
+) -> xr.DataTree:
+    """Return a (shallow) copy of ``dt`` without the variables of each group
+    (key) that match its patterns (value), see :py:func:`drop_matching_variables`.
+    A group missing from ``dt`` is skipped."""
+    groups = set(dt.groups)
+    todo = []
+    for group, pats in patterns.items():
+        group = "/" + str(PurePath(str(group))).strip("/")
+        if group in groups:
+            todo.append((group, list(pats)))
+    if not todo:
+        return dt
+
+    dt = dt.copy()
+    for group, pats in todo:
+        node = dt[group]
+        node.dataset = drop_matching_variables(node.to_dataset(inherit=False), pats)
 
     return dt
 
