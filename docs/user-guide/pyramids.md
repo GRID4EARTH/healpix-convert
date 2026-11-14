@@ -282,6 +282,24 @@ the multiscale group, if any, are left where they are, and the `groups`
 argument of {py:func}`~healpix_convert.create_staging_cache` selects input
 groups as they are in the input datasets.
 
+The variables of such a group can also be converted at several levels, each
+with settings of its own (e.g. another resampler or other resampler parameters
+at a coarser level): give the settings of the other levels under the paths of
+their level groups, next to the settings of the group itself. Every level group
+gets the variables of the group, and the derived levels of the pyramid are
+aggregated from the nearest native level (`coarsen_from`, see below):
+
+```python
+"group_settings": {
+    "measurements": {"healpix": {"refinement_level": 15}, ...},
+    "measurements/14": {"healpix": {"refinement_level": 14}, "resampler": {...}, ...},
+},
+"multiscale_settings": {
+    "groups": ["measurements"],
+    "pyramid_groups": {"measurements": {"derived_levels": [13, 12]}},
+},
+```
+
 ## Groups converted at several levels
 
 The native levels of a multiscale group are kept as they are. Generating

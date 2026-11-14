@@ -73,9 +73,10 @@ def move_group_variables_to_child(
     moved into a new child group, given as ``(group path, child path)`` pairs.
 
     The group keeps its attributes and its other child groups; the new child
-    gets the variables (and coordinates) and a copy of the attributes. A pair
-    is skipped when the child exists already, or when the group is missing or
-    has no data variable.
+    gets the variables (and coordinates) and a copy of the attributes. A group
+    given in several pairs (a group converted at several levels) gives its
+    variables to each of those children. A pair is skipped when the child
+    exists already, or when the group is missing or has no data variable.
 
     """
     groups = set(dt.groups)
@@ -92,11 +93,15 @@ def move_group_variables_to_child(
         return dt
 
     dt = dt.copy()
+    # the variables of each group, taken before any of them moves
+    datasets = {}
+    for group, _ in todo:
+        if group not in datasets:
+            datasets[group] = dt[group].to_dataset(inherit=False)
+    for group, ds in datasets.items():
+        dt[group].dataset = xr.Dataset(attrs=ds.attrs)
     for group, child in todo:
-        node = dt[group]
-        ds = node.to_dataset(inherit=False)
-        node.dataset = xr.Dataset(attrs=ds.attrs)
-        dt[child] = xr.DataTree(ds)
+        dt[child] = xr.DataTree(datasets[group])
 
     return dt
 

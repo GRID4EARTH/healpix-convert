@@ -245,3 +245,71 @@ def test_distributed_conversion_reopens_the_source_group(tmp_path):
     a = zarr.open_group(output_path, mode="r")[f"{GROUP}/3/a"][:]
     b = zarr.open_group(serial, mode="r")[f"{GROUP}/3/a"][:]
     np.testing.assert_array_equal(a, b)
+
+
+def test_own_variables_at_two_levels(tmp_path):
+    """The variables of the group converted at two native levels, each with its own
+    settings (another resampler at the coarser one), the pyramid below them."""
+    input_path = _write_input(tmp_path / "input.zarr", with_child=False)
+    output_path = str(tmp_path / "converted.zarr")
+    raw = _settings(derived_levels=(1,))
+    raw["exclude_groups"] = []
+    raw["group_settings"][f"{GROUP}/2"] = {
+        "healpix": {"refinement_level": 2, **HEALPIX},
+        "chunk": CHUNK,
+        "resampler": {"name": "bilinear"},
+    }
+    settings = ConvertSettings.model_validate(raw)
+    assert settings.own_level_groups() == {
+        PurePath(f"{GROUP}/3"): PurePath(GROUP),
+        PurePath(f"{GROUP}/2"): PurePath(GROUP),
+    }
+
+    cache = create_staging_cache([input_path], raw)
+    dt = next(iter(cache.input_datatrees.values()))
+    assert set(dt[f"{GROUP}/3"].data_vars) == set(dt[f"{GROUP}/2"].data_vars) == {"a", "b"}
+    assert not dt[GROUP].to_dataset(inherit=False).data_vars
+    # the same from a cache read back from JSON
+    from healpix_convert import ConvertStagingCache
+
+    reloaded = ConvertStagingCache.from_json(cache.to_json())
+    dt = next(iter(reloaded.input_datatrees.values()))
+    assert set(dt[f"{GROUP}/2"].data_vars) == {"a", "b"}
+
+    prepare_healpix_dataset(reloaded, raw, output_path)
+    for level in (3, 2):
+        convert_group_to_healpix(
+            f"{GROUP}/{level}", cache=reloaded, settings=raw, output_path=output_path
+        )
+    generate_pyramids(reloaded, raw, output_path)
+    finalize_healpix_dataset(reloaded, raw, output_path)
+
+    root = zarr.open_group(output_path, mode="r")
+    assert sorted(root[GROUP].group_keys()) == ["1", "2", "3"]
+    a3, a2, a1 = (root[f"{GROUP}/{lv}/a"][:] for lv in (3, 2, 1))
+    assert np.isfinite(a2).all()
+    # level 2 is converted (bilinear), not the mean of level 3
+    mean3 = a3.reshape(-1, 4).mean(axis=1)
+    assert not np.allclose(a2, mean3)
+    # level 1 is aggregated from the nearest native level, 2
+    np.testing.assert_allclose(a1, a2.reshape(-1, 4).mean(axis=1), rtol=1e-6)
+
+
+def test_settings_of_several_levels_of_one_group():
+    """The variables left out by any level are left out of the input group; the
+    levels must agree on the group the coordinates come from."""
+    raw = _settings(derived_levels=(1,))
+    raw["group_settings"][GROUP]["drop_variables"] = ["x"]
+    raw["group_settings"][f"{GROUP}/2"] = {
+        "healpix": {"refinement_level": 2, **HEALPIX},
+        "chunk": CHUNK,
+        "resampler": {"name": "nearest"},
+        "drop_variables": ["x", "y"],
+    }
+    settings = ConvertSettings.model_validate(raw)
+    assert settings.drop_variables_groups() == {PurePath(GROUP): ["x", "y"]}
+
+    raw["group_settings"][GROUP]["coordinates_group"] = "a"
+    raw["group_settings"][f"{GROUP}/2"]["coordinates_group"] = "b"
+    with pytest.raises(ValueError, match="different 'coordinates_group'"):
+        ConvertSettings.model_validate(raw).coordinates_groups()
