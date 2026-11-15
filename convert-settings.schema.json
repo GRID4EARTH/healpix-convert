@@ -631,6 +631,14 @@
           "$ref": "#/$defs/STACSettings",
           "description": "Settings for the STAC metadata written in the root group of the output\ndataset (see :py:class:`~healpix_convert.settings.stac.STACSettings`)."
         },
+        "root_attributes": {
+          "description": "Names of root attributes of the input datasets to carry over to the root\ngroup of the output dataset (next to ``stac_discovery``), e.g. the product\ndescription and processing history a data provider writes there.\n\nEach attribute is written under its own name as a mapping from the id of each\ninput dataset (the ``id`` of its STAC item, its path if it has none) to the\nattribute of that input, whatever the number of inputs, so that the layout\ndoes not depend on how many input datasets feed an output. An input without\nthe attribute is left out of the mapping; if no input has it, nothing is\nwritten. ``stac_discovery`` is written by the conversion and cannot be listed.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Root Attributes",
+          "type": "array"
+        },
         "consolidate": {
           "$ref": "#/$defs/ConsolidateMetadataSettings",
           "description": "Settings for the consolidated Zarr metadata of the output dataset, i.e.,\nwhich of its groups it is written for (see\n:py:class:`ConsolidateMetadataSettings`)."

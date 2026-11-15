@@ -10,7 +10,10 @@ themselves) emit consistent metadata.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
+
+import numpy as np
 
 from healpix_convert.core.healpix_conventions import (
     CFHealpixGridMapping,
@@ -25,6 +28,7 @@ from healpix_convert.settings.common import MetadataSettings
 from healpix_convert.settings.conventions import CFConventionSelector
 
 if TYPE_CHECKING:
+    import xarray as xr
     import zarr
 
 #: Name of the CF grid mapping variable written in each HEALPix group.
@@ -115,6 +119,44 @@ def write_root_conventions(group: zarr.Group, settings: MetadataSettings) -> Non
     conventions_attr = _get_cf_conventions_attr(settings)
     if conventions_attr is not None:
         group.attrs["Conventions"] = conventions_attr
+
+
+def _to_json_value(value: Any) -> Any:
+    """The attribute value as plain JSON types (numpy values come out of some
+    stores)."""
+    if isinstance(value, Mapping):
+        return {str(k): _to_json_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_json_value(v) for v in value]
+    if isinstance(value, (np.ndarray, np.generic)):
+        return value.tolist()
+    return value
+
+
+def write_carried_root_attributes(
+    group: zarr.Group,
+    input_datatrees: Mapping[str, xr.DataTree],
+    settings: MetadataSettings,
+) -> None:
+    """Carry the root attributes listed in ``settings.root_attributes`` from the
+    input datasets over to the root group of the output dataset.
+
+    Each attribute is written as a mapping from the id of the input dataset (the
+    ``id`` of its STAC item, its path if it has none) to its value there, whatever
+    the number of inputs. An input without the attribute is left out; an attribute
+    no input has is not written.
+    """
+    for name in settings.root_attributes:
+        carried: dict[str, Any] = {}
+        for path, datatree in input_datatrees.items():
+            if name not in datatree.attrs:
+                continue
+            stac = datatree.attrs.get("stac_discovery")
+            has_id = isinstance(stac, Mapping) and "id" in stac
+            key = str(stac["id"]) if has_id else str(path)
+            carried[key] = _to_json_value(datatree.attrs[name])
+        if carried:
+            group.attrs[name] = carried
 
 
 def get_cf_cell_id_attrs(settings: MetadataSettings) -> dict[str, Any]:

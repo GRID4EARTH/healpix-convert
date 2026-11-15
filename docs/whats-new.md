@@ -1,5 +1,15 @@
 # What's new
 
+## Unreleased
+
+- New metadata setting `root_attributes`: names of root attributes of the input
+  datasets (e.g. the product description and the processing history a data
+  provider writes there) that are carried over to the root group of the output,
+  next to `stac_discovery`. Each one is written as a mapping from the id of each
+  input dataset to its value there, whatever the number of inputs. Before, only
+  `stac_discovery` was propagated and every other root attribute of the input was
+  lost. Without the setting nothing changes.
+
 ## v2026.11.0 (2026-11-09)
 
 - The ClimateDT converter now always resamples the native (spherical) HEALPix
