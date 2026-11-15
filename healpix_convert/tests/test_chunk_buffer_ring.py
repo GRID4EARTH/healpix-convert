@@ -103,3 +103,124 @@ def test_selection_covers_the_chunk(chunk_level, ring_level):
 
     assert np.isin(chunk_zoomed, selected).all()
     assert len(selected) == len(np.unique(selected))
+
+
+def _curvilinear_converter(monkeypatch, ds, chunk_cell_id, chunk_level, buffer):
+    """A dense chunk converter on a dataset with 2-D longitude and latitude."""
+    from pathlib import PurePath
+
+    import xarray as xr
+    import zarr
+
+    from healpix_convert.core.conversion_models import (
+        ConvertStagingCache,
+        InputGroupSpatialInfo,
+        OutputGroupInfo,
+    )
+    from healpix_convert.healpix_converters import DenseChunkConverter
+    from healpix_convert.settings.common import ConvertSettings
+
+    path = PurePath("measurements/data")
+    grid = {"indexing_scheme": "nested", "ellipsoid": {"name": "wgs84"}}
+    settings = ConvertSettings.from_dict(
+        {
+            "group_settings": {
+                str(path): {
+                    "healpix": {**grid, "refinement_level": chunk_level + 2},
+                    "chunk": {
+                        "method": "healpix_cell_dense",
+                        "healpix": {**grid, "refinement_level": chunk_level},
+                        "chunk_buffer_width": buffer,
+                    },
+                    "resampler": {"name": "nearest"},
+                }
+            }
+        }
+    )
+    cache = ConvertStagingCache(
+        input_datatrees={"0": xr.DataTree.from_dict({str(path): ds})},
+        input_spatial_groups={
+            path: InputGroupSpatialInfo(**utils.extract_spatial_info_cf(ds))
+        },
+        output_groups=OutputGroupInfo(io_path_map={path: path}),
+    )
+    monkeypatch.setattr(
+        "healpix_convert.core.utils.compute_output_chunk_info",
+        lambda *args: (
+            np.atleast_1d(np.asarray(chunk_cell_id, dtype=np.uint64)),
+            np.ones(1, dtype=bool),
+        ),
+    )
+    return DenseChunkConverter(
+        path, cache=cache, settings=settings, output_store=zarr.storage.MemoryStore()
+    )
+
+
+# (chunk level, buffer in metres): the ring level (see ``utils.chunk_buffer_ring_level``)
+# is finer than the chunk level for the first case and coarser for the second
+CONVERTER_CASES = [(9, 3_000.0), (11, 20_000.0)]
+
+
+@pytest.mark.parametrize("chunk_level, buffer", CONVERTER_CASES)
+def test_converter_selects_points_within_buffer(monkeypatch, chunk_level, buffer):
+    """The converter's own query on a curvilinear grid selects the points inside
+    the chunk and all the points within the buffer of it."""
+    import xarray as xr
+
+    lon0, lat0 = 10.0, 45.0
+    ring_level = utils.chunk_buffer_ring_level(buffer)
+    assert (ring_level > chunk_level) == (buffer < 5_000.0)
+
+    # a rotated, slightly sheared grid of about 6000 points, spacing about 2 km
+    ii, jj = np.meshgrid(np.arange(-40, 40), np.arange(-40, 40))
+    angle = np.deg2rad(23.0)
+    x = 0.022 * (np.cos(angle) * ii - np.sin(angle) * jj) + 0.0003 * jj
+    y = 0.016 * (np.sin(angle) * ii + np.cos(angle) * jj)
+    lon, lat = lon0 + x, lat0 + y
+    ds = xr.Dataset(
+        {"index": (("row", "column"), np.arange(lon.size).reshape(lon.shape))},
+        coords={
+            "longitude": (("row", "column"), lon, {"standard_name": "longitude"}),
+            "latitude": (("row", "column"), lat, {"standard_name": "latitude"}),
+        },
+    )
+
+    (chunk_cell_id,) = healpix_geo.nested.lonlat_to_healpix(
+        np.array([lon0]), np.array([lat0]), chunk_level, "WGS84"
+    )
+    converter = _curvilinear_converter(
+        monkeypatch, ds, chunk_cell_id, chunk_level, buffer
+    )
+    selected = converter.query_input_points(chunk_cell_id)
+    assert selected is not None
+    selected_index = selected["index"].values
+
+    # independent of the utils functions: distance to the densely sampled edges
+    geod = pyproj.Geod(ellps="WGS84")
+    vlon, vlat = healpix_geo.nested.vertices(
+        np.array([chunk_cell_id], dtype=np.uint64), chunk_level, "WGS84", step=16
+    )
+    vlon, vlat = np.asarray(vlon).ravel(), np.asarray(vlat).ravel()
+    distance = np.full(lon.size, np.inf)
+    for elon, elat in zip(vlon, vlat):
+        _, _, d = geod.inv(
+            np.full(lon.size, elon), np.full(lon.size, elat), lon.ravel(), lat.ravel()
+        )
+        distance = np.minimum(distance, d)
+
+    inside = (
+        healpix_geo.nested.lonlat_to_healpix(
+            lon.ravel(), lat.ravel(), chunk_level, "WGS84"
+        )
+        == chunk_cell_id
+    )
+    near = distance < 0.9 * buffer
+
+    assert inside.sum() > 0
+    assert (near & ~inside).sum() > 0
+    assert np.isin(np.flatnonzero(inside), selected_index).all()
+    missing = ~np.isin(np.flatnonzero(near), selected_index)
+    assert not missing.any(), (
+        f"{missing.sum()} of {near.sum()} points within the buffer are not selected"
+    )
+    assert selected_index.size < lon.size
