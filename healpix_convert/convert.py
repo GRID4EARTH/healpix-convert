@@ -131,8 +131,14 @@ def _map_processing_cells(
     writes it from the values of its processing cells (``write_chunk``).
 
     A chunk is written by a single task: the processing cells of a shard are
-    not written separately, as Zarr cannot write a shard in parts from several
-    tasks. A task holds the resampler of one processing cell only.
+    not written separately, as a partial write of a shard reads and rewrites
+    the whole shard, and concurrent partial writes of one shard would race. A
+    task holds the resampler of one processing cell only.
+
+    The tasks are submitted chunk by chunk, with the same priority for all the
+    tasks of a chunk and a higher one for earlier chunks, so that the write
+    task of a chunk is not scheduled behind the resampling of all other chunks
+    (whose values would then pile up in memory before any chunk is written).
 
     """
     log.info(
@@ -146,25 +152,20 @@ def _map_processing_cells(
         chunk_index, list(values)
     )
 
+    futures = []
     with dask.config.set({"optimization.fuse.active": False}):
-        # pure=False: the converter is not part of the task keys, so the tasks
-        # of two groups with the same chunk indices must not share their keys
-        unit_futures = client.map(
-            resample,
-            [(c, u) for c in chunk_indices for u in range(units)],
-            resources=resources,
-            pure=False,
-        )
-        return [
-            client.submit(
-                write,
-                chunk_index,
-                *unit_futures[i * units : (i + 1) * units],
-                resources=resources,
-                pure=False,
+        for i, chunk_index in enumerate(chunk_indices):
+            # pure=False: the converter is not part of the task keys, so the
+            # tasks of two groups with the same chunk indices must not share
+            # their keys
+            kwargs = dict(
+                resources=resources, pure=False, priority=len(chunk_indices) - i
             )
-            for i, chunk_index in enumerate(chunk_indices)
-        ]
+            unit_futures = client.map(
+                resample, [(chunk_index, u) for u in range(units)], **kwargs
+            )
+            futures.append(client.submit(write, chunk_index, *unit_futures, **kwargs))
+    return futures
 
 
 def _create_and_process_output(

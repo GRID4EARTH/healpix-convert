@@ -106,9 +106,10 @@ $4^{(l_p - l_c)}$ processing cells. The input points of each one (plus
 `chunk_buffer_width` around it) are selected and resampled on their own, so a
 resampling task holds the resampler of one processing cell only. With a
 distributed dask client each processing cell is a task, and one more task per
-chunk writes it once, as a whole, from the values of its processing cells
-(Zarr cannot write a shard in parts from several tasks). Without a client the
-processing cells of a chunk are resampled one after the other.
+chunk writes it once, as a whole, from the values of its processing cells (a
+partial write of a shard reads and rewrites the whole shard, and concurrent
+partial writes of one shard from several tasks would race). Without a client
+the processing cells of a chunk are resampled one after the other.
 
 ```python
 "chunk": {
@@ -121,7 +122,7 @@ processing cells of a chunk are resampled one after the other.
 
 - It is for memory only, not a way to change the values. The output has the
   same cells, layout, data type and fill value as without it, but its values
-  depend on the processing unit: each processing cell is resampled from the
+  depend on the processing cell: each processing cell is resampled from the
   input points inside it and inside the buffer around it, so near the edge of a
   processing cell a kernel resampler (e.g. `"psf"`) sees less input than in a
   single solve, as it does near the edge of a chunk. The values agree with a
@@ -135,15 +136,21 @@ processing cells of a chunk are resampled one after the other.
   the chunk is written, so the saving is on the resampler (the sparse matrix
   and its solve), not on the output values of the chunk. A smaller processing
   cell means more tasks, and more input points selected twice (the buffer
-  around each cell), so the conversion is somewhat slower.
+  around each cell), so the conversion is slower. For the curvilinear
+  (2-D coordinates) selection the whole input is scanned once for each
+  processing cell, so the selection cost grows with the number of processing
+  cells (and with the size of the input).
 - For the curvilinear (2-D coordinates) selection, the buffer is applied as a
   ring of HEALPix cells whose level follows from `chunk_buffer_width`; if that
   level is coarser than `processing_level` (a buffer of about twice the width of
-  a processing cell or more) the conversion raises a `ValueError`: use a
-  coarser `processing_level` or a narrower buffer.
+  a processing cell or more) the conversion raises a `ValueError` before any
+  task is submitted (when the converter of the group is created, once the input
+  is known to be curvilinear): use a coarser `processing_level` or a narrower
+  buffer.
 - Only with `"healpix_cell_dense"`. A `processing_level` coarser than the chunk
-  level or finer than the output level is rejected when the settings are
-  read.
+  level, finer than the output level, or more than 4 levels finer than the
+  chunk level (more than 256 processing cells per chunk) is rejected when the
+  settings are read.
 
 :::{note}
 The `"healpix_cell_dense"` and `"healpix_cell_sparse"` methods currently need

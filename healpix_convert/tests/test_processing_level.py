@@ -18,6 +18,7 @@ from healpix_convert.core.conversion_models import (
     InputGroupSpatialInfo,
     OutputGroupInfo,
 )
+from healpix_convert.core import utils
 from healpix_convert.core.utils import extract_spatial_info_cf
 from healpix_convert.healpix_converters import DenseChunkConverter
 from healpix_convert.settings.common import ConvertSettings
@@ -270,8 +271,16 @@ def test_processing_level_finer_than_output_level_is_rejected():
     with pytest.raises(
         pydantic.ValidationError, match="finer than the refinement level"
     ):
-        make_settings(processing_level=LEVEL + 1)
+        make_settings(processing_level=LEVEL + 1, chunk_level=CHUNK_LEVEL + 3)
     make_settings(processing_level=LEVEL)
+
+
+def test_processing_level_limit_on_processing_cells_per_chunk():
+    # at most 4 levels finer than the chunk level: 256 processing cells
+    settings = make_settings(processing_level=CHUNK_LEVEL + 4)
+    assert settings.group_settings[PATH].chunk.processing_level == CHUNK_LEVEL + 4
+    with pytest.raises(pydantic.ValidationError, match="at most 4 levels finer"):
+        make_settings(processing_level=CHUNK_LEVEL + 5, chunk_level=CHUNK_LEVEL)
 
 
 def test_processing_level_is_rejected_for_other_chunk_methods():
@@ -324,6 +333,7 @@ def test_map_processing_cells_writes_the_same_chunk(monkeypatch, ds, cell):
     assert [kind for kind, _ in client.calls] == ["map", "submit"]
     assert all(kw["pure"] is False for _, kw in client.calls)
     assert all(kw["resources"] == resources for _, kw in client.calls)
+    assert len({kw["priority"] for _, kw in client.calls}) == 1
     out = arrays(converter)
     np.testing.assert_array_equal(out["cell_ids"], reference["cell_ids"])
     np.testing.assert_array_equal(out["field"], reference["field"])
@@ -352,14 +362,98 @@ def test_distributed_client(monkeypatch, cell):
     np.testing.assert_array_equal(out["field"], reference["field"])
 
 
-def test_buffer_wider_than_a_processing_cell_is_rejected(monkeypatch, cell):
+def test_buffer_wider_than_a_processing_cell_is_rejected_early(monkeypatch, cell):
     # curvilinear selection: the ring is made of cells of the level of the buffer
     ds = make_input(cell, rectilinear=False)
-    converter = make_converter(
+    settings = make_settings(processing_level=CHUNK_LEVEL + 4, buffer=WIDE_BUFFER)
+    # raised when the converter is created, before any task is submitted
+    with pytest.raises(ValueError, match="too wide for processing cells"):
+        make_converter(monkeypatch, ds, cell, settings)
+    # a narrower buffer, or one processing cell per chunk, is fine
+    make_converter(
         monkeypatch,
         ds,
         cell,
+        make_settings(processing_level=CHUNK_LEVEL + 4, buffer=1_000),
+    )
+    make_converter(monkeypatch, ds, cell, make_settings(buffer=WIDE_BUFFER))
+    # rectilinear input does not use the ring
+    make_converter(
+        monkeypatch,
+        make_input(cell, rectilinear=True),
+        cell,
         make_settings(processing_level=CHUNK_LEVEL + 4, buffer=WIDE_BUFFER),
     )
+
+
+def test_ring_level_boundary(monkeypatch, cell):
+    ds = make_input(cell, rectilinear=False)
+    unit_level = CHUNK_LEVEL + 4
+    converter = make_converter(
+        monkeypatch, ds, cell, make_settings(processing_level=unit_level, buffer=1_000)
+    )
+    # the ring level equal to the processing level must not raise
+    def width(level):
+        # a buffer that gives this ring level (ceil of the level of the width)
+        return 1.01 * utils.EARTH_RADIUS_M * np.sqrt(np.pi / 3.0) / 2**level
+
+    converter.settings.chunk.chunk_buffer_width = width(unit_level)
+    assert converter._check_ring_level() == unit_level
+    converter.settings.chunk.chunk_buffer_width = width(unit_level - 1)
     with pytest.raises(ValueError, match="too wide for processing cells"):
-        converter.convert(0)
+        converter._check_ring_level()
+
+
+def test_second_chunk_lands_in_the_second_slice(monkeypatch, ds, cell):
+    # two chunk cells with the same parent
+    cells = np.array([cell & ~np.uint64(3), (cell & ~np.uint64(3)) + np.uint64(1)])
+    settings = make_settings(processing_level=CHUNK_LEVEL + 1, buffer=0)
+    converter = make_converter(monkeypatch, ds, cells, settings)
+    assert converter.chunk_cell_ids.size == 2
+    size = converter.cell_dim_chunk_size
+    for i in (1, 0):
+        converter.convert(i)
+    out = arrays(converter)
+    assert out["field"].shape == (2 * size,)
+    for i in (0, 1):
+        single = make_converter(monkeypatch, ds, cells[i], settings)
+        single.convert(0)
+        expected = arrays(single)
+        assert expected["cell_ids"][0] == out["cell_ids"][i * size]
+        part = slice(i * size, (i + 1) * size)
+        np.testing.assert_array_equal(out["cell_ids"][part], expected["cell_ids"])
+        np.testing.assert_array_equal(out["field"][part], expected["field"])
+    assert np.isfinite(out["field"][:size]).any()
+    assert np.isfinite(out["field"][size:]).any()
+
+    # the same with the task graph helper: two write tasks, in chunk order, with
+    # the same priority for the tasks of a chunk, higher for the first chunk
+    client = SynchronousClient()
+    other = make_converter(monkeypatch, ds, cells, settings)
+    _map_processing_cells(client, other, [0, 1], 4, None)
+    assert [kind for kind, _ in client.calls] == ["map", "submit", "map", "submit"]
+    priorities = [kw["priority"] for _, kw in client.calls]
+    assert priorities[0] == priorities[1] > priorities[2] == priorities[3]
+    got = arrays(other)
+    np.testing.assert_array_equal(got["field"], out["field"])
+    np.testing.assert_array_equal(got["cell_ids"], out["cell_ids"])
+
+
+def test_nan_of_the_resampler_becomes_the_fill_value(monkeypatch, cell):
+    # an integer output has a fill value that is not NaN: NaN of the resampler
+    # (cells with no input within reach) must be replaced by it
+    ds = make_input(cell)
+    ds = ds.assign(field=(1000 + 100 * ds.field).astype("int16"))
+    converter = make_converter(
+        monkeypatch,
+        ds.isel(lat=slice(0, 25)),
+        cell,
+        make_settings(processing_level=CHUNK_LEVEL + 1, buffer=0, resampler="nearest"),
+    )
+    zarray = converter.output_arrays["field"]
+    assert zarray.dtype == np.int16 and zarray.fill_value == 0
+    converter.convert(0)
+    out = converter.output_arrays["field"][:]
+    # real values are all > 0, so zeros are cells without data
+    assert (out >= 0).all()
+    assert (out == 0).any() and (out > 0).any()

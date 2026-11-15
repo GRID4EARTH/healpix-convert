@@ -219,6 +219,11 @@ class HealpixUniformChunkSettings(BaseChunkSettings):
         return self
 
 
+# upper limit of ``processing_level - chunk level`` (4**4 = 256 processing cells
+# per chunk): each one is a dask task, and the futures of a chunk are kept as a list
+MAX_PROCESSING_LEVEL_DEPTH = 4
+
+
 class HealpixDenseChunkSettings(HealpixUniformChunkSettings):
     r"""Chunk output data along the HEALPix cell dimension according to
     HEALPix cells given at a parent, "coarse" refinement level (dense version).
@@ -276,9 +281,10 @@ class HealpixDenseChunkSettings(HealpixUniformChunkSettings):
     It is for memory only, not a way to change the values. The resampled values
     of the processing cells of a chunk are kept until all are done, then put
     together in nested order, and the chunk (a whole shard, with
-    ``chunk_level_offset``) is written once by one task (Zarr cannot write a
-    shard in parts from several tasks). The output has the same cells, layout
-    and data type as without the setting. Its values depend on the processing
+    ``chunk_level_offset``) is written once by one task (a partial write of a
+    shard reads and rewrites the whole shard, so concurrent partial writes of
+    one shard from several tasks would race). The output has the same cells,
+    layout and data type as without the setting. Its values depend on the processing
     cell: near its edge a kernel resampler sees only the input inside the cell
     and its buffer, as it does near the edge of a chunk. They agree with the
     values without the setting only if ``chunk_buffer_width`` is wide (several
@@ -287,8 +293,14 @@ class HealpixDenseChunkSettings(HealpixUniformChunkSettings):
 
     If None (default), the processing cells are the chunk cells (nothing
     changes). Must not be coarser than the chunk level (``healpix`` of the
-    chunk settings) nor finer than the refinement level of the group. Only for
-    the ``healpix_cell_dense`` chunk method.
+    chunk settings) nor finer than the refinement level of the group, and at
+    most ``MAX_PROCESSING_LEVEL_DEPTH`` (4) levels finer than the chunk level
+    (at most 256 processing cells per chunk). Only for the
+    ``healpix_cell_dense`` chunk method.
+
+    For input with 2-D (curvilinear) coordinates the selection scans the whole
+    input once for each processing cell, so its cost grows with the number of
+    processing cells.
     """
 
     @model_validator(mode="after")
@@ -302,6 +314,17 @@ class HealpixDenseChunkSettings(HealpixUniformChunkSettings):
             raise ValueError(
                 f"processing_level ({self.processing_level}) must not be coarser "
                 f"than the chunk level ({chunk_level})"
+            )
+        if (
+            self.processing_level is not None
+            and chunk_level is not None
+            and self.processing_level - chunk_level > MAX_PROCESSING_LEVEL_DEPTH
+        ):
+            raise ValueError(
+                f"processing_level ({self.processing_level}) must be at most "
+                f"{MAX_PROCESSING_LEVEL_DEPTH} levels finer than the chunk level "
+                f"({chunk_level}), i.e. at most {4**MAX_PROCESSING_LEVEL_DEPTH} "
+                "processing cells per chunk"
             )
         return self
 
@@ -621,7 +644,11 @@ class HealpixGroupSettings(BaseModel):
     def validate_processing_level(self) -> HealpixGroupSettings:
         processing_level = getattr(self.chunk, "processing_level", None)
         level = self.healpix.refinement_level
-        if processing_level is not None and level is not None and processing_level > level:
+        if (
+            processing_level is not None
+            and level is not None
+            and processing_level > level
+        ):
             raise ValueError(
                 f"chunk.processing_level ({processing_level}) must not be finer "
                 f"than the refinement level of the group ({level})"
