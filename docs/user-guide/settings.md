@@ -142,9 +142,14 @@ the processing cells of a chunk are resampled one after the other.
   cells (and with the size of the input).
 - For the curvilinear (2-D coordinates) selection, the buffer is applied around
   each processing cell as a one-cell ring of HEALPix cells, as for a chunk; a
-  buffer wider than a processing cell is handled (the ring is then made of cells
-  coarser than the processing cell, and the input selected for a processing
-  cell grows accordingly).
+  buffer wider than a processing cell is accepted, but it has a cost: the ring is
+  then made of cells coarser than the processing cell, so the input of a
+  processing cell is that of the ring around its parent cell (with its
+  siblings). A finer `processing_level` then lowers the output of each task
+  only, not its input, while the number of tasks and of selection scans of the
+  input grows; a warning is logged when the converter is created. Keep the
+  buffer narrower than the processing cell (ring level at least the processing
+  level) for the input of a task to shrink with a finer `processing_level`.
 - Only with `"healpix_cell_dense"`. A `processing_level` coarser than the chunk
   level, finer than the output level, or more than 4 levels finer than the
   chunk level (more than 256 processing cells per chunk) is rejected when the

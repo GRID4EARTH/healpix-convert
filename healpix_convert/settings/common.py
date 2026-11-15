@@ -266,7 +266,11 @@ class HealpixDenseChunkSettings(HealpixUniformChunkSettings):
     do not require it).
 
     With ``processing_level`` set, the buffer is applied around each processing
-    cell instead of around the whole chunk cell.
+    cell instead of around the whole chunk cell. A buffer wider than a processing
+    cell is accepted, but then the ring is coarser than the processing cell and
+    the input of a task is that of the ring around its parent cell: a finer
+    ``processing_level`` no longer reduces the input of a task (a warning is
+    logged).
 
     """
 

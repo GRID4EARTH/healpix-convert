@@ -10,16 +10,17 @@ import numpy as np
 import pydantic
 import pyproj
 import pytest
+import structlog.testing
 import xarray as xr
 import zarr
 
 from healpix_convert.convert import _map_processing_cells
+from healpix_convert.core import utils
 from healpix_convert.core.conversion_models import (
     ConvertStagingCache,
     InputGroupSpatialInfo,
     OutputGroupInfo,
 )
-from healpix_convert.core import utils
 from healpix_convert.core.utils import extract_spatial_info_cf
 from healpix_convert.healpix_converters import DenseChunkConverter
 from healpix_convert.settings.common import ConvertSettings
@@ -88,7 +89,9 @@ def make_input(cell, rectilinear=True):
             "lat": (("row", "col"), yy, {"standard_name": "latitude"}),
         }
         dims = ("row", "col")
-    return xr.Dataset({"field": (dims, da.from_array(values, chunks=64))}, coords=coords)
+    return xr.Dataset(
+        {"field": (dims, da.from_array(values, chunks=64))}, coords=coords
+    )
 
 
 def make_converter(monkeypatch, ds, cell, settings):
@@ -116,7 +119,9 @@ def make_converter(monkeypatch, ds, cell, settings):
 
 @pytest.fixture(scope="module")
 def cell():
-    return healpix_geo.nested.lonlat_to_healpix(3.0, 47.0, CHUNK_LEVEL, ellipsoid="WGS84")[0]
+    return healpix_geo.nested.lonlat_to_healpix(
+        3.0, 47.0, CHUNK_LEVEL, ellipsoid="WGS84"
+    )[0]
 
 
 @pytest.fixture(params=[True, False], ids=["rectilinear", "curvilinear"])
@@ -131,9 +136,7 @@ def convert(monkeypatch, ds, cell, **kwargs):
 
 
 def arrays(converter):
-    return {
-        name: converter.output_arrays[name][:] for name in ("cell_ids", "field")
-    }
+    return {name: converter.output_arrays[name][:] for name in ("cell_ids", "field")}
 
 
 def test_default_is_one_processing_cell(monkeypatch, ds, cell):
@@ -159,9 +162,7 @@ def test_default_is_one_processing_cell(monkeypatch, ds, cell):
 @pytest.mark.parametrize("extra_levels", [1, 2])
 def test_wide_buffer_equals_single_solve(monkeypatch, ds, cell, extra_levels):
     reference = convert(monkeypatch, ds, cell)
-    split = convert(
-        monkeypatch, ds, cell, processing_level=CHUNK_LEVEL + extra_levels
-    )
+    split = convert(monkeypatch, ds, cell, processing_level=CHUNK_LEVEL + extra_levels)
     assert split.units_per_chunk == 4**extra_levels
     a, b = arrays(reference), arrays(split)
     np.testing.assert_array_equal(a["cell_ids"], b["cell_ids"])
@@ -187,9 +188,7 @@ def test_no_buffer_differs_only_near_processing_cell_edges(monkeypatch, cell):
     ids = reference["cell_ids"]
     unit = ids >> (2 * (LEVEL - level))
     neighbours = healpix_geo.nested.kth_neighbourhood(ids, LEVEL, ring=2)
-    near_edge = (
-        (neighbours >> (2 * (LEVEL - level))) != unit[:, None]
-    ).any(axis=1)
+    near_edge = ((neighbours >> (2 * (LEVEL - level))) != unit[:, None]).any(axis=1)
     assert diff[~near_edge].max() < 1e-5
     assert diff[near_edge].max() > 1e-4
 
@@ -227,7 +226,10 @@ def test_selection_of_a_processing_cell_is_buffered_around_it(monkeypatch, ds, c
         cell,
         make_settings(processing_level=CHUNK_LEVEL + 2, buffer=5_000),
     )
-    chunk =make_converter(monkeypatch, ds, cell, make_settings(buffer=0))
+    # a chunk with the same buffer: a processing cell (5 km buffer, ring level 9,
+    # finer than the processing level) selects less than the whole chunk. With a
+    # wide buffer this does not hold (see the ring cases below)
+    chunk = make_converter(monkeypatch, ds, cell, make_settings(buffer=5_000))
     unit_cell_id, _ = narrow.unit_cell_ids(0, 5)
     n_unit = narrow.query_input_points(unit_cell_id).sizes["points"]
     n_buffered = wide.query_input_points(unit_cell_id).sizes["points"]
@@ -319,9 +321,7 @@ class SynchronousClient:
 
 
 def test_map_processing_cells_writes_the_same_chunk(monkeypatch, ds, cell):
-    reference = arrays(
-        convert(monkeypatch, ds, cell, processing_level=CHUNK_LEVEL + 1)
-    )
+    reference = arrays(convert(monkeypatch, ds, cell, processing_level=CHUNK_LEVEL + 1))
     converter = make_converter(
         monkeypatch, ds, cell, make_settings(processing_level=CHUNK_LEVEL + 1)
     )
@@ -363,17 +363,36 @@ def test_distributed_client(monkeypatch, cell):
     np.testing.assert_array_equal(out["field"], reference["field"])
 
 
-# (processing level, buffer in metres): the ring level is finer than, equal to
-# and coarser than the processing level (the last two are buffers wider than a
-# processing cell: ~ 56 km at level 7, ~ 14 km at level 9)
-RING_CASES = [(9, 1_000), (9, 9_000), (9, 20_000), (9, WIDE_BUFFER), (8, 120_000)]
+# (processing level, buffer in metres, ring level relative to the processing
+# level). The ring level is finer than, equal to and coarser than the processing
+# level; the last four are buffers wider than a processing cell (~ 14 km at
+# level 9, ~ 28 km at level 8)
+FINER, EQUAL, COARSER = "finer", "equal", "coarser"
+RING_CASES = [
+    (9, 1_000, FINER),
+    (9, 6_000, EQUAL),
+    (9, 9_000, COARSER),
+    (9, 20_000, COARSER),
+    (9, WIDE_BUFFER, COARSER),
+    (8, 120_000, COARSER),
+]
 
 
-@pytest.mark.parametrize("unit_level, buffer", RING_CASES)
-def test_wide_buffer_selects_every_point_within_it(monkeypatch, cell, unit_level, buffer):
+def ring_relation(buffer, unit_level):
+    ring_level = utils.chunk_buffer_ring_level(buffer)
+    if ring_level > unit_level:
+        return FINER
+    return EQUAL if ring_level == unit_level else COARSER
+
+
+@pytest.mark.parametrize("unit_level, buffer, relation", RING_CASES)
+def test_wide_buffer_selects_every_point_within_it(
+    monkeypatch, cell, unit_level, buffer, relation
+):
     """Every input point within the buffer of a processing cell is selected, also
     when the buffer is wider than the cell (the ring is then made of cells coarser
     than the cell)."""
+    assert ring_relation(buffer, unit_level) == relation
     ds = make_input(cell, rectilinear=False)
     converter = make_converter(
         monkeypatch,
@@ -404,10 +423,14 @@ def test_wide_buffer_selects_every_point_within_it(monkeypatch, cell, unit_level
         # 0.95: the edge is sampled, the distance to it is slightly overestimated
         expected = inside | (dist <= 0.95 * buffer)
 
-        selected = converter._query_chunk_input_points_latlon_curvilinear(unit_id)
+        selected = converter._query_chunk_input_points_latlon_curvilinear(
+            np.uint64(unit_id)
+        )
         got = np.zeros(lon.shape, dtype=bool)
         if selected is not None:
-            keys = set(zip(selected["lon"].values.tolist(), selected["lat"].values.tolist()))
+            keys = set(
+                zip(selected["lon"].values.tolist(), selected["lat"].values.tolist())
+            )
             got = np.array([(x, y) in keys for x, y in zip(lon.tolist(), lat.tolist())])
         assert expected.any()
         assert got[expected].all(), (
@@ -415,6 +438,39 @@ def test_wide_buffer_selects_every_point_within_it(monkeypatch, cell, unit_level
             f"of the processing cell {unit_id} are not selected (level {unit_level}, "
             f"ring level {ring_level})"
         )
+
+
+@pytest.mark.parametrize("unit_level, buffer, relation", RING_CASES)
+def test_warning_if_the_buffer_ring_is_coarser_than_the_processing_cells(
+    monkeypatch, cell, unit_level, buffer, relation
+):
+    """One warning when the converter is created, not one per task."""
+    assert ring_relation(buffer, unit_level) == relation
+    ds = make_input(cell, rectilinear=False)
+    with structlog.testing.capture_logs() as logs:
+        converter = make_converter(
+            monkeypatch,
+            ds,
+            cell,
+            make_settings(processing_level=unit_level, buffer=buffer),
+        )
+        for unit_index in range(2):
+            unit_cell_id, _ = converter.unit_cell_ids(0, unit_index)
+            converter.query_input_points(unit_cell_id)
+    warnings = [log for log in logs if log["log_level"] == "warning"]
+    assert len(warnings) == (1 if relation == COARSER else 0)
+    if warnings:
+        assert "coarser than the processing cells" in warnings[0]["event"]
+
+
+def test_no_warning_without_processing_level_or_without_buffer(monkeypatch, cell):
+    ds = make_input(cell, rectilinear=False)
+    with structlog.testing.capture_logs() as logs:
+        make_converter(monkeypatch, ds, cell, make_settings(buffer=WIDE_BUFFER))
+        make_converter(
+            monkeypatch, ds, cell, make_settings(processing_level=9, buffer=0)
+        )
+    assert not [log for log in logs if log["log_level"] == "warning"]
 
 
 def test_second_chunk_lands_in_the_second_slice(monkeypatch, ds, cell):

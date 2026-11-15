@@ -816,9 +816,29 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
                 f"processing cells at level {self.unit_level}: "
                 f"{self.units_per_chunk} per chunk, resampled one at a time"
             )
+            self._warn_if_buffer_ring_is_coarser_than_processing_cells()
 
         # cache for querying input lat-lon points inside an healpix chunk cell
         self._input_chunk_cell_ids = []
+
+    def _warn_if_buffer_ring_is_coarser_than_processing_cells(self):
+        """Warn once (when the converter is created) that a finer processing
+        level does not reduce the input of a task if the buffer is wide."""
+        if self.spatial_info.is_projected or self.spatial_info.is_rectilinear:
+            return
+        if self.chunk_buffer <= 0:
+            return
+        ring_level = utils.chunk_buffer_ring_level(self.chunk_buffer)
+        if ring_level < self.unit_level:
+            log.warning(
+                f"the buffer ring (level {ring_level}) is coarser than the "
+                f"processing cells (level {self.unit_level}): the input of a task "
+                f"covers the ring around the parent cell of the processing cell, "
+                f"so a finer processing_level does not reduce it (only the output "
+                f"of the task)",
+                group=str(self.group_path),
+                chunk_buffer_width=self.chunk_buffer,
+            )
 
     @property
     def unit_level(self) -> int:
@@ -884,20 +904,25 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
 
         Assumes 2-dimensional longitude and latitude coordinates present in the datasets.
 
+        ``chunk_cell_id`` is a chunk cell, or a processing cell (at
+        ``unit_level``) with the ``processing_level`` setting.
+
         Only input points located within the HEALPix chunk cell are selected. If
         the chunk buffer is non zero, the selection of input points also include
         an outer ring of HEALPix cells around the the chunk at a level determined
         from the buffer width (see ``utils.chunk_buffer_ring_level``): the ring is
         at least as wide as the buffer, everywhere on the sphere (the selected
         region is up to about three times wider than the buffer, and the number
-        of selected input points grows accordingly).
+        of selected input points grows accordingly). If the ring level is coarser
+        than the level of the cell (a buffer wider than a processing cell), the
+        ring is taken around the parent of the cell, so the selection no longer
+        shrinks with a finer ``processing_level``.
 
         """
         # TODO: the selection scans the whole input once for each processing
         # cell (and computes the ring cell ids again each time), so its cost
         # grows with the number of processing cells; cache the ring cell ids
-        # per converter, or sort the input once by cell id (after the selection
-        # code is settled, see the changes of the buffer ring)
+        # per converter, or sort the input once by cell id
         lon_name, lat_name = self.spatial_info.spatial_coordinates
         ds0 = self.datasets[0]
         rdim, cdim = ds0[lon_name].dims
