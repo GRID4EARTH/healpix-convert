@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import structlog
 
 from healpix_convert.core.healpix_conventions import (
     CFHealpixGridMapping,
@@ -30,6 +31,8 @@ from healpix_convert.settings.conventions import CFConventionSelector
 if TYPE_CHECKING:
     import xarray as xr
     import zarr
+
+log = structlog.get_logger()
 
 #: Name of the CF grid mapping variable written in each HEALPix group.
 CF_GRID_MAPPING_VARIABLE = "crs"
@@ -152,8 +155,17 @@ def write_carried_root_attributes(
             if name not in datatree.attrs:
                 continue
             stac = datatree.attrs.get("stac_discovery")
-            has_id = isinstance(stac, Mapping) and "id" in stac
-            key = str(stac["id"]) if has_id else str(path)
+            item_id = stac.get("id") if isinstance(stac, Mapping) else None
+            key = str(path) if item_id is None else str(item_id)
+            if key in carried:
+                # two inputs with the same id: never overwrite one with the other
+                log.warning(
+                    "root attribute: duplicate input id, keyed by path instead",
+                    attribute=name,
+                    id=key,
+                    path=str(path),
+                )
+                key = str(path)
             carried[key] = _to_json_value(datatree.attrs[name])
         if carried:
             group.attrs[name] = carried

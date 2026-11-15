@@ -902,11 +902,13 @@ class MetadataSettings(BaseModel):
     description and processing history a data provider writes there.
 
     Each attribute is written under its own name as a mapping from the id of each
-    input dataset (the ``id`` of its STAC item, its path if it has none) to the
+    input dataset (the ``id`` of its STAC item, its path if it has none or if that id is already
+    taken by another input) to the
     attribute of that input, whatever the number of inputs, so that the layout
     does not depend on how many input datasets feed an output. An input without
     the attribute is left out of the mapping; if no input has it, nothing is
-    written. ``stac_discovery`` is written by the conversion and cannot be listed.
+    written. ``stac_discovery``, ``Conventions`` and ``zarr_conventions`` are
+    written by the conversion and cannot be listed.
     """
 
     consolidate: ConsolidateMetadataSettings = Field(
@@ -920,12 +922,14 @@ class MetadataSettings(BaseModel):
     @field_validator("root_attributes")
     @classmethod
     def validate_root_attributes(cls, value: list[str]) -> list[str]:
-        reserved = {"stac_discovery", "Conventions"}
+        reserved = {"stac_discovery", "Conventions", "zarr_conventions"}
         clash = sorted(reserved & set(value))
         if clash:
             raise ValueError(
                 f"root_attributes: {clash} are written by the conversion itself"
             )
+        if "" in value:
+            raise ValueError("root_attributes: empty name")
         duplicates = sorted({name for name in value if value.count(name) > 1})
         if duplicates:
             raise ValueError(f"root_attributes: duplicate name(s) {duplicates}")
