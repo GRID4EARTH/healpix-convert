@@ -94,7 +94,7 @@ def make_input(cell, rectilinear=True):
     )
 
 
-def make_converter(monkeypatch, ds, cell, settings):
+def make_converter(monkeypatch, ds, cell, settings, store=None):
     cache = ConvertStagingCache(
         input_datatrees={"0": xr.DataTree.from_dict({str(PATH): ds})},
         input_spatial_groups={
@@ -113,7 +113,7 @@ def make_converter(monkeypatch, ds, cell, settings):
         PATH,
         cache=cache,
         settings=settings,
-        output_store=zarr.storage.MemoryStore(),
+        output_store=zarr.storage.MemoryStore() if store is None else store,
     )
 
 
@@ -340,21 +340,32 @@ def test_map_processing_cells_writes_the_same_chunk(monkeypatch, ds, cell):
     np.testing.assert_array_equal(out["field"], reference["field"])
 
 
-def test_distributed_client(monkeypatch, cell):
+def test_distributed_client(monkeypatch, cell, tmp_path):
     distributed = pytest.importorskip("distributed")
+    # no HTTP server (it binds a port), in-process transport
+    monkeypatch.setattr(
+        "distributed.node.ServerNode.start_http_server", lambda *args, **kw: None
+    )
     try:
         cluster = distributed.LocalCluster(
             n_workers=1,
             threads_per_worker=2,
             processes=False,
+            protocol="inproc://",
             dashboard_address=None,
         )
     except (OSError, RuntimeError) as exc:  # e.g. local ports cannot be bound
         pytest.skip(f"cannot start a local dask cluster: {exc}")
     ds = make_input(cell)
     reference = arrays(convert(monkeypatch, ds, cell, processing_level=CHUNK_LEVEL + 1))
+    # the tasks run on a copy of the converter (it is pickled with the task): the
+    # output must be a store shared by copies, not a MemoryStore
     converter = make_converter(
-        monkeypatch, ds, cell, make_settings(processing_level=CHUNK_LEVEL + 1)
+        monkeypatch,
+        ds,
+        cell,
+        make_settings(processing_level=CHUNK_LEVEL + 1),
+        store=zarr.storage.LocalStore(tmp_path / "out.zarr"),
     )
     with cluster, distributed.Client(cluster) as client:
         client.gather(_map_processing_cells(client, converter, [0], 4, {}))
