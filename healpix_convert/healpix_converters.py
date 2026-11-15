@@ -820,16 +820,6 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         # cache for querying input lat-lon points inside an healpix chunk cell
         self._input_chunk_cell_ids = []
 
-        # fail before any task is submitted: the curvilinear selection cannot
-        # use a buffer ring wider than a processing cell
-        if (
-            self.units_per_chunk > 1
-            and self.chunk_buffer > 0
-            and not self.spatial_info.is_projected
-            and not self.spatial_info.is_rectilinear
-        ):
-            self._check_ring_level()
-
     @property
     def unit_level(self) -> int:
         """Refinement level of the processing cells: the cells whose input
@@ -887,20 +877,6 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
     @abstractmethod
     def chunk_buffer(self) -> int | float: ...
 
-    def _check_ring_level(self) -> int:
-        """Level of the ring of cells around a processing cell (curvilinear
-        selection), from the buffer width. Raises if that ring would be made of
-        cells larger than the processing cell."""
-        ring_level = utils.resolution_to_level(self.chunk_buffer, round_type="ceil")
-        if ring_level < self.unit_level and self.units_per_chunk > 1:
-            raise ValueError(
-                f"chunk_buffer_width ({self.chunk_buffer} m) is too wide for "
-                f"processing cells of level {self.unit_level} (the buffer ring "
-                f"would be of level {ring_level}): use a coarser "
-                "processing_level or a narrower buffer"
-            )
-        return ring_level
-
     def _query_chunk_input_points_latlon_curvilinear(
         self, chunk_cell_id: int
     ) -> xr.Dataset | None:
@@ -927,7 +903,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         rdim, cdim = ds0[lon_name].dims
 
         if self.chunk_buffer > 0:
-            ring_level = self._check_ring_level()
+            ring_level = utils.chunk_buffer_ring_level(self.chunk_buffer)
             input_ring_cell_ids = self._compute_input_chunk_cell_ids(level=ring_level)
             selection_cell_ids = utils.chunk_selection_cell_ids(
                 chunk_cell_id, self.unit_level, ring_level

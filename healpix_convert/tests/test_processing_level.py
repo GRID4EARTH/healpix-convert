@@ -8,6 +8,7 @@ import dask.array as da
 import healpix_geo
 import numpy as np
 import pydantic
+import pyproj
 import pytest
 import xarray as xr
 import zarr
@@ -224,9 +225,9 @@ def test_selection_of_a_processing_cell_is_buffered_around_it(monkeypatch, ds, c
         monkeypatch,
         ds,
         cell,
-        make_settings(processing_level=CHUNK_LEVEL + 2, buffer=50_000),
+        make_settings(processing_level=CHUNK_LEVEL + 2, buffer=5_000),
     )
-    chunk = make_converter(monkeypatch, ds, cell, make_settings(buffer=0))
+    chunk =make_converter(monkeypatch, ds, cell, make_settings(buffer=0))
     unit_cell_id, _ = narrow.unit_cell_ids(0, 5)
     n_unit = narrow.query_input_points(unit_cell_id).sizes["points"]
     n_buffered = wide.query_input_points(unit_cell_id).sizes["points"]
@@ -362,46 +363,58 @@ def test_distributed_client(monkeypatch, cell):
     np.testing.assert_array_equal(out["field"], reference["field"])
 
 
-def test_buffer_wider_than_a_processing_cell_is_rejected_early(monkeypatch, cell):
-    # curvilinear selection: the ring is made of cells of the level of the buffer
+# (processing level, buffer in metres): the ring level is finer than, equal to
+# and coarser than the processing level (the last two are buffers wider than a
+# processing cell: ~ 56 km at level 7, ~ 14 km at level 9)
+RING_CASES = [(9, 1_000), (9, 9_000), (9, 20_000), (9, WIDE_BUFFER), (8, 120_000)]
+
+
+@pytest.mark.parametrize("unit_level, buffer", RING_CASES)
+def test_wide_buffer_selects_every_point_within_it(monkeypatch, cell, unit_level, buffer):
+    """Every input point within the buffer of a processing cell is selected, also
+    when the buffer is wider than the cell (the ring is then made of cells coarser
+    than the cell)."""
     ds = make_input(cell, rectilinear=False)
-    settings = make_settings(processing_level=CHUNK_LEVEL + 4, buffer=WIDE_BUFFER)
-    # raised when the converter is created, before any task is submitted
-    with pytest.raises(ValueError, match="too wide for processing cells"):
-        make_converter(monkeypatch, ds, cell, settings)
-    # a narrower buffer, or one processing cell per chunk, is fine
-    make_converter(
+    converter = make_converter(
         monkeypatch,
         ds,
         cell,
-        make_settings(processing_level=CHUNK_LEVEL + 4, buffer=1_000),
+        make_settings(processing_level=unit_level, buffer=buffer),
     )
-    make_converter(monkeypatch, ds, cell, make_settings(buffer=WIDE_BUFFER))
-    # rectilinear input does not use the ring
-    make_converter(
-        monkeypatch,
-        make_input(cell, rectilinear=True),
-        cell,
-        make_settings(processing_level=CHUNK_LEVEL + 4, buffer=WIDE_BUFFER),
-    )
+    lon = ds["lon"].values.ravel()
+    lat = ds["lat"].values.ravel()
+    geod = pyproj.Geod(ellps="WGS84")
+    ring_level = utils.chunk_buffer_ring_level(buffer)
+    # the processing cells of the chunk, one inside and one at the edge
+    first = int(cell) * 4 ** (unit_level - CHUNK_LEVEL)
+    for unit_id in (first, first + 4 ** (unit_level - CHUNK_LEVEL) - 1):
+        vlon, vlat = healpix_geo.nested.vertices(
+            np.array([unit_id], dtype=np.uint64), unit_level, "WGS84", step=8
+        )
+        vlon, vlat = vlon.ravel(), vlat.ravel()
+        inside = (
+            healpix_geo.nested.lonlat_to_healpix(lon, lat, unit_level, "WGS84")
+            == unit_id
+        )
+        # distance of every input point to the nearest sampled edge point
+        dist = np.full(lon.shape, np.inf)
+        for x, y in zip(vlon, vlat):
+            _, _, d = geod.inv(np.full(lon.shape, x), np.full(lon.shape, y), lon, lat)
+            dist = np.minimum(dist, d)
+        # 0.95: the edge is sampled, the distance to it is slightly overestimated
+        expected = inside | (dist <= 0.95 * buffer)
 
-
-def test_ring_level_boundary(monkeypatch, cell):
-    ds = make_input(cell, rectilinear=False)
-    unit_level = CHUNK_LEVEL + 4
-    converter = make_converter(
-        monkeypatch, ds, cell, make_settings(processing_level=unit_level, buffer=1_000)
-    )
-    # the ring level equal to the processing level must not raise
-    def width(level):
-        # a buffer that gives this ring level (ceil of the level of the width)
-        return 1.01 * utils.EARTH_RADIUS_M * np.sqrt(np.pi / 3.0) / 2**level
-
-    converter.settings.chunk.chunk_buffer_width = width(unit_level)
-    assert converter._check_ring_level() == unit_level
-    converter.settings.chunk.chunk_buffer_width = width(unit_level - 1)
-    with pytest.raises(ValueError, match="too wide for processing cells"):
-        converter._check_ring_level()
+        selected = converter._query_chunk_input_points_latlon_curvilinear(unit_id)
+        got = np.zeros(lon.shape, dtype=bool)
+        if selected is not None:
+            keys = set(zip(selected["lon"].values.tolist(), selected["lat"].values.tolist()))
+            got = np.array([(x, y) in keys for x, y in zip(lon.tolist(), lat.tolist())])
+        assert expected.any()
+        assert got[expected].all(), (
+            f"{(expected & ~got).sum()} of {expected.sum()} points within {buffer} m "
+            f"of the processing cell {unit_id} are not selected (level {unit_level}, "
+            f"ring level {ring_level})"
+        )
 
 
 def test_second_chunk_lands_in_the_second_slice(monkeypatch, ds, cell):

@@ -140,13 +140,11 @@ the processing cells of a chunk are resampled one after the other.
   (2-D coordinates) selection the whole input is scanned once for each
   processing cell, so the selection cost grows with the number of processing
   cells (and with the size of the input).
-- For the curvilinear (2-D coordinates) selection, the buffer is applied as a
-  ring of HEALPix cells whose level follows from `chunk_buffer_width`; if that
-  level is coarser than `processing_level` (a buffer of about twice the width of
-  a processing cell or more) the conversion raises a `ValueError` before any
-  task is submitted (when the converter of the group is created, once the input
-  is known to be curvilinear): use a coarser `processing_level` or a narrower
-  buffer.
+- For the curvilinear (2-D coordinates) selection, the buffer is applied around
+  each processing cell as a one-cell ring of HEALPix cells, as for a chunk; a
+  buffer wider than a processing cell is handled (the ring is then made of cells
+  coarser than the processing cell, and the input selected for a processing
+  cell grows accordingly).
 - Only with `"healpix_cell_dense"`. A `processing_level` coarser than the chunk
   level, finer than the output level, or more than 4 levels finer than the
   chunk level (more than 256 processing cells per chunk) is rejected when the
