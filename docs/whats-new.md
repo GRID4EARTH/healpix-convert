@@ -24,13 +24,12 @@
   (finer) level, each resampled on its own (one dask task each with a
   distributed client), and the chunk is written once from their values. A
   resampling task then holds the resampler of a processing cell instead of
-  that of the whole chunk, which lowers the peak memory (in one synthetic
-  measurement, 16 processing cells per chunk halved the peak memory of the
-  process), at the price of a longer conversion. It is for memory only: with a buffer of several kernel
-  widths the values are the same as without it, to the accuracy of the solver,
-  and with a small buffer they differ slightly near the edges of the
-  processing cells, as they do near the edges of a chunk. Without the setting
-  nothing changes.
+  that of the whole chunk, which lowers its memory, at the price of a longer
+  conversion (the memory saving has not been measured for this entry). It is
+  for memory only, not a way to change the values: the values near the edges
+  of the processing cells depend on the buffer around them, and agree with
+  those without the setting only if `chunk_buffer_width` is wide, to the
+  accuracy of the solver. Without the setting nothing changes.
 
 ## v2026.11.0 (2026-11-09)
 

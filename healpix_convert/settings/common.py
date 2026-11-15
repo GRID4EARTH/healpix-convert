@@ -273,15 +273,17 @@ class HealpixDenseChunkSettings(HealpixUniformChunkSettings):
     its size sets the memory of one resampling task (e.g. the sparse matrix of
     the ``psf`` resampler), instead of the size of the whole chunk.
 
-    It is for memory only. The resampled values of the processing cells of a
-    chunk are kept until all are done, then put together in nested order, and
-    the chunk (a whole shard, with ``chunk_level_offset``) is written once by
-    one task (Zarr cannot write a shard in parts from several tasks). The
-    output has the same cells, layout and data type as without the setting. Its
-    values are the same, to the accuracy of the (iterative) solver, if
-    ``chunk_buffer_width`` is several times the width of the resampling kernel;
-    with a smaller buffer the values near the edges of a processing cell differ
-    slightly, as they do near the edges of a chunk.
+    It is for memory only, not a way to change the values. The resampled values
+    of the processing cells of a chunk are kept until all are done, then put
+    together in nested order, and the chunk (a whole shard, with
+    ``chunk_level_offset``) is written once by one task (Zarr cannot write a
+    shard in parts from several tasks). The output has the same cells, layout
+    and data type as without the setting. Its values depend on the processing
+    cell: near its edge a kernel resampler sees only the input inside the cell
+    and its buffer, as it does near the edge of a chunk. They agree with the
+    values without the setting only if ``chunk_buffer_width`` is wide (several
+    times the width of the resampling kernel), and then to the accuracy of the
+    (iterative) solver.
 
     If None (default), the processing cells are the chunk cells (nothing
     changes). Must not be coarser than the chunk level (``healpix`` of the

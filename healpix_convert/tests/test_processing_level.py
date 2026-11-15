@@ -361,5 +361,5 @@ def test_buffer_wider_than_a_processing_cell_is_rejected(monkeypatch, cell):
         cell,
         make_settings(processing_level=CHUNK_LEVEL + 4, buffer=WIDE_BUFFER),
     )
-    with pytest.raises(ValueError, match="wider than a processing cell"):
+    with pytest.raises(ValueError, match="too wide for processing cells"):
         converter.convert(0)

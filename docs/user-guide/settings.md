@@ -119,19 +119,28 @@ processing cells of a chunk are resampled one after the other.
 }
 ```
 
-- It is for memory only. The output has the same cells, layout, data type and
-  fill value as without it. With a `chunk_buffer_width` of several kernel
-  widths the values are the same, to the accuracy of the (iterative) solver. With
-  a small buffer the values near the edges of a processing cell differ
-  slightly, as they already do near the edges of a chunk.
+- It is for memory only, not a way to change the values. The output has the
+  same cells, layout, data type and fill value as without it, but its values
+  depend on the processing unit: each processing cell is resampled from the
+  input points inside it and inside the buffer around it, so near the edge of a
+  processing cell a kernel resampler (e.g. `"psf"`) sees less input than in a
+  single solve, as it does near the edge of a chunk. The values agree with a
+  single solve only if `chunk_buffer_width` is wide (several kernel widths),
+  and then only to the accuracy of the (iterative) solver. The tests check this
+  for one synthetic smooth field (a buffer of about 8 kernel widths, agreement
+  to a relative 1e-3), and check that values near the processing cell edges do
+  differ without a buffer. Compare a converted cell with and without the
+  setting before relying on it.
 - The resampled values of all the processing cells of a chunk are held until
   the chunk is written, so the saving is on the resampler (the sparse matrix
   and its solve), not on the output values of the chunk. A smaller processing
   cell means more tasks, and more input points selected twice (the buffer
   around each cell), so the conversion is somewhat slower.
-- For the curvilinear (2-D coordinates) selection, `chunk_buffer_width` must
-  be narrower than a processing cell; the conversion raises a `ValueError` if
-  it is not.
+- For the curvilinear (2-D coordinates) selection, the buffer is applied as a
+  ring of HEALPix cells whose level follows from `chunk_buffer_width`; if that
+  level is coarser than `processing_level` (a buffer of about twice the width of
+  a processing cell or more) the conversion raises a `ValueError`: use a
+  coarser `processing_level` or a narrower buffer.
 - Only with `"healpix_cell_dense"`. A `processing_level` coarser than the chunk
   level or finer than the output level is rejected when the settings are
   read.

@@ -903,8 +903,9 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
                 # the ring of cells around a processing cell must be made of
                 # cells that are not larger than the processing cell
                 raise ValueError(
-                    f"chunk_buffer_width ({self.chunk_buffer} m) is wider than a "
-                    f"processing cell (level {self.unit_level}): use a coarser "
+                    f"chunk_buffer_width ({self.chunk_buffer} m) is too wide for "
+                    f"processing cells of level {self.unit_level} (the buffer ring "
+                    f"would be of level {ring_level}): use a coarser "
                     "processing_level or a narrower buffer"
                 )
             input_ring_cell_ids = self._compute_input_chunk_cell_ids(level=ring_level)
