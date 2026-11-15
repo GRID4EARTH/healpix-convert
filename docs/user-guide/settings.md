@@ -75,7 +75,16 @@ dimension:
   chunk, where $l$ is the output refinement level and $l_c$ the chunk level.
   `chunk_buffer_width` (default: 60) widens each chunk when selecting the
   input data to resample: in CRS units for projected coordinates, in metres
-  for longitude / latitude coordinates.
+  for longitude / latitude coordinates. For 2-D (curvilinear)
+  longitude / latitude coordinates the input points of the chunk are those inside
+  it and inside a one-cell ring of HEALPix cells around it, at the finest level
+  for which the ring is at least `chunk_buffer_width` wide everywhere on the
+  sphere: every input point within `chunk_buffer_width` metres of the chunk is
+  selected. The ring is up to about three times wider than requested, and the
+  input points per chunk grow accordingly: for a chunk of level 7, the selected
+  area is 1.13, 1.27 and 1.56 times the chunk for 900, 1500 and 3000 m
+  (1.06, 1.06 and 1.13 times before the ring was made at least as wide as the
+  buffer). With a buffer of zero only the points inside the chunk are selected.
 - `"healpix_cell_sparse"`: one chunk per HEALPix cell of a coarser level
   (`healpix`), holding only the cells that contain input data points (e.g.,
   with the `"cell-point"` resampler), up to `chunk_size` cells per chunk.
