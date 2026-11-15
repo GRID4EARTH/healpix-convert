@@ -14,6 +14,21 @@
   without them. Before, such a variable (e.g. a class map stored as unsigned
   bytes with fill value 0 and `scale_factor` 1) came out as floating point with
   NaN.
+- The input points that a chunk selects with `chunk_buffer_width` (2-D
+  curvilinear longitude / latitude coordinates) now include every point within
+  that distance of the chunk. The buffer is applied as a one-cell ring of
+  HEALPix cells, and its level was rounded to the finer level, so the ring was
+  narrower than the requested buffer, about half of it in the worst case (for
+  example 900 m and 1500 m both gave a ring of 796 m, 3000 m gave 1592 m). The
+  level is now the finest for which the ring is at least as wide as the buffer,
+  taking the smallest width of a HEALPix cell into account (0.65 of its nominal
+  resolution). When that level is coarser than the chunk level, the points in
+  the other cells of the parent of the chunk are now selected too (they were
+  not). The selected input of a chunk is larger (for a chunk of level 7 the
+  selected area is 1.13, 1.27 and 1.56 times the chunk for 900, 1500 and 3000 m,
+  against 1.06, 1.06 and 1.13 times before), so a conversion takes longer, and
+  the values of the output cells near the chunk edges change slightly, as the
+  resampler now sees the points it was missing.
 - A derived level of a pyramid (`derived_levels`) may be one of the coarser
   native levels of its multiscale group. Such a level is completed: the
   variables that its converted group does not hold (variables converted at a
