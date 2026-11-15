@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- New metadata setting `root_attributes`: names of root attributes of the input
+  datasets (e.g. the product description and the processing history a data
+  provider writes there) that are carried over to the root group of the output,
+  next to `stac_discovery`. Each one is written as a mapping from the id of each
+  input dataset to its value there, whatever the number of inputs. Before, only
+  `stac_discovery` was propagated and every other root attribute of the input was
+  lost. Without the setting nothing changes.
+- `nearest_variables` keeps the stored integer type of an integer variable whose
+  `scale_factor` / `add_offset` change nothing (1 and 0), as for a variable
+  without them. Before, such a variable (e.g. a class map stored as unsigned
+  bytes with fill value 0 and `scale_factor` 1) came out as floating point with
+  NaN.
 - The input points that a chunk selects with `chunk_buffer_width` (2-D
   curvilinear longitude / latitude coordinates) now include every point within
   that distance of the chunk. The buffer is applied as a one-cell ring of

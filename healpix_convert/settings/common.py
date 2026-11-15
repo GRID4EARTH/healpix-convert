@@ -499,11 +499,23 @@ class HealpixGroupSettings(BaseModel):
     pixel) or the acquisition time of each row ``["time_stamp"]``.
 
     They keep their data type (``output_dtype`` does not apply): integers stay
-    integers, with the fill value -1 (signed) or the largest value (unsigned)
-    where no input point is near (``NaN`` for floating types), and the values
+    integers, with their stored fill value, else -1 (signed) or the largest value
+    (unsigned), where no input point is near (``NaN`` for floating types), and the values
     are not rounded to float32 on the way. They are written at the converted
     level only: the derived levels of a pyramid do not aggregate them. It
     requires the ``healpix_cell_dense`` chunk method.
+    """
+
+    nearest_fill_values: dict[str, int | float] = Field(default_factory=dict)
+    """Fill value of some of the ``nearest_variables``, as ``{name: value}``
+    (names or regular expressions matched against the whole name), for inputs
+    whose declared fill value cannot be trusted.
+
+    For a listed variable the fill value declared by the input is not read as
+    "no data": the input values are kept as stored (a value equal to the
+    declared fill value stays a value), and the output fill value, the one
+    written in the output attributes and the value of the cells without input
+    point, is the given one. Without an entry the input's own fill value is used.
     """
 
     @field_validator("drop_variables", "nearest_variables")
@@ -618,6 +630,15 @@ class HealpixGroupSettings(BaseModel):
             raise ValueError(
                 "'nearest_variables' requires the 'healpix_cell_dense' chunk method, "
                 f"got {self.chunk.method!r}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_nearest_fill_values(self) -> HealpixGroupSettings:
+        unknown = sorted(set(self.nearest_fill_values) - set(self.nearest_variables))
+        if unknown:
+            raise ValueError(
+                f"nearest_fill_values: {unknown} are not listed in 'nearest_variables'"
             )
         return self
 
@@ -979,6 +1000,21 @@ class MetadataSettings(BaseModel):
     dataset (see :py:class:`~healpix_convert.settings.stac.STACSettings`).
     """
 
+    root_attributes: list[str] = Field(default_factory=list)
+    """Names of root attributes of the input datasets to carry over to the root
+    group of the output dataset (next to ``stac_discovery``), e.g. the product
+    description and processing history a data provider writes there.
+
+    Each attribute is written under its own name as a mapping from the id of each
+    input dataset (the ``id`` of its STAC item, its path if it has none or if that id is already
+    taken by another input) to the
+    attribute of that input, whatever the number of inputs, so that the layout
+    does not depend on how many input datasets feed an output. An input without
+    the attribute is left out of the mapping; if no input has it, nothing is
+    written. ``stac_discovery``, ``Conventions`` and ``zarr_conventions`` are
+    written by the conversion and cannot be listed.
+    """
+
     consolidate: ConsolidateMetadataSettings = Field(
         default_factory=ConsolidateMetadataSettings
     )
@@ -986,6 +1022,22 @@ class MetadataSettings(BaseModel):
     which of its groups it is written for (see
     :py:class:`ConsolidateMetadataSettings`).
     """
+
+    @field_validator("root_attributes")
+    @classmethod
+    def validate_root_attributes(cls, value: list[str]) -> list[str]:
+        reserved = {"stac_discovery", "Conventions", "zarr_conventions"}
+        clash = sorted(reserved & set(value))
+        if clash:
+            raise ValueError(
+                f"root_attributes: {clash} are written by the conversion itself"
+            )
+        if "" in value:
+            raise ValueError("root_attributes: empty name")
+        duplicates = sorted({name for name in value if value.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"root_attributes: duplicate name(s) {duplicates}")
+        return value
 
     @model_validator(mode="after")
     def validate_unique_conventions(self) -> MetadataSettings:
