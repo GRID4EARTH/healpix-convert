@@ -1,5 +1,20 @@
 # What's new
 
+## Unreleased
+
+- The input points that a chunk selects with `chunk_buffer_width` (longitude /
+  latitude coordinates) now include every point within that distance of the
+  chunk. The buffer is applied as a one-cell ring of HEALPix cells, and its level
+  was rounded to the finer level, so the ring was narrower than the requested
+  buffer, about half of it in the worst case (for example 900 m and 1500 m both
+  gave a ring of 796 m, 3000 m gave 1592 m). The level is now the finest for
+  which the ring is at least as wide as the buffer, taking the smallest width of
+  a HEALPix cell into account (0.65 of its nominal resolution). The selected
+  input of a chunk is larger (the time of a conversion with a kernel-based
+  resampler grows accordingly), and the values of the output cells near the
+  chunk edges change slightly, as the resampler now sees the points it was
+  missing, and depend less on the chunk level.
+
 ## v2026.11.0 (2026-11-09)
 
 - The ClimateDT converter now always resamples the native (spherical) HEALPix
