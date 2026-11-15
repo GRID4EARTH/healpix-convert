@@ -877,14 +877,11 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         if self.chunk_buffer > 0:
             ring_level = utils.chunk_buffer_ring_level(self.chunk_buffer)
             input_ring_cell_ids = self._compute_input_chunk_cell_ids(level=ring_level)
-        else:
-            ring_level = 0
-            input_ring_cell_ids = [np.array([], dtype=np.uint64)] * len(self.datasets)
-
-        if self.chunk_buffer > 0:
             selection_cell_ids = utils.chunk_selection_cell_ids(
                 chunk_cell_id, self.chunk_healpix.refinement_level, ring_level
             )
+        else:
+            input_ring_cell_ids = [np.array([], dtype=np.uint64)] * len(self.datasets)
 
         prepared_datasets = []
         for ds, cids, rids in zip(
