@@ -992,7 +992,9 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         the chunk buffer is non zero, the selection of input points also include
         an outer ring of HEALPix cells around the the chunk at a level determined
         from the buffer width (see ``utils.chunk_buffer_ring_level``): the ring is
-        at least as wide as the buffer, everywhere on the sphere.
+        at least as wide as the buffer, everywhere on the sphere (the selected
+        region is up to about three times wider than the buffer, and the number
+        of selected input points grows accordingly).
 
         """
         lon_name, lat_name = self.spatial_info.spatial_coordinates
@@ -1006,17 +1008,18 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
             ring_level = 0
             input_ring_cell_ids = [np.array([], dtype=np.uint64)] * len(self.datasets)
 
+        if self.chunk_buffer > 0:
+            selection_cell_ids = utils.chunk_selection_cell_ids(
+                chunk_cell_id, self.chunk_healpix.refinement_level, ring_level
+            )
+
         prepared_datasets = []
         for ds, cids, rids in zip(
             self.datasets, self.input_chunk_cell_ids, input_ring_cell_ids
         ):
             if self.chunk_buffer > 0:
-                ring_cell_ids = utils.chunk_ring_cell_ids(
-                    chunk_cell_id, self.chunk_healpix.refinement_level, ring_level
-                )
-
                 is_selected = np.logical_or(
-                    cids == chunk_cell_id, np.isin(rids, ring_cell_ids)
+                    cids == chunk_cell_id, np.isin(rids, selection_cell_ids)
                 )
             else:
                 # fastpath

@@ -1,5 +1,5 @@
-"""The one-cell ring that selects the input points within ``chunk_buffer_width``
-of a chunk is at least as wide as the buffer."""
+"""The cells that select the input points within ``chunk_buffer_width`` of a
+chunk cover everything within that distance of the chunk."""
 
 import healpix_geo
 import numpy as np
@@ -7,8 +7,6 @@ import pyproj
 import pytest
 
 from healpix_convert.core import utils
-
-CHUNK_LEVEL = 9
 
 # (name, lon, lat): a chunk cell at the equator, at mid latitude, near a pole,
 # and next to a corner of the base cells (lat = asin(2/3) and lon = 45 at the equator)
@@ -21,11 +19,22 @@ PLACES = [
     ("base-cell-corner-equator", 45.0, 0.0),
     ("base-cell-corner-south", 90.0, -41.8103),
 ]
-BUFFERS = [60.0, 900.0, 1500.0, 3000.0, 10_000.0]
 
 
 def nominal_resolution(level):
     return utils.EARTH_RADIUS_M * np.sqrt(np.pi / 3.0) / 2.0**level
+
+
+# (chunk level, buffer in metres). The ring level is finer than the chunk level
+# for the first ones, coarser for the 3 km buffer on a level 12 chunk and for the
+# 10 km and 20 km buffers on a level 9 chunk. The last ones are 0.72 times the
+# nominal resolution of a level: just above the width of the narrowest one-cell
+# rings (0.678 of it), so that a factor larger than 0.72 fails.
+CASES = (
+    [(9, buffer) for buffer in (60.0, 900.0, 1500.0, 3000.0)]
+    + [(12, 3000.0), (9, 10_000.0), (9, 20_000.0)]
+    + [(9, 0.72 * nominal_resolution(level)) for level in (10, 12, 13)]
+)
 
 
 @pytest.mark.parametrize(
@@ -36,22 +45,18 @@ def test_ring_level(buffer, level):
     assert utils.chunk_buffer_ring_level(buffer) == level
 
 
-@pytest.mark.parametrize("buffer", np.geomspace(1.0, 2.0e6, 60))
-def test_ring_level_is_the_finest_that_is_wide_enough(buffer):
-    level = utils.chunk_buffer_ring_level(buffer)
-
-    width = utils.RING_MIN_WIDTH_FACTOR * nominal_resolution(level)
-    assert width >= buffer
-    # a finer level would be narrower than the buffer
-    assert utils.RING_MIN_WIDTH_FACTOR * nominal_resolution(level + 1) < buffer
+@pytest.mark.parametrize("buffer", [5.0e6, 1.0e7, 1.0e8])
+def test_ring_level_of_a_very_large_buffer(buffer):
+    assert utils.chunk_buffer_ring_level(buffer) == 0
 
 
 @pytest.mark.parametrize("ellipsoid", ["sphere", "WGS84"])
-@pytest.mark.parametrize("buffer", BUFFERS)
+@pytest.mark.parametrize(
+    "chunk_level, buffer", CASES, ids=[f"l{c}-{b:.0f}m" for c, b in CASES]
+)
 @pytest.mark.parametrize("place", PLACES, ids=[p[0] for p in PLACES])
-def test_points_within_buffer_are_selected(place, buffer, ellipsoid):
-    """Every point within ``buffer`` metres of the chunk cell is in the chunk
-    cell or in its ring."""
+def test_points_within_buffer_are_selected(place, chunk_level, buffer, ellipsoid):
+    """Every point within ``buffer`` metres of the chunk cell is in a selected cell."""
     _, lon, lat = place
     if ellipsoid == "sphere":
         geod = pyproj.Geod(a=utils.EARTH_RADIUS_M, f=0.0)
@@ -59,21 +64,15 @@ def test_points_within_buffer_are_selected(place, buffer, ellipsoid):
         geod = pyproj.Geod(ellps="WGS84")
 
     (chunk_cell_id,) = healpix_geo.nested.lonlat_to_healpix(
-        np.array([lon]), np.array([lat]), CHUNK_LEVEL, ellipsoid
+        np.array([lon]), np.array([lat]), chunk_level, ellipsoid
     )
     ring_level = utils.chunk_buffer_ring_level(buffer)
-
-    selected = np.union1d(
-        healpix_geo.nested.zoom_to(
-            chunk_cell_id, depth=CHUNK_LEVEL, new_depth=ring_level
-        ).ravel(),
-        utils.chunk_ring_cell_ids(chunk_cell_id, CHUNK_LEVEL, ring_level),
-    )
+    selected = utils.chunk_selection_cell_ids(chunk_cell_id, chunk_level, ring_level)
 
     # points on the edges of the chunk cell, and points a bit less than the buffer
     # away from them, in all directions (these are within the buffer of the cell)
     vlon, vlat = healpix_geo.nested.vertices(
-        np.array([chunk_cell_id], dtype=np.uint64), CHUNK_LEVEL, ellipsoid, step=16
+        np.array([chunk_cell_id], dtype=np.uint64), chunk_level, ellipsoid, step=16
     )
     azimuths = np.arange(0.0, 360.0, 11.25)
     plon = np.repeat(vlon.ravel(), len(azimuths))
@@ -86,5 +85,21 @@ def test_points_within_buffer_are_selected(place, buffer, ellipsoid):
 
     assert not missing.any(), (
         f"{missing.sum()} of {missing.size} points within {buffer} m of the chunk "
-        f"are outside its ring (ring level {ring_level})"
+        f"are not selected (chunk level {chunk_level}, ring level {ring_level})"
     )
+
+
+@pytest.mark.parametrize("chunk_level, ring_level", [(9, 7), (9, 9), (9, 11), (3, 0)])
+def test_selection_covers_the_chunk(chunk_level, ring_level):
+    """The selected cells include the chunk (its parent when the ring level is
+    coarser than the chunk level, with the siblings of the chunk)."""
+    (chunk_cell_id,) = healpix_geo.nested.lonlat_to_healpix(
+        np.array([10.0]), np.array([20.0]), chunk_level, "sphere"
+    )
+    selected = utils.chunk_selection_cell_ids(chunk_cell_id, chunk_level, ring_level)
+    chunk_zoomed = healpix_geo.nested.zoom_to(
+        chunk_cell_id, depth=chunk_level, new_depth=ring_level
+    ).ravel()
+
+    assert np.isin(chunk_zoomed, selected).all()
+    assert len(selected) == len(np.unique(selected))

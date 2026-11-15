@@ -588,43 +588,49 @@ def resolution_to_level(
 
 # Smallest width of a one-cell ring of HEALPix cells, in units of the nominal
 # resolution ``EARTH_RADIUS_M * sqrt(pi / 3) / 2**level`` (the square root of the
-# mean cell area). Measured over the cells of the levels 3 to 10 (sphere and
-# WGS84 cells): the outer edge of the ring is never closer than 0.678 of the
-# nominal resolution to the cell it surrounds (the minimum is at cells next to
-# the corners of the base cells; the median is 0.99). 0.65 leaves a margin of
+# mean cell area). Measured on the sphere and on the WGS84 ellipsoid by sampling
+# the edges of the cell, going outwards in 24 directions and taking the first
+# point outside the one-cell ring: the minimum is at the cells next to the
+# corners of the base cells, and it decreases slowly with the level towards a
+# limit of 0.678 (0.74 at level 1, 0.70 at level 3, 0.68 at level 7 and above;
+# the median is 0.99). 0.65 is valid for every level and leaves a margin of
 # about 4 %.
 RING_MIN_WIDTH_FACTOR = 0.65
 
 
 def chunk_buffer_ring_level(buffer: int | float) -> int:
     """Level of the one-cell ring that selects the input points within ``buffer``
-    metres of a chunk.
+    metres of a chunk (``buffer`` must be greater than zero).
 
     A one-cell ring at level ``l`` is at least ``RING_MIN_WIDTH_FACTOR`` times
     the nominal resolution of the level wide, so the level is the finest one for
     which that width is not smaller than ``buffer``: the ring is then never
-    narrower than the buffer (and at most about three times wider).
+    narrower than the buffer, and its nominal width is at most about three times
+    the buffer. The level is never negative.
     """
-    return resolution_to_level(buffer / RING_MIN_WIDTH_FACTOR, round_type="floor")
+    level = resolution_to_level(buffer / RING_MIN_WIDTH_FACTOR, round_type="floor")
+    return max(0, level)
 
 
-def chunk_ring_cell_ids(
+def chunk_selection_cell_ids(
     chunk_cell_id: int, chunk_level: int, ring_level: int
 ) -> np.ndarray:
-    """Cells of level ``ring_level`` of the one-cell ring around a chunk (the
-    chunk cell itself excluded), as sorted unique ids."""
+    """Cells of level ``ring_level`` that cover a chunk and the one-cell ring
+    around it, as sorted unique ids.
+
+    The cells of the chunk are included, also when ``ring_level`` is coarser than
+    ``chunk_level``: then they are the parent of the chunk at ``ring_level`` and
+    the parent covers the siblings of the chunk, next to it.
+    """
     chunk_zoomed = healpix_geo.nested.zoom_to(
         chunk_cell_id, depth=chunk_level, new_depth=ring_level
     ).ravel()
 
+    # TODO: far from optimal (a function in healpix_geo for getting the ring would be better)
     chunk_with_ring = healpix_geo.nested.kth_neighbourhood(
         chunk_zoomed, ring_level, ring=1
     )
-    chunk_with_ring = np.unique(chunk_with_ring)
-
-    start_id = np.searchsorted(chunk_with_ring, chunk_zoomed[0], side="left")
-    stop_id = np.searchsorted(chunk_with_ring, chunk_zoomed[-1], side="right")
-    return np.delete(chunk_with_ring, slice(start_id, stop_id))
+    return np.unique(chunk_with_ring)
 
 
 _T = TypeVar("_T")
