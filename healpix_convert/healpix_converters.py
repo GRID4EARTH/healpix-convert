@@ -991,7 +991,8 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         Only input points located within the HEALPix chunk cell are selected. If
         the chunk buffer is non zero, the selection of input points also include
         an outer ring of HEALPix cells around the the chunk at a level determined
-        from the buffer width.
+        from the buffer width (see ``utils.chunk_buffer_ring_level``): the ring is
+        at least as wide as the buffer, everywhere on the sphere.
 
         """
         lon_name, lat_name = self.spatial_info.spatial_coordinates
@@ -999,7 +1000,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         rdim, cdim = ds0[lon_name].dims
 
         if self.chunk_buffer > 0:
-            ring_level = utils.resolution_to_level(self.chunk_buffer, round_type="ceil")
+            ring_level = utils.chunk_buffer_ring_level(self.chunk_buffer)
             input_ring_cell_ids = self._compute_input_chunk_cell_ids(level=ring_level)
         else:
             ring_level = 0
@@ -1010,25 +1011,9 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
             self.datasets, self.input_chunk_cell_ids, input_ring_cell_ids
         ):
             if self.chunk_buffer > 0:
-                # TODO: far from optimal (a function in healpix_geo for getting the ring would be better)
-                chunk_zoomed = healpix_geo.nested.zoom_to(
-                    chunk_cell_id,
-                    depth=self.chunk_healpix.refinement_level,
-                    new_depth=ring_level,
-                ).ravel()
-
-                chunk_with_ring = healpix_geo.nested.kth_neighbourhood(
-                    chunk_zoomed, ring_level, ring=1
+                ring_cell_ids = utils.chunk_ring_cell_ids(
+                    chunk_cell_id, self.chunk_healpix.refinement_level, ring_level
                 )
-                chunk_with_ring = np.unique(chunk_with_ring)
-
-                start_id = np.searchsorted(
-                    chunk_with_ring, chunk_zoomed[0], side="left"
-                )
-                stop_id = np.searchsorted(
-                    chunk_with_ring, chunk_zoomed[-1], side="right"
-                )
-                ring_cell_ids = np.delete(chunk_with_ring, slice(start_id, stop_id))
 
                 is_selected = np.logical_or(
                     cids == chunk_cell_id, np.isin(rids, ring_cell_ids)
