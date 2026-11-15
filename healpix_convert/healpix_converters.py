@@ -428,7 +428,9 @@ class HealpixGroupConverter(ABC):
                     # the value of the nearest input point: the input's own type,
                     # the stored one for an integer variable with a fill value
                     # (decoded as floats with NaN when the input is opened)
-                    dtype, nearest_fill = _nearest_dtype_and_fill(var)
+                    dtype, nearest_fill = _nearest_dtype_and_fill(
+                        var, _nearest_fill_override(self.settings, str(name))
+                    )
                 elif self.settings.output_dtype is not None:
                     dtype = np.dtype(self.settings.output_dtype)
                 elif self.settings.resampler.name in [
@@ -633,7 +635,17 @@ def _is_identity_packing(encoding: dict[str, Any]) -> bool:
     return encoding.get("scale_factor", 1) == 1 and encoding.get("add_offset", 0) == 0
 
 
-def _nearest_dtype_and_fill(var: xr.Variable) -> tuple[np.dtype, Any]:
+def _nearest_fill_override(settings: Any, name: str) -> Any:
+    """The ``nearest_fill_values`` entry of a variable, ``None`` if it has none."""
+    for pattern, value in settings.nearest_fill_values.items():
+        if utils.matches_any(name, [pattern]):
+            return value
+    return None
+
+
+def _nearest_dtype_and_fill(
+    var: xr.Variable, override: Any = None
+) -> tuple[np.dtype, Any]:
     """Data type and fill value of a variable written with ``nearest_variables``.
 
     Its own type; for an integer variable stored with a ``_FillValue`` (and not
@@ -641,7 +653,8 @@ def _nearest_dtype_and_fill(var: xr.Variable) -> tuple[np.dtype, Any]:
     1 and 0 do not), which the input decoding
     turned into floats with NaN, its stored integer type and that fill value.
     Otherwise the fill value is NaN for a floating type, -1 or the largest
-    value for an integer one.
+    value for an integer one. With ``override`` (``nearest_fill_values``) that
+    value is the fill value of an integer variable, whatever the input declares.
     """
     dtype = np.dtype(var.dtype)
     stored = var.encoding.get("dtype")
@@ -652,10 +665,12 @@ def _nearest_dtype_and_fill(var: xr.Variable) -> tuple[np.dtype, Any]:
         and _is_identity_packing(var.encoding)
     ):
         dtype = np.dtype(stored)
-        fill = var.encoding.get("_FillValue")
+        fill = var.encoding.get("_FillValue") if override is None else override
         return dtype, (_nearest_int_fill(dtype) if fill is None else dtype.type(fill))
     if dtype.kind in "iu":
-        return dtype, _nearest_int_fill(dtype)
+        return dtype, (
+            _nearest_int_fill(dtype) if override is None else dtype.type(override)
+        )
     return dtype, np.nan
 
 
@@ -670,6 +685,7 @@ def _nearest_values(
     ellipsoid: str,
     observed: np.ndarray | None,
     max_distance_m: float | None = None,
+    keep_declared_fill: frozenset[str] = frozenset(),
 ) -> dict[str, tuple[np.ndarray, np.ndarray]]:
     """The values of the nearest input point of each cell of a dense chunk, for
     the variables written with ``nearest_variables``, in their own data type.
@@ -709,6 +725,11 @@ def _nearest_values(
         var = ds_input_points.variables[name]
         extra_dims = [d for d in var.dims if d != "points"]
         values = np.asarray(var.transpose(*extra_dims, "points").values)
+        declared = var.encoding.get("_FillValue")
+        if name in keep_declared_fill and declared is not None and values.dtype.kind == "f":
+            # the input's declared fill value was decoded as NaN: the stored
+            # value (an identity packing) is the value, not a missing one
+            values = np.where(np.isnan(values), declared, values)
         results[name] = (values[..., source], positions)
     return results
 
@@ -1448,6 +1469,11 @@ class DenseChunkConverter(UniformChunkConverter):
                 self.healpix.ellipsoid.name,
                 observed,
                 max_distance_m,
+                frozenset(
+                    n
+                    for n in nearest_names
+                    if _nearest_fill_override(self.settings, n) is not None
+                ),
             )
             for name, (values, positions) in nearest.items():
                 zarray = self.output_arrays[name]

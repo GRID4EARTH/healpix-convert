@@ -37,7 +37,7 @@ DESCRIPTION = {"quality": "good", "bands": {"01": {"gain": 3.5, "values": [1, 2,
 HISTORY = {"step-1": [{"processor": "p", "version": "1"}]}
 
 
-def _write_input(path, *, item_id, lon_range, attrs, class_map=False):
+def _write_input(path, *, item_id, lon_range, attrs, class_map=False, class_fill=0):
     lon = np.linspace(*lon_range, COLUMNS)
     lat = np.linspace(-40.0, 40.0, ROWS)
     yy, xx = np.meshgrid(lat, lon, indexing="ij")
@@ -56,7 +56,7 @@ def _write_input(path, *, item_id, lon_range, attrs, class_map=False):
     )
     if class_map:
         ds["class_map"].encoding.update(
-            dtype="uint8", _FillValue=0, scale_factor=1, add_offset=0
+            dtype="uint8", _FillValue=class_fill, scale_factor=1, add_offset=0
         )
         # a real packing: the stored integers are not the physical values
         ds["scaled"].encoding.update(
@@ -232,3 +232,35 @@ def test_values_are_plain_json():
         {"a.zarr": _tree({"p": {"v": np.float64(1.5), "w": np.arange(3), 2: "k"}}, "X")}
     )
     assert attrs == {"p": {"X": {"v": 1.5, "w": [0, 1, 2], "2": "k"}}}
+
+
+def test_nearest_fill_values_override_a_wrong_declared_fill(tmp_path):
+    # the input declares a fill value (5) that is also a valid class
+    src = _write_input(
+        tmp_path / "in.zarr", item_id="cls", lon_range=(-60, 60), attrs={},
+        class_map=True, class_fill=5,
+    )
+    out = str(tmp_path / "out.zarr")
+    create_healpix_dataset(
+        [src],
+        _settings(group={"nearest_variables": ["class_map"], "nearest_fill_values": {"class_map": 0}}),
+        out,
+    )
+    class_map = zarr.open_group(out, mode="r")["measurements"]["class_map"]
+    assert class_map.dtype == np.uint8 and class_map.fill_value == 0
+    values = class_map[:]
+    assert values.max() <= 11
+    assert (values == 0).any()  # cells without input point: the override
+    assert (values == 5).any()  # a value equal to the declared fill is kept
+    # without the override the declared fill is the output fill value
+    out2 = str(tmp_path / "out2.zarr")
+    create_healpix_dataset(
+        [src], _settings(group={"nearest_variables": ["class_map"]}), out2
+    )
+    default = zarr.open_group(out2, mode="r")["measurements"]["class_map"]
+    assert default.fill_value == 5
+
+
+def test_nearest_fill_values_must_be_nearest_variables():
+    with pytest.raises(ValidationError, match="nearest_fill_values"):
+        ConvertSettings.model_validate(_settings(group={"nearest_fill_values": {"x": 0}}))

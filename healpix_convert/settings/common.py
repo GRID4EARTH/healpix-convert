@@ -498,6 +498,18 @@ class HealpixGroupSettings(BaseModel):
     requires the ``healpix_cell_dense`` chunk method.
     """
 
+    nearest_fill_values: dict[str, int | float] = Field(default_factory=dict)
+    """Fill value of some of the ``nearest_variables``, as ``{name: value}``
+    (names or regular expressions matched against the whole name), for inputs
+    whose declared fill value cannot be trusted.
+
+    For a listed variable the fill value declared by the input is not read as
+    "no data": the input values are kept as stored (a value equal to the
+    declared fill value stays a value), and the output fill value, the one
+    written in the output attributes and the value of the cells without input
+    point, is the given one. Without an entry the input's own fill value is used.
+    """
+
     @field_validator("drop_variables", "nearest_variables")
     @classmethod
     def validate_variable_patterns(cls, value: list[str]) -> list[str]:
@@ -610,6 +622,15 @@ class HealpixGroupSettings(BaseModel):
             raise ValueError(
                 "'nearest_variables' requires the 'healpix_cell_dense' chunk method, "
                 f"got {self.chunk.method!r}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_nearest_fill_values(self) -> HealpixGroupSettings:
+        unknown = sorted(set(self.nearest_fill_values) - set(self.nearest_variables))
+        if unknown:
+            raise ValueError(
+                f"nearest_fill_values: {unknown} are not listed in 'nearest_variables'"
             )
         return self
 

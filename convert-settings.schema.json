@@ -468,6 +468,21 @@
           "title": "Nearest Variables",
           "type": "array"
         },
+        "nearest_fill_values": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          },
+          "description": "Fill value of some of the ``nearest_variables``, as ``{name: value}``\n(names or regular expressions matched against the whole name), for inputs\nwhose declared fill value cannot be trusted.\n\nFor a listed variable the fill value declared by the input is not read as\n\"no data\": the input values are kept as stored (a value equal to the\ndeclared fill value stays a value), and the output fill value, the one\nwritten in the output attributes and the value of the cells without input\npoint, is the given one. Without an entry the input's own fill value is used.",
+          "title": "Nearest Fill Values",
+          "type": "object"
+        },
         "healpix_coordinate_codecs": {
           "anyOf": [
             {
