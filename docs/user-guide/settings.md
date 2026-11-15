@@ -85,12 +85,56 @@ dimension:
   area is 1.13, 1.27 and 1.56 times the chunk for 900, 1500 and 3000 m
   (1.06, 1.06 and 1.13 times before the ring was made at least as wide as the
   buffer). With a buffer of zero only the points inside the chunk are selected.
+  `processing_level` (default: none) splits each chunk into processing cells of
+  a finer level that are resampled one at a time, see below.
 - `"healpix_cell_sparse"`: one chunk per HEALPix cell of a coarser level
   (`healpix`), holding only the cells that contain input data points (e.g.,
   with the `"cell-point"` resampler), up to `chunk_size` cells per chunk.
 
 Chunks are the unit of parallelism: each one can be converted independently
 (see {doc}`dask` and the {doc}`../tutorials/quickstart`).
+
+#### `processing_level`: resample a chunk in parts (memory)
+
+By default a chunk is resampled in one go: all its input points and all its
+output cells are in memory for one solve. For a chunk (or a shard, with
+`chunk_level_offset`) of millions of output cells and a kernel-based resampler
+such as `"psf"`, that one solve can need more memory than a worker has.
+
+With `processing_level` $l_p$ (with $l_c \le l_p \le l$) the chunk is split into
+$4^{(l_p - l_c)}$ processing cells. The input points of each one (plus
+`chunk_buffer_width` around it) are selected and resampled on their own, so a
+resampling task holds the resampler of one processing cell only. With a
+distributed dask client each processing cell is a task, and one more task per
+chunk writes it once, as a whole, from the values of its processing cells
+(Zarr cannot write a shard in parts from several tasks). Without a client the
+processing cells of a chunk are resampled one after the other.
+
+```python
+"chunk": {
+    "method": "healpix_cell_dense",
+    "healpix": {"indexing_scheme": "nested", "ellipsoid": {"name": "wgs84"}, "refinement_level": 6},
+    "chunk_buffer_width": 20_000,
+    "processing_level": 8,  # 16 processing cells per chunk
+}
+```
+
+- It is for memory only. The output has the same cells, layout, data type and
+  fill value as without it. With a `chunk_buffer_width` of several kernel
+  widths the values are the same, to the accuracy of the (iterative) solver. With
+  a small buffer the values near the edges of a processing cell differ
+  slightly, as they already do near the edges of a chunk.
+- The resampled values of all the processing cells of a chunk are held until
+  the chunk is written, so the saving is on the resampler (the sparse matrix
+  and its solve), not on the output values of the chunk. A smaller processing
+  cell means more tasks, and more input points selected twice (the buffer
+  around each cell), so the conversion is somewhat slower.
+- For the curvilinear (2-D coordinates) selection, `chunk_buffer_width` must
+  be narrower than a processing cell; the conversion raises a `ValueError` if
+  it is not.
+- Only with `"healpix_cell_dense"`. A `processing_level` coarser than the chunk
+  level or finer than the output level is rejected when the settings are
+  read.
 
 :::{note}
 The `"healpix_cell_dense"` and `"healpix_cell_sparse"` methods currently need

@@ -149,6 +149,21 @@ class BaseChunkSettings(ABC, BaseModel):
 
     method: str
 
+    @model_validator(mode="before")
+    @classmethod
+    def reject_processing_level(cls, data: Any) -> Any:
+        # unknown fields are ignored: say that this one would have no effect
+        if (
+            isinstance(data, dict)
+            and data.get("processing_level") is not None
+            and "processing_level" not in cls.model_fields
+        ):
+            raise ValueError(
+                f"'processing_level' is not supported by the {cls.__name__} "
+                "chunk method (only 'healpix_cell_dense')"
+            )
+        return data
+
     @property
     @abstractmethod
     def is_fixed_size(self) -> bool:
@@ -245,7 +260,48 @@ class HealpixDenseChunkSettings(HealpixUniformChunkSettings):
     Set the value to zero if no buffer is needed (e.g., some resampling methods
     do not require it).
 
+    With ``processing_level`` set, the buffer is applied around each processing
+    cell instead of around the whole chunk cell.
+
     """
+
+    processing_level: Annotated[int, Field(ge=0, le=29)] | None = None
+    """Refinement level of the "processing cells": the cells into which a chunk
+    cell is split to be resampled, one at a time (one dask task each, with a
+    distributed client). The input points of a processing cell (plus the
+    ``chunk_buffer_width`` around it) are selected and resampled together, so
+    its size sets the memory of one resampling task (e.g. the sparse matrix of
+    the ``psf`` resampler), instead of the size of the whole chunk.
+
+    It is for memory only. The resampled values of the processing cells of a
+    chunk are kept until all are done, then put together in nested order, and
+    the chunk (a whole shard, with ``chunk_level_offset``) is written once by
+    one task (Zarr cannot write a shard in parts from several tasks). The
+    output has the same cells, layout and data type as without the setting. Its
+    values are the same, to the accuracy of the (iterative) solver, if
+    ``chunk_buffer_width`` is several times the width of the resampling kernel;
+    with a smaller buffer the values near the edges of a processing cell differ
+    slightly, as they do near the edges of a chunk.
+
+    If None (default), the processing cells are the chunk cells (nothing
+    changes). Must not be coarser than the chunk level (``healpix`` of the
+    chunk settings) nor finer than the refinement level of the group. Only for
+    the ``healpix_cell_dense`` chunk method.
+    """
+
+    @model_validator(mode="after")
+    def validate_processing_level(self) -> HealpixDenseChunkSettings:
+        chunk_level = self.healpix.refinement_level
+        if (
+            self.processing_level is not None
+            and chunk_level is not None
+            and self.processing_level < chunk_level
+        ):
+            raise ValueError(
+                f"processing_level ({self.processing_level}) must not be coarser "
+                f"than the chunk level ({chunk_level})"
+            )
+        return self
 
 
 class HealpixSparseChunkSettings(HealpixUniformChunkSettings):
@@ -556,6 +612,18 @@ class HealpixGroupSettings(BaseModel):
                 "'chunk_level_offset' requires the 'healpix_cell_dense' chunk method"
             )
         _check_no_sharding_codec(self.chunk_level_offset, self.codecs)
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_processing_level(self) -> HealpixGroupSettings:
+        processing_level = getattr(self.chunk, "processing_level", None)
+        level = self.healpix.refinement_level
+        if processing_level is not None and level is not None and processing_level > level:
+            raise ValueError(
+                f"chunk.processing_level ({processing_level}) must not be finer "
+                f"than the refinement level of the group ({level})"
+            )
 
         return self
 
