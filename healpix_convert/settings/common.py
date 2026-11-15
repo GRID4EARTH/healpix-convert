@@ -234,6 +234,14 @@ class HealpixDenseChunkSettings(HealpixUniformChunkSettings):
     and latitude coordinates it is in always in meters. It should be greater or equal
     to zero.
 
+    For 2-D (curvilinear) geographic longitude and latitude coordinates the
+    buffer is applied as a one-cell ring of HEALPix cells around the chunk, at
+    the finest level for which the ring is at least this wide everywhere on the
+    sphere: all the input points within this distance of the chunk are selected.
+    The ring is up to about three times wider than requested, and the number of
+    input points per chunk grows accordingly (for a chunk of level 7, the
+    selected area is 1.13, 1.27 and 1.56 times the chunk for 900, 1500 and 3000 m).
+
     Set the value to zero if no buffer is needed (e.g., some resampling methods
     do not require it).
 
