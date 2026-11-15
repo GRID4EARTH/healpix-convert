@@ -626,11 +626,19 @@ def _nearest_int_fill(dtype: np.dtype) -> Any:
     return -1 if dtype.kind == "i" else np.iinfo(dtype).max
 
 
+def _is_identity_packing(encoding: dict[str, Any]) -> bool:
+    """Whether the stored values of a variable are its physical values: no
+    ``scale_factor`` / ``add_offset``, or ones that change nothing (1 and 0, as
+    written for integer class maps by some data providers)."""
+    return encoding.get("scale_factor", 1) == 1 and encoding.get("add_offset", 0) == 0
+
+
 def _nearest_dtype_and_fill(var: xr.Variable) -> tuple[np.dtype, Any]:
     """Data type and fill value of a variable written with ``nearest_variables``.
 
     Its own type; for an integer variable stored with a ``_FillValue`` (and not
-    packed with ``scale_factor`` / ``add_offset``), which the input decoding
+    packed with a ``scale_factor`` / ``add_offset`` that changes the values:
+    1 and 0 do not), which the input decoding
     turned into floats with NaN, its stored integer type and that fill value.
     Otherwise the fill value is NaN for a floating type, -1 or the largest
     value for an integer one.
@@ -641,7 +649,7 @@ def _nearest_dtype_and_fill(var: xr.Variable) -> tuple[np.dtype, Any]:
         dtype.kind == "f"
         and stored is not None
         and np.dtype(stored).kind in "iu"
-        and not {"scale_factor", "add_offset"} & set(var.encoding)
+        and _is_identity_packing(var.encoding)
     ):
         dtype = np.dtype(stored)
         fill = var.encoding.get("_FillValue")

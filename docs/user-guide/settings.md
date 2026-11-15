@@ -162,6 +162,11 @@ such variables out; `nearest_variables` writes, for each cell, the value of its
 nearest input point, in the variable's own data type (no rounding): the row /
 column index of the pixel a cell comes from, or the exact time of its row.
 
+An integer variable stored with a fill value, which the input decoding turns
+into floating point with `NaN`, is written with its stored integer type and that
+fill value (e.g. a class map stored as unsigned bytes with fill value 0), unless
+its `scale_factor` / `add_offset` change the values (1 and 0 do not).
+
 ```python
 "measurements": {
     ...,

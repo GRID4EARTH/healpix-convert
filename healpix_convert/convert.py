@@ -21,6 +21,7 @@ from healpix_convert.cache import create_staging_cache
 from healpix_convert.core.conversion_models import ConvertStagingCache
 from healpix_convert.core.metadata import (
     get_multiscale_group_attrs,
+    write_carried_root_attributes,
     write_root_conventions,
 )
 from healpix_convert.core.stac import (
@@ -171,6 +172,9 @@ def _create_and_process_output(
         merged_stac_metadata.stac_extensions.append(STAC_PROCESSING_SCHEMA_URL)
 
     root_group.attrs["stac_discovery"] = merged_stac_metadata.model_dump()
+    write_carried_root_attributes(
+        root_group, cache.input_datatrees, settings.metadata
+    )
     log.info("••• finished propagating stac metadata.")
 
     # declare the conventions followed by the whole output dataset (root group only)

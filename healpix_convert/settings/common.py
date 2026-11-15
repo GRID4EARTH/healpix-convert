@@ -971,6 +971,19 @@ class MetadataSettings(BaseModel):
     dataset (see :py:class:`~healpix_convert.settings.stac.STACSettings`).
     """
 
+    root_attributes: list[str] = Field(default_factory=list)
+    """Names of root attributes of the input datasets to carry over to the root
+    group of the output dataset (next to ``stac_discovery``), e.g. the product
+    description and processing history a data provider writes there.
+
+    Each attribute is written under its own name as a mapping from the id of each
+    input dataset (the ``id`` of its STAC item, its path if it has none) to the
+    attribute of that input, whatever the number of inputs, so that the layout
+    does not depend on how many input datasets feed an output. An input without
+    the attribute is left out of the mapping; if no input has it, nothing is
+    written. ``stac_discovery`` is written by the conversion and cannot be listed.
+    """
+
     consolidate: ConsolidateMetadataSettings = Field(
         default_factory=ConsolidateMetadataSettings
     )
@@ -978,6 +991,20 @@ class MetadataSettings(BaseModel):
     which of its groups it is written for (see
     :py:class:`ConsolidateMetadataSettings`).
     """
+
+    @field_validator("root_attributes")
+    @classmethod
+    def validate_root_attributes(cls, value: list[str]) -> list[str]:
+        reserved = {"stac_discovery", "Conventions"}
+        clash = sorted(reserved & set(value))
+        if clash:
+            raise ValueError(
+                f"root_attributes: {clash} are written by the conversion itself"
+            )
+        duplicates = sorted({name for name in value if value.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"root_attributes: duplicate name(s) {duplicates}")
+        return value
 
     @model_validator(mode="after")
     def validate_unique_conventions(self) -> MetadataSettings:

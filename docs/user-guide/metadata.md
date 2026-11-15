@@ -223,6 +223,25 @@ properties and the extensions consistent with each other is left to the data
 provider.
 :::
 
+## Other root attributes of the input
+
+Only `stac_discovery` is propagated from the root attributes of the input
+datasets. A data provider often writes more there (a product description, the
+processing history ...), and `metadata.root_attributes` lists the ones to carry
+over to the root group of the output, next to `stac_discovery`:
+
+```python
+"metadata": {"root_attributes": ["other_metadata", "processing_history"]}
+```
+
+Each attribute is written under its own name as a mapping from the id of each
+input dataset (the `id` of its STAC item, its path if it has none) to the value
+there, whatever the number of inputs: the layout of an output does not depend on
+how many input datasets feed it, and each input keeps its own value instead of
+one of them being picked. An input without the attribute is left out; an
+attribute that no input has is not written. `stac_discovery` and
+`Conventions` are written by the conversion and cannot be listed.
+
 ## Consolidated metadata
 
 Consolidating the metadata of a Zarr group copies the metadata of all its
