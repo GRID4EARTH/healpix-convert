@@ -2,20 +2,14 @@
 
 ## Unreleased
 
-- `copy_groups` copies the arrays with Zarr instead of xarray. Before, a NaN
-  next to a fill value was written as the fill value, booleans became `int8`
-  (or failed with Zarr v2 inputs), datetimes were changed, the attributes of a
-  group without arrays were lost, a leading `/` in `exclude_groups` hid a
-  conflict with a copied group, and several inputs were compared on a few
-  attributes only (now on all of them, and on the fill values).
 - New `copy_groups` setting: non-spatial input groups (with data but without
   latitude / longitude, e.g. per-detector calibration tables) can be copied
-  unchanged to the output dataset: read as stored (no CF decoding) and written
-  back with their data types, fill values and attributes (packing included);
-  `drop_variables` leaves variables out, string variables are refused. With
-  several inputs the group must be the same in all of them. Before, every non-spatial group
-  was skipped with a warning ("not yet supported"), which stays the behaviour
-  for the groups not listed.
+  unchanged to the output dataset, array by array with Zarr: stored values,
+  data types, fill values, dimension names and attributes as they are;
+  `drop_variables` leaves variables out, string arrays are refused. With
+  several inputs the group must be the same in all of them. The groups are
+  read and checked before anything is written. The non-spatial groups that
+  are not listed are still skipped with a warning.
 - The input points that a chunk selects with `chunk_buffer_width` (2-D
   curvilinear longitude / latitude coordinates) now include every point within
   that distance of the chunk. The buffer is applied as a one-cell ring of

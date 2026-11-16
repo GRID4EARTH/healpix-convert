@@ -325,11 +325,14 @@ def test_stored_values_are_copied_as_they_are(tmp_path, zarr_format) -> None:
 
 
 def test_string_variable_is_refused_early(tmp_path) -> None:
+    """Refused before anything is converted or written: no partial output."""
     src = _tables_input(
         tmp_path, "s", {"names": (("n",), np.array(["a", "bb", "ccc"], dtype=object), {}, {})}
     )
+    out = tmp_path / "o.zarr"
     with pytest.raises(ValueError, match="'names' has the data type .*not supported"):
-        create_healpix_dataset([src], _settings({"conditions/tables": {}}), str(tmp_path / "o.zarr"))
+        create_healpix_dataset([src], _settings({"conditions/tables": {}}), str(out))
+    assert not out.exists()
     # left out: copied
     create_healpix_dataset(
         [src], _settings({"conditions/tables": {"drop_variables": ["names"]}}), str(tmp_path / "o2.zarr")
@@ -435,3 +438,43 @@ def test_dry_run_copies_into_memory(tmp_path) -> None:
         [src], _settings({"conditions/instrument": {}}), str(tmp_path / "out.zarr"), dry_run=True
     )
     assert "solar_flux" in tree["conditions/instrument"].data_vars
+
+
+@pytest.mark.parametrize("dtype", ["datetime64[ns]", "timedelta64[ns]"])
+def test_v2_datetime_with_fill_value_is_refused_by_name(tmp_path, dtype) -> None:
+    values = np.array([1, 2], dtype="i8").astype(dtype)
+    src = _raw_zarr_input(tmp_path, "d", 2, {"t": (values, values[0], {}, ("n",))})
+    out = tmp_path / "o.zarr"
+    with pytest.raises(ValueError, match="variable 't': a Zarr v2 .* fill value"):
+        create_healpix_dataset([src], _settings({"conditions/tables": {}}), str(out))
+    assert not out.exists()
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        {"v": (np.array([1, 2], "int32"), -1, {}, ("n",))},  # fill value differs
+        {"v": (np.array([1, 2], "int64"), -2, {}, ("n",))},  # data type differs
+        {"v": (np.array([1, 2], "int32"), -2, {"a": [1, [2, 3]]}, ("n",))},  # ragged attribute
+    ],
+)
+def test_inputs_differing_in_fill_dtype_or_attributes(tmp_path, other) -> None:
+    a = _raw_zarr_input(tmp_path, "a", 3, {"v": (np.array([1, 2], "int32"), -2, {"a": [1, [2, 4]]}, ("n",))})
+    b = _raw_zarr_input(tmp_path, "b", 3, other)
+    with pytest.raises(ValueError, match=r"differs .*\['v'\]"):
+        create_healpix_dataset([a, b], _settings({"conditions/tables": {}}), str(tmp_path / "o.zarr"))
+
+
+def test_nested_attributes_with_nan_compare_equal(tmp_path) -> None:
+    arrays = {"v": (np.array([1.0]), None, {"meta": {"v": float("nan"), "l": [1, [2, 3]]}}, ("n",))}
+    a = _raw_zarr_input(tmp_path, "a", 3, arrays)
+    b = _raw_zarr_input(tmp_path, "b", 3, arrays)
+    create_healpix_dataset([a, b], _settings({"conditions/tables": {}}), str(tmp_path / "o.zarr"))
+
+
+def test_all_variables_dropped_keeps_the_group_attributes(tmp_path) -> None:
+    src = _raw_zarr_input(tmp_path, "a", 3, {"v": (np.array([1]), 0, {}, ("n",))}, group_attrs={"k": 1})
+    out = tmp_path / "o.zarr"
+    create_healpix_dataset([src], _settings({"conditions/tables": {"drop_variables": [".*"]}}), str(out))
+    g = zarr.open_group(out, mode="r")["conditions/tables"]
+    assert dict(g.attrs) == {"k": 1} and not list(g.arrays())
