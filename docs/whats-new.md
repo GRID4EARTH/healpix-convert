@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- New `copy_groups` setting: non-spatial input groups (with data but without
+  latitude / longitude, e.g. per-detector calibration tables) can be copied
+  unchanged to the output dataset, with their data types, packing, fill values
+  and attributes; `drop_variables` leaves variables out. With several inputs
+  the group must be the same in all of them. Before, every non-spatial group
+  was skipped with a warning ("not yet supported"), which stays the behaviour
+  for the groups not listed.
 - The input points that a chunk selects with `chunk_buffer_width` (2-D
   curvilinear longitude / latitude coordinates) now include every point within
   that distance of the chunk. The buffer is applied as a one-cell ring of
