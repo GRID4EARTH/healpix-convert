@@ -77,6 +77,10 @@ def _convert_group_to_healpix(
     if any(idx < 0 or idx > n_chunks - 1 for idx in chunk_indices):
         raise ValueError("out of bounds chunk indices")
 
+    # processing cells per chunk (``processing_level`` chunk setting): each one
+    # is resampled by its own task, the chunk is written once all are done
+    units = getattr(converter, "units_per_chunk", 1)
+
     if client is not None:
         log.info(
             f"••• converting {len(chunk_indices)} chunks in parallel using dask (distributed)..."
@@ -89,11 +93,16 @@ def _convert_group_to_healpix(
             log.info("persist input dataset(s) on distributed memory with dask")
             converter.load_datasets(client=client)
 
-        # use a wrapper func as passing _convert_one_chunk kwargs to client.map doesn't work
-        # (dask/distributed does not like pickling `group_datasets`)
-        func = lambda idx: converter.convert(idx)
-        with dask.config.set({"optimization.fuse.active": False}):
-            futures = client.map(func, chunk_indices, resources=resources)
+        if units > 1:
+            futures = _map_processing_cells(
+                client, converter, chunk_indices, units, resources
+            )
+        else:
+            # use a wrapper func as passing _convert_one_chunk kwargs to client.map doesn't work
+            # (dask/distributed does not like pickling `group_datasets`)
+            func = lambda idx: converter.convert(idx)
+            with dask.config.set({"optimization.fuse.active": False}):
+                futures = client.map(func, chunk_indices, resources=resources)
         client.gather(futures)
 
     else:
@@ -109,6 +118,55 @@ def _convert_group_to_healpix(
             converter.convert(chunk_index)
 
     log.info(f"••• finished converting {len(chunk_indices)} chunks.")
+
+
+def _map_processing_cells(
+    client: distributed.Client,
+    converter: HealpixGroupConverter,
+    chunk_indices: Sequence[int],
+    units: int,
+    resources: dict,
+) -> list[distributed.Future]:
+    """Submit one task per processing cell of each chunk (resampling only,
+    :py:meth:`DenseChunkConverter.resample_unit`) and one task per chunk that
+    writes it from the values of its processing cells (``write_chunk``).
+
+    A chunk is written by a single task: the processing cells of a shard are
+    not written separately, as a partial write of a shard reads and rewrites
+    the whole shard, and concurrent partial writes of one shard would race. A
+    task holds the resampler of one processing cell only.
+
+    The tasks are submitted chunk by chunk, with the same priority for all the
+    tasks of a chunk and a higher one for earlier chunks, so that the write
+    task of a chunk is not scheduled behind the resampling of all other chunks
+    (whose values would then pile up in memory before any chunk is written).
+
+    """
+    log.info(
+        f"••• {units} processing cells per chunk (level {converter.unit_level}): "  # type: ignore[attr-defined]
+        f"{len(chunk_indices) * units} resampling tasks, "
+        f"{len(chunk_indices)} chunk write tasks"
+    )
+
+    resample = lambda key: converter.resample_unit(*key)  # type: ignore[attr-defined]
+    write = lambda chunk_index, *values: converter.write_chunk(  # type: ignore[attr-defined]
+        chunk_index, list(values)
+    )
+
+    futures = []
+    with dask.config.set({"optimization.fuse.active": False}):
+        for i, chunk_index in enumerate(chunk_indices):
+            # pure=False: the converter is not part of the task keys, so the
+            # tasks of two groups with the same chunk indices must not share
+            # their keys
+            kwargs = dict(
+                resources=resources, pure=False, priority=len(chunk_indices) - i
+            )
+            unit_futures = client.map(
+                resample, [(chunk_index, u) for u in range(units)], **kwargs
+            )
+            futures.append(client.submit(write, chunk_index, *unit_futures, **kwargs))
+    return futures
 
 
 def _create_and_process_output(

@@ -377,6 +377,20 @@
           "default": 60.0,
           "title": "Chunk Buffer Width",
           "type": "number"
+        },
+        "processing_level": {
+          "anyOf": [
+            {
+              "maximum": 29,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Processing Level"
         }
       },
       "required": [

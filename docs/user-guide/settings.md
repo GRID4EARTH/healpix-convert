@@ -105,12 +105,75 @@ dimension:
   area is 1.13, 1.27 and 1.56 times the chunk for 900, 1500 and 3000 m
   (1.06, 1.06 and 1.13 times before the ring was made at least as wide as the
   buffer). With a buffer of zero only the points inside the chunk are selected.
+  `processing_level` (default: none) splits each chunk into processing cells of
+  a finer level that are resampled one at a time, see below.
 - `"healpix_cell_sparse"`: one chunk per HEALPix cell of a coarser level
   (`healpix`), holding only the cells that contain input data points (e.g.,
   with the `"cell-point"` resampler), up to `chunk_size` cells per chunk.
 
 Chunks are the unit of parallelism: each one can be converted independently
 (see {doc}`dask` and the {doc}`../tutorials/quickstart`).
+
+#### `processing_level`: resample a chunk in parts (memory)
+
+By default a chunk is resampled in one go: all its input points and all its
+output cells are in memory for one solve. For a chunk (or a shard, with
+`chunk_level_offset`) of millions of output cells and a kernel-based resampler
+such as `"psf"`, that one solve can need more memory than a worker has.
+
+With `processing_level` $l_p$ (with $l_c \le l_p \le l$) the chunk is split into
+$4^{(l_p - l_c)}$ processing cells. The input points of each one (plus
+`chunk_buffer_width` around it) are selected and resampled on their own, so a
+resampling task holds the resampler of one processing cell only. With a
+distributed dask client each processing cell is a task, and one more task per
+chunk writes it once, as a whole, from the values of its processing cells (a
+partial write of a shard reads and rewrites the whole shard, and concurrent
+partial writes of one shard from several tasks would race). Without a client
+the processing cells of a chunk are resampled one after the other.
+
+```python
+"chunk": {
+    "method": "healpix_cell_dense",
+    "healpix": {"indexing_scheme": "nested", "ellipsoid": {"name": "wgs84"}, "refinement_level": 6},
+    "chunk_buffer_width": 20_000,
+    "processing_level": 8,  # 16 processing cells per chunk
+}
+```
+
+- It is for memory only, not a way to change the values. The output has the
+  same cells, layout, data type and fill value as without it, but its values
+  depend on the processing cell: each processing cell is resampled from the
+  input points inside it and inside the buffer around it, so near the edge of a
+  processing cell a kernel resampler (e.g. `"psf"`) sees less input than in a
+  single solve, as it does near the edge of a chunk. The values agree with a
+  single solve only if `chunk_buffer_width` is wide (several kernel widths),
+  and then only to the accuracy of the (iterative) solver. The tests check this
+  for one synthetic smooth field (a buffer of about 8 kernel widths, agreement
+  to a relative 1e-3), and check that values near the processing cell edges do
+  differ without a buffer. Compare a converted cell with and without the
+  setting before relying on it.
+- The resampled values of all the processing cells of a chunk are held until
+  the chunk is written, so the saving is on the resampler (the sparse matrix
+  and its solve), not on the output values of the chunk. A smaller processing
+  cell means more tasks, and more input points selected twice (the buffer
+  around each cell), so the conversion is slower. For the curvilinear
+  (2-D coordinates) selection the whole input is scanned once for each
+  processing cell, so the selection cost grows with the number of processing
+  cells (and with the size of the input).
+- For the curvilinear (2-D coordinates) selection, the buffer is applied around
+  each processing cell as a one-cell ring of HEALPix cells, as for a chunk; a
+  buffer wider than a processing cell is accepted, but it has a cost: the ring is
+  then made of cells coarser than the processing cell, so the input of a
+  processing cell is that of the ring around its parent cell (with its
+  siblings). A finer `processing_level` then lowers the output of each task
+  only, not its input, while the number of tasks and of selection scans of the
+  input grows; a warning is logged when the converter is created. Keep the
+  buffer narrower than the processing cell (ring level at least the processing
+  level) for the input of a task to shrink with a finer `processing_level`.
+- Only with `"healpix_cell_dense"`. A `processing_level` coarser than the chunk
+  level, finer than the output level, or more than 4 levels finer than the
+  chunk level (more than 256 processing cells per chunk) is rejected when the
+  settings are read.
 
 :::{note}
 The `"healpix_cell_dense"` and `"healpix_cell_sparse"` methods currently need

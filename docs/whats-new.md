@@ -26,6 +26,19 @@
   the values of the output cells near the chunk edges change slightly, as the
   resampler now sees the points it was missing.
 
+- New `processing_level` setting of the `healpix_cell_dense` chunk method, for
+  chunks or shards with millions of output cells resampled with a kernel
+  resampler (e.g. `"psf"`): the chunk is split into processing cells of that
+  (finer) level, each resampled on its own (one dask task each with a
+  distributed client), and the chunk is written once from their values. A
+  resampling task then holds the resampler of a processing cell instead of
+  that of the whole chunk, which lowers its memory, at the price of a longer
+  conversion (the memory saving has not been measured for this entry). It is
+  for memory only, not a way to change the values: the values near the edges
+  of the processing cells depend on the buffer around them, and agree with
+  those without the setting only if `chunk_buffer_width` is wide, to the
+  accuracy of the solver. Without the setting nothing changes.
+
 ## v2026.11.0 (2026-11-09)
 
 - The ClimateDT converter now always resamples the native (spherical) HEALPix

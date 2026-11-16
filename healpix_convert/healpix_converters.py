@@ -811,9 +811,52 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
             f"  - each chunk represents a HEALPix cell at level {self.chunk_healpix.refinement_level}\n"
             f"  - total: {self.chunk_cell_ids.size} chunk/cells"
         )
+        if self.units_per_chunk > 1:
+            log.info(
+                f"processing cells at level {self.unit_level}: "
+                f"{self.units_per_chunk} per chunk, resampled one at a time"
+            )
+            self._warn_if_buffer_ring_is_coarser_than_processing_cells()
 
         # cache for querying input lat-lon points inside an healpix chunk cell
         self._input_chunk_cell_ids = []
+
+    def _warn_if_buffer_ring_is_coarser_than_processing_cells(self):
+        """Warn once (when the converter is created) that a finer processing
+        level does not reduce the input of a task if the buffer is wide."""
+        if self.spatial_info.is_projected or self.spatial_info.is_rectilinear:
+            return
+        if self.chunk_buffer <= 0:
+            return
+        ring_level = utils.chunk_buffer_ring_level(self.chunk_buffer)
+        if ring_level < self.unit_level:
+            log.warning(
+                f"the buffer ring (level {ring_level}) is coarser than the "
+                f"processing cells (level {self.unit_level}): the input of a task "
+                f"covers the ring around the parent cell of the processing cell, "
+                f"so a finer processing_level does not reduce it (only the output "
+                f"of the task)",
+                group=str(self.group_path),
+                chunk_buffer_width=self.chunk_buffer,
+            )
+
+    @property
+    def unit_level(self) -> int:
+        """Refinement level of the processing cells: the cells whose input
+        points are selected and resampled together (the chunk cells, unless
+        the ``processing_level`` chunk setting is finer)."""
+        level = getattr(self.settings.chunk, "processing_level", None)
+        if level is None:
+            level = self.chunk_healpix.refinement_level
+        assert level is not None
+        return level
+
+    @property
+    def units_per_chunk(self) -> int:
+        """Number of processing cells in one chunk cell."""
+        chunk_level = self.chunk_healpix.refinement_level
+        assert chunk_level is not None
+        return 4 ** (self.unit_level - chunk_level)
 
     def _compute_chunk_cell_ids(self):
         assert self.chunk_healpix.refinement_level is not None
@@ -826,7 +869,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
 
     def _compute_input_chunk_cell_ids(self, level=None):
         if level is None:
-            level = self.chunk_healpix.refinement_level
+            level = self.unit_level
 
         lon_name, lat_name = self.spatial_info.spatial_coordinates
         cell_ids = []
@@ -861,15 +904,25 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
 
         Assumes 2-dimensional longitude and latitude coordinates present in the datasets.
 
+        ``chunk_cell_id`` is a chunk cell, or a processing cell (at
+        ``unit_level``) with the ``processing_level`` setting.
+
         Only input points located within the HEALPix chunk cell are selected. If
         the chunk buffer is non zero, the selection of input points also include
         an outer ring of HEALPix cells around the the chunk at a level determined
         from the buffer width (see ``utils.chunk_buffer_ring_level``): the ring is
         at least as wide as the buffer, everywhere on the sphere (the selected
         region is up to about three times wider than the buffer, and the number
-        of selected input points grows accordingly).
+        of selected input points grows accordingly). If the ring level is coarser
+        than the level of the cell (a buffer wider than a processing cell), the
+        ring is taken around the parent of the cell, so the selection no longer
+        shrinks with a finer ``processing_level``.
 
         """
+        # TODO: the selection scans the whole input once for each processing
+        # cell (and computes the ring cell ids again each time), so its cost
+        # grows with the number of processing cells; cache the ring cell ids
+        # per converter, or sort the input once by cell id
         lon_name, lat_name = self.spatial_info.spatial_coordinates
         ds0 = self.datasets[0]
         rdim, cdim = ds0[lon_name].dims
@@ -878,7 +931,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
             ring_level = utils.chunk_buffer_ring_level(self.chunk_buffer)
             input_ring_cell_ids = self._compute_input_chunk_cell_ids(level=ring_level)
             selection_cell_ids = utils.chunk_selection_cell_ids(
-                chunk_cell_id, self.chunk_healpix.refinement_level, ring_level
+                chunk_cell_id, self.unit_level, ring_level
             )
         else:
             input_ring_cell_ids = [np.array([], dtype=np.uint64)] * len(self.datasets)
@@ -931,7 +984,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         lon_name, lat_name = self.spatial_info.spatial_coordinates
         lon, lat = healpix_geo.nested.vertices(
             chunk_cell_id,
-            self.chunk_healpix.refinement_level,
+            self.unit_level,
             ellipsoid=self.chunk_healpix.ellipsoid.name,
         )
         lon, lat = np.asarray(lon).ravel(), np.asarray(lat).ravel()
@@ -945,7 +998,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         # on the opposite side of the antimeridian).
         centre_lon, _ = healpix_geo.nested.healpix_to_lonlat(
             chunk_cell_id,
-            self.chunk_healpix.refinement_level,
+            self.unit_level,
             ellipsoid=self.chunk_healpix.ellipsoid.name,
         )
         centre_lon = float(np.asarray(centre_lon).ravel()[0])
@@ -1035,7 +1088,7 @@ class UniformChunkConverter(HealpixGroupConverter, ABC):
         # compute chunk cell polygon
         lon, lat = healpix_geo.nested.vertices(
             chunk_cell_id,
-            self.chunk_healpix.refinement_level,
+            self.unit_level,
             ellipsoid=self.chunk_healpix.ellipsoid.name,
         )
         chunk_poly_latlon = shapely.Polygon(list(zip(lon[0], lat[0])))
@@ -1159,31 +1212,62 @@ class DenseChunkConverter(UniformChunkConverter):
         # this class supports chunked conversion only
         assert chunk_index is not None
 
+        # one processing cell at a time: only one is resampled in memory
+        units = [
+            self.resample_unit(chunk_index, unit_index)
+            for unit_index in range(self.units_per_chunk)
+        ]
+        self.write_chunk(chunk_index, units)
+
+    def unit_cell_ids(
+        self, chunk_index: int, unit_index: int
+    ) -> tuple[np.uint64, np.ndarray]:
+        """The cell id (at ``unit_level``) of one processing cell of a chunk,
+        and the ids of its output cells (in nested order)."""
+        chunk_level = self.chunk_healpix.refinement_level
+        assert chunk_level is not None
+        if not 0 <= unit_index < self.units_per_chunk:
+            raise ValueError("out of bounds processing cell index")
+        # a numpy scalar, like the chunk cell ids: healpix_geo returns arrays
+        unit_cell_id = np.uint64(
+            int(self.chunk_cell_ids[chunk_index]) * self.units_per_chunk + unit_index
+        )
+        # (a scalar, not an array, when the levels are the same)
+        cell_ids = np.atleast_2d(
+            healpix_geo.nested.zoom_to(
+                unit_cell_id, self.unit_level, self.healpix.refinement_level
+            )
+        )[0]
+        return unit_cell_id, cell_ids
+
+    def resample_unit(
+        self, chunk_index: int, unit_index: int = 0
+    ) -> dict[str, np.ndarray] | None:
+        """Resample the input data on the output cells of one processing cell
+        (``unit_index``, in nested order) of a chunk.
+
+        Returns the values of the data variables (cell dimension last, already
+        in the data type of the output arrays, fill value where there is no
+        data), or None if no input point falls in the processing cell. Nothing
+        is written: see :py:meth:`write_chunk`.
+
+        """
         n_chunks = self.chunk_cell_ids.size
 
-        chunk_cell_id = self.chunk_cell_ids[chunk_index]
+        unit_cell_id, cell_ids = self.unit_cell_ids(chunk_index, unit_index)
 
         log.debug(
-            f"processing chunk {chunk_index + 1}/{n_chunks} (cell id {chunk_cell_id})"
+            f"processing chunk {chunk_index + 1}/{n_chunks}, cell "
+            f"{unit_index + 1}/{self.units_per_chunk} (cell id {unit_cell_id} "
+            f"at level {self.unit_level})"
         )
 
-        cell_ids = healpix_geo.nested.zoom_to(
-            chunk_cell_id,
-            self.chunk_healpix.refinement_level,
-            self.healpix.refinement_level,
-        )[0]
-
-        start = chunk_index * cell_ids.size
-        stop = start + cell_ids.size
-        chunk_slice = slice(start, stop)
-        self.output_arrays[self.healpix.coordinate][chunk_slice] = cell_ids
-
         log.debug("query input points")
-        ds_input_points = self.query_input_points(chunk_cell_id)
+        ds_input_points = self.query_input_points(unit_cell_id)
 
-        # no input data point for current chunk
+        # no input data point for current processing cell
         if ds_input_points is None:
-            return
+            return None
 
         resampler_settings = self.settings.resampler
 
@@ -1218,7 +1302,9 @@ class DenseChunkConverter(UniformChunkConverter):
         resample_params = broadcast_params(
             resampler_settings.resample_params, var_names
         )
-        chunk_log = log.bind(group=self.group_path, chunk_index=chunk_index)
+        chunk_log = log.bind(
+            group=self.group_path, chunk_index=chunk_index, unit_index=unit_index
+        )
 
         layer_results = []
         for points, lon_deg, lat_deg in layers:
@@ -1262,12 +1348,63 @@ class DenseChunkConverter(UniformChunkConverter):
             resampled = _mean_of_layers(layer_results)
             _warn_if_layers_lost_data(chunk_log, ds_input_points, resampled)
 
-        writes = []
+        out = {}
         for name, cell_data in resampled.items():
             zarray = self.output_arrays[name]
             # cells without data (TODO: get the right fill_value and dtype)
             cell_data[np.isnan(cell_data)] = zarray.fill_value
-            writes.append((zarray, (..., chunk_slice), cell_data.astype(zarray.dtype)))
+            out[name] = cell_data.astype(zarray.dtype)
+
+        return out
+
+    def write_chunk(
+        self, chunk_index: int, units: list[dict[str, np.ndarray] | None]
+    ) -> None:
+        """Write one chunk (a whole shard, if the arrays are sharded) from the
+        resampled values of its processing cells (:py:meth:`resample_unit`, in
+        nested order): the cell ids, and the data variables, with the fill
+        value in the processing cells without input data.
+
+        """
+        if len(units) != self.units_per_chunk:
+            raise ValueError(
+                f"expected {self.units_per_chunk} processing cells, got {len(units)}"
+            )
+
+        chunk_level = self.chunk_healpix.refinement_level
+        cell_ids = healpix_geo.nested.zoom_to(
+            self.chunk_cell_ids[chunk_index],
+            chunk_level,
+            self.healpix.refinement_level,
+        )[0]
+
+        start = chunk_index * cell_ids.size
+        chunk_slice = slice(start, start + cell_ids.size)
+        writes: list[tuple[Any, Any, np.ndarray]] = [
+            (self.output_arrays[self.healpix.coordinate], chunk_slice, cell_ids)
+        ]
+
+        unit_size = cell_ids.size // self.units_per_chunk
+        names = list(dict.fromkeys(n for unit in units if unit for n in unit))
+        for name in names:
+            zarray = self.output_arrays[name]
+            if all(unit is not None and name in unit for unit in units):
+                # one processing cell per chunk: no copy
+                values = (
+                    units[0][name]  # type: ignore[index]
+                    if len(units) == 1
+                    else np.concatenate([u[name] for u in units], axis=-1)  # type: ignore[index]
+                )
+            else:
+                values = np.full(
+                    (*zarray.shape[:-1], cell_ids.size),
+                    zarray.fill_value,
+                    dtype=zarray.dtype,
+                )
+                for i, unit in enumerate(units):
+                    if unit is not None and name in unit:
+                        values[..., i * unit_size : (i + 1) * unit_size] = unit[name]
+            writes.append((zarray, (..., chunk_slice), values))
 
         _write_chunk_arrays(writes)
 
