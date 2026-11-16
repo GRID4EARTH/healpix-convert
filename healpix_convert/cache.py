@@ -170,6 +170,12 @@ def _find_input_spatial_groups(
 
         if spatial_info is not None:
             path = PurePath(path)
+            if path in settings.copy_groups:
+                raise ValueError(
+                    f"group {path.as_posix()!r} has latitude / longitude "
+                    "coordinates: it is converted to HEALPix, not copied "
+                    "(remove it from copy_groups)"
+                )
             if not isinstance(settings.group_settings.get(path), HealpixGroupSettings):
                 raise KeyError(
                     f"HEALPix conversion settings are missing for group {path!r}"

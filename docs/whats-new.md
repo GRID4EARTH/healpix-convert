@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- New `copy_groups` setting: non-spatial input groups (with data but without
+  latitude / longitude, e.g. per-detector calibration tables) can be copied
+  unchanged to the output dataset, with their data types, packing, fill values
+  and attributes; `drop_variables` leaves variables out. With several inputs
+  the group must be the same in all of them. Before, every non-spatial group
+  was skipped with a warning ("not yet supported"), which stays the behaviour
+  for the groups not listed.
 - New metadata setting `root_attributes`: names of root attributes of the input
   datasets (e.g. the product description and the processing history a data
   provider writes there) that are carried over to the root group of the output,

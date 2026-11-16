@@ -18,6 +18,7 @@ from zarr.storage import MemoryStore
 
 import healpix_convert.core.utils as utils
 from healpix_convert.cache import create_staging_cache
+from healpix_convert.copy_groups import write_copy_group
 from healpix_convert.core.conversion_models import ConvertStagingCache
 from healpix_convert.core.metadata import (
     get_multiscale_group_attrs,
@@ -220,12 +221,28 @@ def _create_and_process_output(
                 to_prepare.append(path)
         elif not dt0[str(path)].has_data:
             zarr.create_group(output_store, path=group_path_rel)
+        elif path in settings.copy_groups:
+            write_copy_group(
+                output_store,
+                group_path_rel,
+                list(cache.input_datatrees.values()),
+                path,
+                settings.copy_groups[path],
+            )
         else:
             # non-spatial group (skip for now)
             log.warning(
                 f"••• skip writing non-spatial group '{group_path_rel}' to zarr "
                 "(not yet supported)"
             )
+
+    missing = sorted(
+        path.as_posix()
+        for path in settings.copy_groups
+        if "/" + path.as_posix() not in dt0.groups
+    )
+    if missing:
+        log.warning(f"••• copy_groups not found in the input datasets: {missing}")
 
     # creating the arrays of a group is a few store round trips per array
     # (about 0.5 s per array on object storage): the groups are created in
