@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import PurePath
+
 import numpy as np
 import pydantic
 import pytest
@@ -180,31 +182,12 @@ def test_several_inputs_differing_group(tmp_path) -> None:
 
 def test_spatial_group_cannot_be_copied(tmp_path) -> None:
     src = _input(tmp_path, "a")
-    settings = ConvertSettings.model_validate(
-        {
-            "group_settings": {},
-            "exclude_groups": ["measurements"],
-            "copy_groups": {"conditions/instrument": {}},
-        }
-    )
     # a group with latitude / longitude listed in copy_groups
     tree = xr.open_datatree(src, engine="zarr")
     tree["conditions/geo"] = xr.DataTree(tree["measurements"].to_dataset())
     src2 = tmp_path / "geo.zarr"
     tree.to_zarr(src2, mode="w", consolidated=True)
-    settings = ConvertSettings.model_validate(
-        {
-            "group_settings": settings.model_dump()["group_settings"]
-            | {
-                "measurements": {
-                    "healpix": {"refinement_level": 4, "indexing_scheme": "nested"},
-                    "chunk": {"method": "no_chunk"},
-                    "resampler": {"name": "nearest"},
-                }
-            },
-            "copy_groups": {"conditions/geo": {}},
-        }
-    )
+    settings = _settings({"conditions/geo": {}})
 
     with pytest.raises(ValueError, match="converted to HEALPix, not copied"):
         create_healpix_dataset([str(src2)], settings, str(tmp_path / "out.zarr"))
@@ -220,6 +203,15 @@ def test_spatial_group_cannot_be_copied(tmp_path) -> None:
         ),
         ({"copy_groups": {"conditions/instrument": {"drop_variables": ["("]}}}, "invalid regular"),
         ({"copy_groups": {"conditions/instrument": {"unknown": 1}}}, "Extra inputs"),
+        (
+            {"copy_groups": {"conditions/instrument": {}}, "exclude_groups": ["conditions"]},
+            "parent 'conditions' is excluded",
+        ),
+        (
+            {"copy_groups": {"measurements/extra": {}}, "multiscale_settings": {"groups": ["measurements"]}},
+            "is a multiscale group",
+        ),
+        ({"copy_groups": {"/": {}}}, "root group cannot be copied"),
     ],
 )
 def test_settings_validation(extra, match) -> None:
@@ -258,3 +250,93 @@ def test_staged_conversion_copies_the_group(tmp_path) -> None:
     consolidated = root.metadata.consolidated_metadata.flattened_metadata
     assert "conditions/instrument/solar_flux" in consolidated
     assert "conditions/instrument/temperature" not in consolidated
+
+
+def test_leading_slash_is_the_same_path(tmp_path) -> None:
+    settings = _settings({"/conditions/instrument/": {}})
+    assert list(settings.copy_groups) == [PurePath("conditions/instrument")]
+
+
+def _tables_input(tmp_path, name: str, variables: dict, *, zarr_format: int = 3) -> str:
+    """An input whose copied group holds the given raw variables (no CF decoding
+    when written)."""
+    values = np.arange(64, dtype="float32").reshape(8, 8)
+    measurements = xr.Dataset(
+        {"radiance": (("lat", "lon"), values)},
+        coords={
+            "lon": ("lon", np.linspace(-1, 1, 8), {"standard_name": "longitude"}),
+            "lat": ("lat", np.linspace(-1, 1, 8), {"standard_name": "latitude"}),
+        },
+    )
+    tables = xr.Dataset()
+    for vname, (dims, data, attrs, encoding) in variables.items():
+        tables[vname] = xr.Variable(dims, data, attrs)
+        tables[vname].encoding = encoding
+    tree = xr.DataTree.from_dict({"/measurements": measurements, "/conditions/tables": tables})
+    tree.attrs["stac_discovery"] = _stac_item(name, -1.0)
+    path = tmp_path / f"{name}.zarr"
+    tree.to_zarr(path, mode="w", consolidated=True, zarr_format=zarr_format)
+    return str(path)
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_stored_values_are_copied_as_they_are(tmp_path, zarr_format) -> None:
+    """missing_value, 64-bit integers with a fill value, packed integers: the
+    stored values and the reading attributes are those of the input."""
+    big = np.array([2**60 + 1, 5, -1], dtype="int64")
+    src = _tables_input(
+        tmp_path,
+        f"t{zarr_format}",
+        {
+            "with_missing": (("n",), np.array([1, 2, -999], "int16"), {"missing_value": -999}, {}),
+            "big": (("n",), big, {}, {"_FillValue": np.int64(-1)}),
+            "packed": (
+                ("n",),
+                np.array([0.5, np.nan, 2.0]),
+                {"units": "W"},
+                {"dtype": "int16", "scale_factor": 0.5, "_FillValue": np.int16(-1)},
+            ),
+            "scalar": ((), np.float32(3.5), {}, {}),
+        },
+        zarr_format=zarr_format,
+    )
+    out = tmp_path / "out.zarr"
+    create_healpix_dataset([src], _settings({"conditions/tables": {}}), str(out))
+
+    raw_in = xr.open_dataset(src, group="conditions/tables", engine="zarr", decode_cf=False)
+    raw_out = xr.open_dataset(out, group="conditions/tables", engine="zarr", decode_cf=False)
+    for name in ("with_missing", "big", "packed", "scalar"):
+        assert raw_out[name].dtype == raw_in[name].dtype, name
+        np.testing.assert_array_equal(raw_out[name].values, raw_in[name].values)
+        for key in ("missing_value", "scale_factor", "_FillValue", "units"):
+            assert (key in raw_out[name].attrs) == (key in raw_in[name].attrs), (name, key)
+            if key in raw_in[name].attrs:
+                np.testing.assert_array_equal(raw_out[name].attrs[key], raw_in[name].attrs[key])
+    assert raw_out["big"].values[0] == 2**60 + 1
+    # decoded as the input
+    xr.testing.assert_identical(
+        xr.open_dataset(out, group="conditions/tables", engine="zarr"),
+        xr.open_dataset(src, group="conditions/tables", engine="zarr"),
+    )
+
+
+def test_string_variable_is_refused_early(tmp_path) -> None:
+    src = _tables_input(
+        tmp_path, "s", {"names": (("n",), np.array(["a", "bb", "ccc"], dtype=object), {}, {})}
+    )
+    with pytest.raises(ValueError, match="'names' has the data type object"):
+        create_healpix_dataset([src], _settings({"conditions/tables": {}}), str(tmp_path / "o.zarr"))
+    # left out: copied
+    create_healpix_dataset(
+        [src], _settings({"conditions/tables": {"drop_variables": ["names"]}}), str(tmp_path / "o2.zarr")
+    )
+
+
+def test_differing_scale_is_a_difference(tmp_path) -> None:
+    def tables(scale):
+        return {"g": (("n",), np.array([1.0, 2.0]), {}, {"dtype": "int16", "scale_factor": scale})}
+
+    a = _tables_input(tmp_path, "a", tables(0.5))
+    b = _tables_input(tmp_path, "b", tables(0.25))
+    with pytest.raises(ValueError, match=r"differs .*\['g'\]"):
+        create_healpix_dataset([a, b], _settings({"conditions/tables": {}}), str(tmp_path / "o.zarr"))

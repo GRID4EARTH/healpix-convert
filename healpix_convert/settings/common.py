@@ -1027,9 +1027,39 @@ class ConvertSettings(BaseModel):
         # always convert paths to strings (unix-style)
         return {k.as_posix(): v for k, v in value.items()}
 
+    @field_validator("copy_groups", mode="before")
+    @classmethod
+    def normalize_copy_groups(cls, value: Any) -> Any:
+        # group paths relative to the root, as the other group settings
+        if not isinstance(value, Mapping):
+            return value
+        normalized = {}
+        for key, item in value.items():
+            path = PurePath(str(key).strip("/"))
+            if str(path) in ("", "."):
+                raise ValueError(
+                    "copy_groups: the root group cannot be copied (its attributes are "
+                    "set by 'metadata')"
+                )
+            normalized[path] = item
+        return normalized
+
     @model_validator(mode="after")
     def validate_copy_groups(self) -> ConvertSettings:
+        excluded = set(self.exclude_groups)
+        multiscale = set(self.multiscale_settings.groups)
         for path in self.copy_groups:
+            for ancestor in path.parents:
+                if ancestor in excluded:
+                    raise ValueError(
+                        f"group {path.as_posix()!r} is copied (copy_groups) but its "
+                        f"parent {ancestor.as_posix()!r} is excluded (exclude_groups)"
+                    )
+                if ancestor in multiscale:
+                    raise ValueError(
+                        f"group {path.as_posix()!r} is copied (copy_groups) but its "
+                        f"parent {ancestor.as_posix()!r} is a multiscale group"
+                    )
             if path in self.group_settings:
                 raise ValueError(
                     f"group {path.as_posix()!r} is both converted (group_settings) "
