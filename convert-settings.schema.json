@@ -172,6 +172,22 @@
       "title": "ConventionConfiguration",
       "type": "object"
     },
+    "CopyGroupSettings": {
+      "additionalProperties": false,
+      "description": "Settings of an input group copied unchanged to the output dataset (see\n:py:attr:`ConvertSettings.copy_groups`).",
+      "properties": {
+        "drop_variables": {
+          "description": "Variables of the group left out of the copy: names or regular\nexpressions, matched against the whole name of each variable (data\nvariable or coordinate).",
+          "items": {
+            "type": "string"
+          },
+          "title": "Drop Variables",
+          "type": "array"
+        }
+      },
+      "title": "CopyGroupSettings",
+      "type": "object"
+    },
     "DGGSConventionSelector": {
       "additionalProperties": false,
       "description": "Select the DGGS Zarr convention.\n\nSee https://github.com/zarr-conventions/dggs",
@@ -1107,6 +1123,17 @@
         "format": "path"
       },
       "title": "Group Settings",
+      "type": "object"
+    },
+    "copy_groups": {
+      "additionalProperties": {
+        "$ref": "#/$defs/CopyGroupSettings"
+      },
+      "description": "Non-spatial groups of the input Zarr dataset(s) (groups with data but\nwithout latitude / longitude) copied unchanged to the output dataset, at the\nsame path, array by array with Zarr (no CF decoding): stored values, data\ntypes, fill values, dimension names and attributes of their arrays, and the\nattributes of the group.\n\nWith several input datasets, the group must be the same in all of them (same\narrays, values, fill values and attributes); otherwise the conversion fails.\nA non-spatial group not listed here is not written (a warning is logged).",
+      "propertyNames": {
+        "format": "path"
+      },
+      "title": "Copy Groups",
       "type": "object"
     }
   },
