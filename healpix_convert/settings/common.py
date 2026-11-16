@@ -1103,12 +1103,13 @@ class ConvertSettings(BaseModel):
     copy_groups: dict[PurePath, CopyGroupSettings] = Field(default_factory=dict)
     """Non-spatial groups of the input Zarr dataset(s) (groups with data but
     without latitude / longitude) copied unchanged to the output dataset, at the
-    same path: values, dimensions, data types, encoding (scale, offset, fill
-    value) and attributes of their variables, and the attributes of the group.
+    same path, array by array with Zarr (no CF decoding): stored values, data
+    types, fill values, dimension names and attributes of their arrays, and the
+    attributes of the group.
 
     With several input datasets, the group must be the same in all of them (same
-    variables and values); otherwise the conversion fails. A non-spatial group
-    not listed here is not written (a warning is logged).
+    arrays, values, fill values and attributes); otherwise the conversion fails.
+    A non-spatial group not listed here is not written (a warning is logged).
     """
 
     def filter_and_replace(self, func: Callable[[str, dict], dict]) -> ConvertSettings:
@@ -1281,8 +1282,14 @@ class ConvertSettings(BaseModel):
 
     @model_validator(mode="after")
     def validate_copy_groups(self) -> ConvertSettings:
-        excluded = set(self.exclude_groups)
-        multiscale = set(self.multiscale_settings.groups)
+        # compared as paths relative to the root, as copy_groups (a leading "/"
+        # in the other settings must not hide a conflict)
+        def relative(path: PurePath) -> PurePath:
+            return PurePath(str(path).strip("/"))
+
+        excluded = {relative(p) for p in self.exclude_groups}
+        multiscale = {relative(p) for p in self.multiscale_settings.groups}
+        converted = {relative(p) for p in self.group_settings}
         for path in self.copy_groups:
             for ancestor in path.parents:
                 if ancestor in excluded:
@@ -1295,17 +1302,17 @@ class ConvertSettings(BaseModel):
                         f"group {path.as_posix()!r} is copied (copy_groups) but its "
                         f"parent {ancestor.as_posix()!r} is a multiscale group"
                     )
-            if path in self.group_settings:
+            if path in converted:
                 raise ValueError(
                     f"group {path.as_posix()!r} is both converted (group_settings) "
                     "and copied (copy_groups)"
                 )
-            if path in self.exclude_groups:
+            if path in excluded:
                 raise ValueError(
                     f"group {path.as_posix()!r} is both excluded (exclude_groups) "
                     "and copied (copy_groups)"
                 )
-            if path in self.multiscale_settings.groups:
+            if path in multiscale:
                 raise ValueError(
                     f"group {path.as_posix()!r} is both a multiscale group and "
                     "copied (copy_groups)"

@@ -1129,7 +1129,7 @@
       "additionalProperties": {
         "$ref": "#/$defs/CopyGroupSettings"
       },
-      "description": "Non-spatial groups of the input Zarr dataset(s) (groups with data but\nwithout latitude / longitude) copied unchanged to the output dataset, at the\nsame path: values, dimensions, data types, encoding (scale, offset, fill\nvalue) and attributes of their variables, and the attributes of the group.\n\nWith several input datasets, the group must be the same in all of them (same\nvariables and values); otherwise the conversion fails. A non-spatial group\nnot listed here is not written (a warning is logged).",
+      "description": "Non-spatial groups of the input Zarr dataset(s) (groups with data but\nwithout latitude / longitude) copied unchanged to the output dataset, at the\nsame path, array by array with Zarr (no CF decoding): stored values, data\ntypes, fill values, dimension names and attributes of their arrays, and the\nattributes of the group.\n\nWith several input datasets, the group must be the same in all of them (same\narrays, values, fill values and attributes); otherwise the conversion fails.\nA non-spatial group not listed here is not written (a warning is logged).",
       "propertyNames": {
         "format": "path"
       },

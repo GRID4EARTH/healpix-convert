@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `copy_groups` copies the arrays with Zarr instead of xarray. Before, a NaN
+  next to a fill value was written as the fill value, booleans became `int8`
+  (or failed with Zarr v2 inputs), datetimes were changed, the attributes of a
+  group without arrays were lost, a leading `/` in `exclude_groups` hid a
+  conflict with a copied group, and several inputs were compared on a few
+  attributes only (now on all of them, and on the fill values).
 - New `copy_groups` setting: non-spatial input groups (with data but without
   latitude / longitude, e.g. per-detector calibration tables) can be copied
   unchanged to the output dataset: read as stored (no CF decoding) and written

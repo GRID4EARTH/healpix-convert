@@ -219,9 +219,9 @@ def _create_and_process_output(
                 _convert_group_to_healpix(converter)
             else:
                 to_prepare.append(path)
-        elif not dt0[str(path)].has_data:
-            zarr.create_group(output_store, path=group_path_rel)
         elif path in settings.copy_groups:
+            # before the "no data" case: a listed group of attributes only, or
+            # whose variables are all dropped, keeps its attributes
             write_copy_group(
                 output_store,
                 group_path_rel,
@@ -229,6 +229,8 @@ def _create_and_process_output(
                 path,
                 settings.copy_groups[path],
             )
+        elif not dt0[str(path)].has_data:
+            zarr.create_group(output_store, path=group_path_rel)
         else:
             # non-spatial group (skip for now)
             log.warning(
@@ -242,7 +244,10 @@ def _create_and_process_output(
         if "/" + path.as_posix() not in dt0.groups
     )
     if missing:
-        log.warning(f"••• copy_groups not found in the input datasets: {missing}")
+        log.warning(
+            f"••• copy_groups not found in the input datasets (or left out by "
+            f"the 'groups' selection): {missing}"
+        )
 
     # creating the arrays of a group is a few store round trips per array
     # (about 0.5 s per array on object storage): the groups are created in
