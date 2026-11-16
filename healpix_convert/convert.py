@@ -18,7 +18,7 @@ from zarr.storage import MemoryStore
 
 import healpix_convert.core.utils as utils
 from healpix_convert.cache import create_staging_cache
-from healpix_convert.copy_groups import write_copy_group
+from healpix_convert.copy_groups import read_copy_groups, write_copy_group
 from healpix_convert.core.conversion_models import ConvertStagingCache
 from healpix_convert.core.metadata import (
     get_multiscale_group_attrs,
@@ -123,6 +123,13 @@ def _create_and_process_output(
     if dry_run:
         convert_data = False
 
+    # --- the groups copied unchanged: read and checked before anything is
+    # written (a group that cannot be copied leaves no partial output)
+    dt0 = next(iter(cache.input_datatrees.values()))
+    copied_groups = read_copy_groups(
+        list(cache.input_datatrees), settings.copy_groups, list(dt0.groups)
+    )
+
     # --- create output Zarr dataset
     # TODO: check for any existing output Zarr dataset
     log.info(f"••• creating {output_path} Zarr dataset...")
@@ -180,8 +187,6 @@ def _create_and_process_output(
     # --- process groups
     log.info("••• processing groups...")
 
-    dt0 = next(iter(cache.input_datatrees.values()))
-
     # spatial groups whose arrays are only created here (no conversion yet)
     to_prepare: list[PurePath] = []
 
@@ -215,16 +220,12 @@ def _create_and_process_output(
                 _convert_group_to_healpix(converter)
             else:
                 to_prepare.append(path)
+        elif path in settings.copy_groups:
+            # before the "no data" case: a listed group of attributes only, or
+            # whose variables are all dropped, keeps its attributes
+            write_copy_group(output_store, group_path_rel, copied_groups[path])
         elif not dt0[str(path)].has_data:
             zarr.create_group(output_store, path=group_path_rel)
-        elif path in settings.copy_groups:
-            write_copy_group(
-                output_store,
-                group_path_rel,
-                list(cache.input_datatrees),
-                path,
-                settings.copy_groups[path],
-            )
         else:
             # non-spatial group (skip for now)
             log.warning(
@@ -238,7 +239,10 @@ def _create_and_process_output(
         if "/" + path.as_posix() not in dt0.groups
     )
     if missing:
-        log.warning(f"••• copy_groups not found in the input datasets: {missing}")
+        log.warning(
+            f"••• copy_groups not found in the input datasets (or left out by "
+            f"the 'groups' selection): {missing}"
+        )
 
     # creating the arrays of a group is a few store round trips per array
     # (about 0.5 s per array on object storage): the groups are created in
@@ -314,7 +318,8 @@ def prepare_healpix_dataset(
     """Create a new Zarr dataset without any data resampled on the HEALPix grid (yet).
 
     All output groups and arrays are created along with their metadata. Arrays
-    having a HEALPix cell dimension are still empty.
+    having a HEALPix cell dimension are still empty. The groups copied unchanged
+    (``copy_groups``) are read whole from every input, checked and written here.
 
     The groups of the derived levels of the pyramids and the multiscales
     metadata describing them are created as well; their arrays are written by
@@ -513,7 +518,9 @@ def generate_pyramids(
     if not settings.multiscale_settings.pyramid_groups:
         log.info("••• no group with pyramid settings: nothing to generate.")
     elif in_memory:
-        _write_derived_levels_in_memory(output_path, cache, settings, output_storage_options)
+        _write_derived_levels_in_memory(
+            output_path, cache, settings, output_storage_options
+        )
         log.info("••• done!")
     else:
         root_group = zarr.open_group(
@@ -582,7 +589,9 @@ def _write_derived_levels_in_memory(
     keys = fs.find(root)
     if f"{root}/zarr.json" not in keys:
         raise RuntimeError(f"{output_path}: no root group metadata in the listing")
-    log.info(f"••• reading the {len(keys)} objects of the output dataset into memory...")
+    log.info(
+        f"••• reading the {len(keys)} objects of the output dataset into memory..."
+    )
     contents = fs.cat(keys)  # concurrent on async file systems (e.g. S3)
     before = {key[len(root) + 1 :]: value for key, value in contents.items()}
 

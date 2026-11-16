@@ -37,23 +37,36 @@ generated from the model, e.g., to get completion and validation in an editor.
 - `copy_groups`: the non-spatial input groups (groups with data but without
   latitude / longitude, e.g. tables per band and detector) copied unchanged to
   the output dataset, at the same path, keyed by that path (relative to the
-  root; a leading `/` is ignored). The group is read as stored, without CF
-  decoding, and written back as it is: the stored values, dimensions, data
-  types, fill values and attributes (`scale_factor`, `add_offset`,
-  `missing_value` included) of its variables, and the attributes of the group.
-  The arrays are written in one chunk with the default codecs. Only numeric
-  variables can be copied: a string variable stops the conversion (leave it
-  out). Each entry may give `drop_variables`: the variables left out of the copy
-  (names or regular expressions matched against the whole name). With several
-  input datasets, the group must be the same in all of them (same variables,
-  dimensions, data types, stored values, and `scale_factor`, `add_offset`,
-  `_FillValue`, `missing_value`, `units`, `calendar`; the other attributes are
-  those of the first input), otherwise the conversion fails: leave the
-  variables that differ out with `drop_variables`. A non-spatial group that is
-  not listed is not written (a warning is logged); a listed group that the
-  inputs do not have gives a warning. A group with latitude / longitude cannot
-  be copied, nor a group that is converted, excluded, a multiscale group, or
-  below an excluded or a multiscale group.
+  root; a leading `/` is ignored). The arrays of the group (not its subgroups:
+  list them too) are copied with Zarr, without CF decoding or encoding: their
+  stored values, data types, fill values, dimension names and attributes, and
+  the attributes of the group, are written as they are. The fill value of a
+  Zarr v2 input array is also written as its `_FillValue` attribute (as xarray
+  writes it), so that xarray reads the copy as the input; not for booleans (a
+  fill value of a boolean array is not a missing value), and a Zarr v2
+  datetime or timedelta array with a fill value is refused. Numeric, complex,
+  boolean, datetime and timedelta arrays can be copied; a string array is
+  refused (leave it out). Each array is written in one chunk with the default
+  codecs, and the group is read whole, once per input: it is meant for tables,
+  not for large arrays. Each entry may give `drop_variables`: the variables
+  left out of the copy (names or regular expressions matched against the whole
+  name). With several input datasets, the group must be the same in all of
+  them (same arrays, dimensions, data types, stored values, fill values and
+  attributes, and the same attributes of the group). The copied groups are
+  read whole from every input and checked by the preparation stage
+  (`prepare_healpix_dataset`), before anything is written,
+  so a group that cannot be copied stops the conversion before it starts:
+  leave the variables at fault out with `drop_variables`. A listed group with
+  attributes only (or whose variables are all left out) is written with its
+  attributes. A non-spatial group that is not listed is not written (a warning
+  is logged); a listed group that the inputs do not have, or that the `groups`
+  selection leaves out, gives a warning. A group with latitude / longitude
+  cannot be copied, nor a group that is converted, excluded, a multiscale
+  group, or below an excluded or a multiscale group. A copied group gets
+  consolidated metadata of its own when the HEALPix groups do
+  (`metadata.consolidate.healpix_groups`). The values are those of the input,
+  in the native byte order (a big-endian input array is written little-endian),
+  and a Zarr v2 array without fill value gets the Zarr v3 default (0, NaT).
 - `multiscale_settings`: the input groups (`groups`) converted as multiscale
   groups. Their children groups are converted at different refinement levels and
   written as `<group>/<refinement level>` in the output, with metadata following
