@@ -225,7 +225,7 @@ def _create_and_process_output(
             write_copy_group(
                 output_store,
                 group_path_rel,
-                list(cache.input_datatrees.values()),
+                list(cache.input_datatrees),
                 path,
                 settings.copy_groups[path],
             )

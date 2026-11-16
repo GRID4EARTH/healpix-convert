@@ -36,17 +36,24 @@ generated from the model, e.g., to get completion and validation in an editor.
   dataset.
 - `copy_groups`: the non-spatial input groups (groups with data but without
   latitude / longitude, e.g. tables per band and detector) copied unchanged to
-  the output dataset, at the same path, keyed by that path. A copied variable
-  keeps its values, dimensions, data type, packing (`scale_factor`,
-  `add_offset`), fill value and attributes, and the group keeps its attributes;
-  the arrays are written in one chunk with the default codecs. Each entry may
-  give `drop_variables`: the variables left out of the copy (names or regular
-  expressions matched against the whole name). With several input datasets, the
-  group must be the same in all of them (same variables, dimensions and values;
-  the attributes are those of the first input), otherwise the conversion fails:
-  leave the variables that differ out with `drop_variables`. A non-spatial group
-  that is not listed is not written (a warning is logged), and a group with
-  latitude / longitude cannot be copied.
+  the output dataset, at the same path, keyed by that path (relative to the
+  root; a leading `/` is ignored). The group is read as stored, without CF
+  decoding, and written back as it is: the stored values, dimensions, data
+  types, fill values and attributes (`scale_factor`, `add_offset`,
+  `missing_value` included) of its variables, and the attributes of the group.
+  The arrays are written in one chunk with the default codecs. Only numeric
+  variables can be copied: a string variable stops the conversion (leave it
+  out). Each entry may give `drop_variables`: the variables left out of the copy
+  (names or regular expressions matched against the whole name). With several
+  input datasets, the group must be the same in all of them (same variables,
+  dimensions, data types, stored values, and `scale_factor`, `add_offset`,
+  `_FillValue`, `missing_value`, `units`, `calendar`; the other attributes are
+  those of the first input), otherwise the conversion fails: leave the
+  variables that differ out with `drop_variables`. A non-spatial group that is
+  not listed is not written (a warning is logged); a listed group that the
+  inputs do not have gives a warning. A group with latitude / longitude cannot
+  be copied, nor a group that is converted, excluded, a multiscale group, or
+  below an excluded or a multiscale group.
 - `multiscale_settings`: the input groups (`groups`) converted as multiscale
   groups. Their children groups are converted at different refinement levels and
   written as `<group>/<refinement level>` in the output, with metadata following
