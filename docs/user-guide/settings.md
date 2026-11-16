@@ -37,28 +37,31 @@ generated from the model, e.g., to get completion and validation in an editor.
 - `copy_groups`: the non-spatial input groups (groups with data but without
   latitude / longitude, e.g. tables per band and detector) copied unchanged to
   the output dataset, at the same path, keyed by that path (relative to the
-  root; a leading `/` is ignored). The group is copied array by array with
-  Zarr, without CF decoding or encoding: the stored values, data types, fill
-  values, dimension names and attributes of its arrays, and the attributes of
-  the group, are written as they are. The fill value of a Zarr v2 input array
-  is also written as its `_FillValue` attribute (as xarray writes it), so that
-  xarray reads the copy as the input (except for booleans: a fill value of a
-  boolean array is not a missing value). Each array is written in one chunk with the
-  default codecs, and the group is read whole (once per input): it is meant for
-  tables, not for large arrays. Only numeric, boolean and datetime arrays can be
-  copied: a string array stops the conversion (leave it out). Each entry may
-  give `drop_variables`: the variables left out of the copy (names or regular
-  expressions matched against the whole name). With several input datasets,
-  the group must be the same in all of them (same arrays, dimensions, data
-  types, stored values, fill values and attributes; the attributes of the
-  group itself are those of the first input), otherwise the conversion fails:
-  leave the variables that differ out with `drop_variables`. A listed group
-  with attributes only is copied with its attributes. A non-spatial group that
-  is not listed is not written (a warning is logged); a listed group that the
-  inputs do not have, or that the `groups` selection leaves out, gives a
-  warning. A group with latitude / longitude cannot be copied, nor a group that
-  is converted, excluded, a multiscale group, or below an excluded or a
-  multiscale group.
+  root; a leading `/` is ignored). The arrays of the group (not its subgroups:
+  list them too) are copied with Zarr, without CF decoding or encoding: their
+  stored values, data types, fill values, dimension names and attributes, and
+  the attributes of the group, are written as they are. The fill value of a
+  Zarr v2 input array is also written as its `_FillValue` attribute (as xarray
+  writes it), so that xarray reads the copy as the input; not for booleans (a
+  fill value of a boolean array is not a missing value), and a Zarr v2
+  datetime or timedelta array with a fill value is refused. Numeric, complex,
+  boolean, datetime and timedelta arrays can be copied; a string array is
+  refused (leave it out). Each array is written in one chunk with the default
+  codecs, and the group is read whole, once per input: it is meant for tables,
+  not for large arrays. Each entry may give `drop_variables`: the variables
+  left out of the copy (names or regular expressions matched against the whole
+  name). With several input datasets, the group must be the same in all of
+  them (same arrays, dimensions, data types, stored values, fill values and
+  attributes; the attributes of the group itself are those of the first
+  input). The copied groups are read and checked before anything is written,
+  so a group that cannot be copied stops the conversion before it starts:
+  leave the variables at fault out with `drop_variables`. A listed group with
+  attributes only (or whose variables are all left out) is written with its
+  attributes. A non-spatial group that is not listed is not written (a warning
+  is logged); a listed group that the inputs do not have, or that the `groups`
+  selection leaves out, gives a warning. A group with latitude / longitude
+  cannot be copied, nor a group that is converted, excluded, a multiscale
+  group, or below an excluded or a multiscale group.
 - `multiscale_settings`: the input groups (`groups`) converted as multiscale
   groups. Their children groups are converted at different refinement levels and
   written as `<group>/<refinement level>` in the output, with metadata following

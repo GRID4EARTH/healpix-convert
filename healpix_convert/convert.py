@@ -18,7 +18,7 @@ from zarr.storage import MemoryStore
 
 import healpix_convert.core.utils as utils
 from healpix_convert.cache import create_staging_cache
-from healpix_convert.copy_groups import write_copy_group
+from healpix_convert.copy_groups import read_copy_groups, write_copy_group
 from healpix_convert.core.conversion_models import ConvertStagingCache
 from healpix_convert.core.metadata import (
     get_multiscale_group_attrs,
@@ -124,6 +124,13 @@ def _create_and_process_output(
     if dry_run:
         convert_data = False
 
+    # --- the groups copied unchanged: read and checked before anything is
+    # written (a group that cannot be copied leaves no partial output)
+    dt0 = next(iter(cache.input_datatrees.values()))
+    copied_groups = read_copy_groups(
+        list(cache.input_datatrees), settings.copy_groups, list(dt0.groups)
+    )
+
     # --- create output Zarr dataset
     # TODO: check for any existing output Zarr dataset
     log.info(f"••• creating {output_path} Zarr dataset...")
@@ -222,13 +229,7 @@ def _create_and_process_output(
         elif path in settings.copy_groups:
             # before the "no data" case: a listed group of attributes only, or
             # whose variables are all dropped, keeps its attributes
-            write_copy_group(
-                output_store,
-                group_path_rel,
-                list(cache.input_datatrees),
-                path,
-                settings.copy_groups[path],
-            )
+            write_copy_group(output_store, group_path_rel, copied_groups[path])
         elif not dt0[str(path)].has_data:
             zarr.create_group(output_store, path=group_path_rel)
         else:

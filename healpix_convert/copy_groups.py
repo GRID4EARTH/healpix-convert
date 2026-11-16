@@ -28,7 +28,7 @@ V2_DIMENSIONS_ATTR = "_ARRAY_DIMENSIONS"
 class _Table:
     """A copied array: its stored values and what is needed to write it back."""
 
-    def __init__(self, array: zarr.Array) -> None:
+    def __init__(self, array: zarr.Array, where: str) -> None:
         self.dtype = array.dtype
         self.shape = array.shape
         self.fill_value = array.fill_value
@@ -39,6 +39,14 @@ class _Table:
         else:
             self.dims = tuple(array.metadata.dimension_names or ())
         self.attrs = attrs
+        if self.zarr_format == 2 and self.dtype.kind in "mM" and self.fill_value is not None:
+            # xarray reads such a fill value as a missing value, and it cannot be
+            # written as a _FillValue attribute: the copy would not read the same
+            raise ValueError(
+                f"{where}: a Zarr v2 {self.dtype} array with a fill value "
+                f"({self.fill_value!r}) cannot be copied: leave it out with "
+                "'drop_variables'"
+            )
         self.values = np.asarray(array[...])
 
     def output_attrs(self) -> dict[str, Any]:
@@ -74,17 +82,23 @@ def _values_equal(a: np.ndarray, b: np.ndarray) -> bool:
     return bool(np.array_equal(a, b))
 
 
-def _attrs_equal(a: dict, b: dict) -> bool:
-    if set(a) != set(b):
-        return False
-    for key in a:
-        x, y = np.asarray(a[key]), np.asarray(b[key])
-        if x.shape != y.shape:
+def _attrs_equal(a: Any, b: Any) -> bool:
+    """Equal attribute values (JSON-like: mappings, lists, numbers, strings,
+    arrays), NaN equal to NaN."""
+    if isinstance(a, dict) or isinstance(b, dict):
+        return (
+            isinstance(a, dict)
+            and isinstance(b, dict)
+            and set(a) == set(b)
+            and all(_attrs_equal(a[k], b[k]) for k in a)
+        )
+    if isinstance(a, (list, tuple, np.ndarray)) or isinstance(b, (list, tuple, np.ndarray)):
+        if not (isinstance(a, (list, tuple, np.ndarray)) and isinstance(b, (list, tuple, np.ndarray))):
             return False
-        nan = x.dtype.kind in "fc" and y.dtype.kind in "fc"
-        if not np.array_equal(x, y, equal_nan=nan):
-            return False
-    return True
+        return len(a) == len(b) and all(_attrs_equal(x, y) for x, y in zip(a, b))
+    if isinstance(a, (float, np.floating)) and isinstance(b, (float, np.floating)):
+        return bool(a == b or (np.isnan(a) and np.isnan(b)))
+    return type(a) is type(b) and bool(a == b) if isinstance(a, str) or isinstance(b, str) else bool(a == b)
 
 
 def _same(a: _Table, b: _Table) -> bool:
@@ -118,7 +132,7 @@ def _read_group(
                 f"type {array.dtype} (strings and other non-numeric types are not "
                 "supported): leave it out with 'drop_variables'"
             )
-        tables[name] = _Table(array)
+        tables[name] = _Table(array, f"copied group {path.as_posix()!r}: variable {name!r}")
     return dict(group.attrs), tables
 
 
@@ -172,16 +186,30 @@ def _write(output_store: Any, group_path: str, attrs: dict, tables: dict[str, _T
             array[...] = table.values
 
 
+def read_copy_groups(
+    input_paths: Sequence[Any],
+    copy_groups: dict[PurePath, CopyGroupSettings],
+    input_groups: Sequence[str],
+) -> dict[PurePath, tuple[dict[str, Any], dict[str, _Table]]]:
+    """Read and check every copied group that the inputs have (``input_groups``,
+    the group paths of the inputs), before anything is written: a group that
+    cannot be copied stops the conversion before any group is converted."""
+    groups = {g.strip("/") for g in input_groups}
+    return {
+        path: copy_group_tables(input_paths, path, settings)
+        for path, settings in copy_groups.items()
+        if path.as_posix() in groups
+    }
+
+
 def write_copy_group(
     output_store: Any,
     group_path: str,
-    input_paths: Sequence[Any],
-    path: PurePath,
-    settings: CopyGroupSettings,
+    group: tuple[dict[str, Any], dict[str, _Table]],
 ) -> None:
-    """Write the input group ``path`` unchanged to ``group_path`` of the output
-    store (see :py:func:`copy_group_tables`)."""
-    attrs, tables = copy_group_tables(input_paths, path, settings)
+    """Write a group read by :py:func:`read_copy_groups` unchanged to
+    ``group_path`` of the output store."""
+    attrs, tables = group
     log.info(
         f"••• copying non-spatial group '{group_path}' to zarr ({len(tables)} arrays)"
     )
