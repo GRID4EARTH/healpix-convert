@@ -187,8 +187,6 @@ def _create_and_process_output(
     # --- process groups
     log.info("••• processing groups...")
 
-    dt0 = next(iter(cache.input_datatrees.values()))
-
     # spatial groups whose arrays are only created here (no conversion yet)
     to_prepare: list[PurePath] = []
 
@@ -320,7 +318,8 @@ def prepare_healpix_dataset(
     """Create a new Zarr dataset without any data resampled on the HEALPix grid (yet).
 
     All output groups and arrays are created along with their metadata. Arrays
-    having a HEALPix cell dimension are still empty.
+    having a HEALPix cell dimension are still empty. The groups copied unchanged
+    (``copy_groups``) are read whole from every input, checked and written here.
 
     The groups of the derived levels of the pyramids and the multiscales
     metadata describing them are created as well; their arrays are written by
@@ -519,7 +518,9 @@ def generate_pyramids(
     if not settings.multiscale_settings.pyramid_groups:
         log.info("••• no group with pyramid settings: nothing to generate.")
     elif in_memory:
-        _write_derived_levels_in_memory(output_path, cache, settings, output_storage_options)
+        _write_derived_levels_in_memory(
+            output_path, cache, settings, output_storage_options
+        )
         log.info("••• done!")
     else:
         root_group = zarr.open_group(
@@ -588,7 +589,9 @@ def _write_derived_levels_in_memory(
     keys = fs.find(root)
     if f"{root}/zarr.json" not in keys:
         raise RuntimeError(f"{output_path}: no root group metadata in the listing")
-    log.info(f"••• reading the {len(keys)} objects of the output dataset into memory...")
+    log.info(
+        f"••• reading the {len(keys)} objects of the output dataset into memory..."
+    )
     contents = fs.cat(keys)  # concurrent on async file systems (e.g. S3)
     before = {key[len(root) + 1 :]: value for key, value in contents.items()}
 

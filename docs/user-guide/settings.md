@@ -52,8 +52,9 @@ generated from the model, e.g., to get completion and validation in an editor.
   left out of the copy (names or regular expressions matched against the whole
   name). With several input datasets, the group must be the same in all of
   them (same arrays, dimensions, data types, stored values, fill values and
-  attributes; the attributes of the group itself are those of the first
-  input). The copied groups are read and checked before anything is written,
+  attributes, and the same attributes of the group). The copied groups are
+  read whole from every input and checked by the preparation stage
+  (`prepare_healpix_dataset`), before anything is written,
   so a group that cannot be copied stops the conversion before it starts:
   leave the variables at fault out with `drop_variables`. A listed group with
   attributes only (or whose variables are all left out) is written with its
@@ -61,7 +62,11 @@ generated from the model, e.g., to get completion and validation in an editor.
   is logged); a listed group that the inputs do not have, or that the `groups`
   selection leaves out, gives a warning. A group with latitude / longitude
   cannot be copied, nor a group that is converted, excluded, a multiscale
-  group, or below an excluded or a multiscale group.
+  group, or below an excluded or a multiscale group. A copied group gets
+  consolidated metadata of its own when the HEALPix groups do
+  (`metadata.consolidate.healpix_groups`). The values are those of the input,
+  in the native byte order (a big-endian input array is written little-endian),
+  and a Zarr v2 array without fill value gets the Zarr v3 default (0, NaT).
 - `multiscale_settings`: the input groups (`groups`) converted as multiscale
   groups. Their children groups are converted at different refinement levels and
   written as `<group>/<refinement level>` in the output, with metadata following
