@@ -68,7 +68,7 @@ def _instrument(flux_offset: float = 0.0, temperature_offset: float = 0.0) -> xr
     return ds
 
 
-def _input(tmp_path, name: str, *, lat0: float = -1.0, **instrument_kwargs) -> str:
+def _input(tmp_path, name: str, *, lat0: float = -1.0, zarr_format: int = 3, **instrument_kwargs) -> str:
     values = np.arange(64, dtype="float32").reshape(8, 8)
     measurements = xr.Dataset(
         {"radiance": (("lat", "lon"), values, {"units": "W"})},
@@ -85,7 +85,7 @@ def _input(tmp_path, name: str, *, lat0: float = -1.0, **instrument_kwargs) -> s
     )
     tree.attrs["stac_discovery"] = _stac_item(name, lat0)
     path = tmp_path / f"{name}.zarr"
-    tree.to_zarr(path, mode="w", consolidated=True)
+    tree.to_zarr(path, mode="w", consolidated=True, zarr_format=zarr_format)
     return str(path)
 
 
@@ -212,6 +212,10 @@ def test_spatial_group_cannot_be_copied(tmp_path) -> None:
             "is a multiscale group",
         ),
         ({"copy_groups": {"/": {}}}, "root group cannot be copied"),
+        (
+            {"copy_groups": {"conditions/instrument": {}}, "exclude_groups": ["/conditions"]},
+            "parent 'conditions' is excluded",
+        ),
     ],
 )
 def test_settings_validation(extra, match) -> None:
@@ -324,7 +328,7 @@ def test_string_variable_is_refused_early(tmp_path) -> None:
     src = _tables_input(
         tmp_path, "s", {"names": (("n",), np.array(["a", "bb", "ccc"], dtype=object), {}, {})}
     )
-    with pytest.raises(ValueError, match="'names' has the data type object"):
+    with pytest.raises(ValueError, match="'names' has the data type .*not supported"):
         create_healpix_dataset([src], _settings({"conditions/tables": {}}), str(tmp_path / "o.zarr"))
     # left out: copied
     create_healpix_dataset(
@@ -340,3 +344,94 @@ def test_differing_scale_is_a_difference(tmp_path) -> None:
     b = _tables_input(tmp_path, "b", tables(0.25))
     with pytest.raises(ValueError, match=r"differs .*\['g'\]"):
         create_healpix_dataset([a, b], _settings({"conditions/tables": {}}), str(tmp_path / "o.zarr"))
+
+
+def _raw_zarr_input(tmp_path, name: str, zarr_format: int, arrays: dict, group_attrs=None) -> str:
+    """An input written with Zarr itself (as a product is), so that the stored
+    values, fill values and attributes are exactly those given."""
+    path = _input(tmp_path, f"{name}-v{zarr_format}", zarr_format=zarr_format)
+    root = zarr.open_group(path, mode="a", zarr_format=zarr_format)
+    group = root.require_group("conditions/tables")
+    group.attrs.update(group_attrs or {})
+    for vname, (values, fill, attrs, dims) in arrays.items():
+        values = np.asarray(values)
+        kwargs = {"dimension_names": dims} if zarr_format == 3 else {}
+        attributes = dict(attrs)
+        if zarr_format == 2:
+            attributes["_ARRAY_DIMENSIONS"] = list(dims)
+        a = group.create_array(vname, shape=values.shape, dtype=values.dtype,
+                               chunks=tuple(max(1, n) for n in values.shape),
+                               fill_value=fill, attributes=attributes, **kwargs)
+        a[...] = values
+    zarr.consolidate_metadata(path)
+    return path
+
+
+ARRAYS = {
+    "nan_and_fill": (np.array([1.0, np.nan, 3.0]), -999.0, {"units": "K"}, ("n",)),
+    "flag": (np.array([True, False, True]), False, {}, ("n",)),
+    "when": (np.array(["2020-01-01", "NaT", "2020-01-03"], dtype="datetime64[ns]"), None, {}, ("n",)),
+    "u64": (np.array([2**64 - 2, 7, 0], dtype="uint64"), 0, {"flag_values": [1, 2]}, ("n",)),
+    "f16": (np.array([0.5, 1.5, 2.5], dtype="float16"), None, {}, ("n",)),
+    "empty": (np.zeros((0,), dtype="int32"), -1, {}, ("m",)),
+}
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_arrays_copied_as_stored_by_zarr(tmp_path, zarr_format) -> None:
+    """The arrays as Zarr stores them: values (NaN beside a fill value, booleans,
+    datetimes with NaT, 64-bit unsigned, float16, empty), data type, fill value,
+    attributes, dimension names; and read by xarray as the input."""
+    src = _raw_zarr_input(tmp_path, "z", zarr_format, ARRAYS, group_attrs={"title": "tables"})
+    out = tmp_path / "out.zarr"
+    create_healpix_dataset([src], _settings({"conditions/tables": {}}), str(out))
+
+    gin = zarr.open_group(src, mode="r")["conditions/tables"]
+    gout = zarr.open_group(out, mode="r")["conditions/tables"]
+    assert dict(gout.attrs) == {"title": "tables"}
+    for name in ARRAYS:
+        a, b = gin[name], gout[name]
+        assert b.dtype == a.dtype, name
+        np.testing.assert_array_equal(b[...], a[...])
+        if zarr_format == 3:
+            assert dict(b.attrs) == dict(a.attrs), name
+            np.testing.assert_array_equal(np.asarray(b.fill_value), np.asarray(a.fill_value))
+            assert b.metadata.dimension_names == a.metadata.dimension_names, name
+        else:
+            assert b.metadata.dimension_names == tuple(a.attrs["_ARRAY_DIMENSIONS"]), name
+    assert np.isnan(gout["nan_and_fill"][1])  # the NaN is not replaced by the fill value
+    # a boolean is read as booleans (its fill value False is not a missing value)
+    assert xr.open_dataset(out, group="conditions/tables", engine="zarr")["flag"].dtype == bool
+    for name in ("nan_and_fill", "u64", "f16"):
+        xr.testing.assert_identical(
+            xr.open_dataset(out, group="conditions/tables", engine="zarr")[name],
+            xr.open_dataset(src, group="conditions/tables", engine="zarr")[name],
+        )
+
+
+def test_group_of_attributes_only_keeps_them(tmp_path) -> None:
+    src = _raw_zarr_input(tmp_path, "a", 3, {}, group_attrs={"keep": "me"})
+    out = tmp_path / "out.zarr"
+    create_healpix_dataset([src], _settings({"conditions/tables": {}}), str(out))
+    assert dict(zarr.open_group(out, mode="r")["conditions/tables"].attrs) == {"keep": "me"}
+
+
+def test_identical_inputs_with_nat_and_differing_attributes(tmp_path) -> None:
+    arrays = {"when": ARRAYS["when"], "v": (np.array([1, 2]), -1, {"valid_range": [0, 10]}, ("k",))}
+    a = _raw_zarr_input(tmp_path, "a", 3, arrays)
+    b = _raw_zarr_input(tmp_path, "b", 3, arrays)
+    out = tmp_path / "out.zarr"
+    create_healpix_dataset([a, b], _settings({"conditions/tables": {}}), str(out))  # NaT == NaT
+
+    arrays2 = dict(arrays, v=(np.array([1, 2]), -1, {"valid_range": [0, 5]}, ("k",)))
+    c = _raw_zarr_input(tmp_path, "c", 3, arrays2)
+    with pytest.raises(ValueError, match=r"differs .*\['v'\]"):
+        create_healpix_dataset([a, c], _settings({"conditions/tables": {}}), str(tmp_path / "o2.zarr"))
+
+
+def test_dry_run_copies_into_memory(tmp_path) -> None:
+    src = _input(tmp_path, "a")
+    tree = create_healpix_dataset(
+        [src], _settings({"conditions/instrument": {}}), str(tmp_path / "out.zarr"), dry_run=True
+    )
+    assert "solar_flux" in tree["conditions/instrument"].data_vars
