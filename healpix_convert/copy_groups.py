@@ -39,7 +39,11 @@ class _Table:
         else:
             self.dims = tuple(array.metadata.dimension_names or ())
         self.attrs = attrs
-        if self.zarr_format == 2 and self.dtype.kind in "mM" and self.fill_value is not None:
+        if (
+            self.zarr_format == 2
+            and self.dtype.kind in "mM"
+            and self.fill_value is not None
+        ):
             # xarray reads such a fill value as a missing value, and it cannot be
             # written as a _FillValue attribute: the copy would not read the same
             raise ValueError(
@@ -92,13 +96,22 @@ def _attrs_equal(a: Any, b: Any) -> bool:
             and set(a) == set(b)
             and all(_attrs_equal(a[k], b[k]) for k in a)
         )
-    if isinstance(a, (list, tuple, np.ndarray)) or isinstance(b, (list, tuple, np.ndarray)):
-        if not (isinstance(a, (list, tuple, np.ndarray)) and isinstance(b, (list, tuple, np.ndarray))):
+    if isinstance(a, (list, tuple, np.ndarray)) or isinstance(
+        b, (list, tuple, np.ndarray)
+    ):
+        if not (
+            isinstance(a, (list, tuple, np.ndarray))
+            and isinstance(b, (list, tuple, np.ndarray))
+        ):
             return False
         return len(a) == len(b) and all(_attrs_equal(x, y) for x, y in zip(a, b))
     if isinstance(a, (float, np.floating)) and isinstance(b, (float, np.floating)):
         return bool(a == b or (np.isnan(a) and np.isnan(b)))
-    return type(a) is type(b) and bool(a == b) if isinstance(a, str) or isinstance(b, str) else bool(a == b)
+    return (
+        type(a) is type(b) and bool(a == b)
+        if isinstance(a, str) or isinstance(b, str)
+        else bool(a == b)
+    )
 
 
 def _same(a: _Table, b: _Table) -> bool:
@@ -115,25 +128,28 @@ def _read_group(
 ) -> tuple[dict[str, Any], dict[str, _Table]]:
     """The attributes and the arrays (as stored) of a group of an input dataset,
     without the dropped variables."""
+    where = f"copied group {path.as_posix()!r}"
     try:
         group = zarr.open_group(input_path, mode="r")[path.as_posix()]
+        attrs = dict(group.attrs)
+        tables = {}
+        for name, array in sorted(group.arrays(), key=lambda item: item[0]):
+            if matches_any(name, settings.drop_variables):
+                continue
+            if array.dtype.kind in "OSUVT":
+                raise ValueError(
+                    f"{where}: variable {name!r} has the data type {array.dtype} "
+                    "(strings and other non-numeric types are not supported): "
+                    "leave it out with 'drop_variables'"
+                )
+            tables[name] = _Table(array, f"{where}: variable {name!r}")
+    except ValueError:
+        raise
     except Exception as err:
         raise ValueError(
-            f"copied group {path.as_posix()!r}: cannot read it from the input "
-            f"{input_path!r} ({err})"
+            f"{where}: cannot read it from the input {input_path!r} ({err})"
         ) from err
-    tables = {}
-    for name, array in sorted(group.arrays(), key=lambda item: item[0]):
-        if matches_any(name, settings.drop_variables):
-            continue
-        if array.dtype.kind in "OSUVT":
-            raise ValueError(
-                f"copied group {path.as_posix()!r}: variable {name!r} has the data "
-                f"type {array.dtype} (strings and other non-numeric types are not "
-                "supported): leave it out with 'drop_variables'"
-            )
-        tables[name] = _Table(array, f"copied group {path.as_posix()!r}: variable {name!r}")
-    return dict(group.attrs), tables
+    return attrs, tables
 
 
 def copy_group_tables(
@@ -146,15 +162,23 @@ def copy_group_tables(
 
     Raise a ValueError if the group is not the same in every input: the same
     arrays, with the same dimensions, data types, stored values, fill values and
-    attributes (the attributes of the group itself are taken from the first
-    input), or if it holds a non-numeric array.
+    attributes, and the same attributes of the group, or if it holds a
+    non-numeric array.
     """
     attrs, tables = _read_group(input_paths[0], path, settings)
 
     for index, input_path in enumerate(input_paths[1:], start=1):
-        _, other = _read_group(input_path, path, settings)
+        other_attrs, other = _read_group(input_path, path, settings)
+        if not _attrs_equal(attrs, other_attrs):
+            raise ValueError(
+                f"copied group {path.as_posix()!r} differs between the input "
+                f"datasets 0 and {index} (attributes of the group): it can only be "
+                "copied if it is the same in every input"
+            )
         differing = set(tables) ^ set(other)
-        differing |= {n for n in set(tables) & set(other) if not _same(tables[n], other[n])}
+        differing |= {
+            n for n in set(tables) & set(other) if not _same(tables[n], other[n])
+        }
         if differing:
             raise ValueError(
                 f"copied group {path.as_posix()!r} differs between the input "
@@ -166,7 +190,9 @@ def copy_group_tables(
     return attrs, tables
 
 
-def _write(output_store: Any, group_path: str, attrs: dict, tables: dict[str, _Table]) -> None:
+def _write(
+    output_store: Any, group_path: str, attrs: dict, tables: dict[str, _Table]
+) -> None:
     root = zarr.open_group(output_store, mode="a")
     group = root.require_group(group_path)
     group.attrs.update(attrs)

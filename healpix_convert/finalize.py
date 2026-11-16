@@ -58,6 +58,18 @@ def consolidation_paths(
     if consolidate.healpix_groups:
         for input_path in cache.input_spatial_groups:
             paths.append(output_groups.io_path_map[input_path])
+        # the groups copied unchanged (copy_groups) that the inputs have
+        input_groups = (
+            {
+                PurePath(g.strip("/"))
+                for g in next(iter(cache.input_datatrees.values())).groups
+            }
+            if cache.input_datatrees
+            else set()
+        )
+        for copied in settings.copy_groups:
+            if copied in input_groups and copied in output_groups.io_path_map:
+                paths.append(output_groups.io_path_map[copied])
 
     if consolidate.multiscale_groups:
         for input_path in output_groups.multiscale_groups:
