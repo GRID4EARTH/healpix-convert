@@ -176,6 +176,7 @@ def bin_samples(
     lon: str = "longitude",
     lat: str = "latitude",
     default_method: str | None = None,
+    dtypes: Mapping[str, Any] | None = None,
     ellipsoid: str = "WGS84",
     count_name: str = SAMPLE_COUNT,
     cell_dim: str = CELL_DIM,
@@ -214,6 +215,9 @@ def bin_samples(
         Method for the variables of the sample dimension that ``methods`` does
         not name. Without it such a variable is an error, so that no variable is
         lost or reduced by accident.
+    dtypes : mapping of str to dtype, optional
+        Output dtype of a variable, e.g. ``"float32"`` for an integer variable
+        reduced by ``"mean"`` (the reduced values are cast to it).
     ellipsoid : str
         Ellipsoid of the cells (``"WGS84"`` or ``"sphere"``).
     count_name : str
@@ -303,6 +307,8 @@ def bin_samples(
         dims = list(var.dims)
         dims[axis] = cell_dim
         reduced = np.moveaxis(reduced, 0, axis)
+        if dtypes and name in dtypes:
+            reduced = reduced.astype(dtypes[name])
         out[name] = xr.Variable(tuple(dims), reduced, attrs=dict(var.attrs))
 
     result = xr.Dataset(out, attrs=dict(ds.attrs))
