@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `copy_groups`: new group setting `per_input_variables`. The variables it names
+  (names or regular expressions) may differ between the input datasets: each
+  input's copy is written to the sub-group `inputs/<input name>` of the copied
+  group (the input name is the last component of its path or URL without
+  `.zarr`), also with a single input. The other variables are still copied once
+  and must be the same in every input.
+
 - New `copy_groups` setting: non-spatial input groups (with data but without
   latitude / longitude, e.g. per-detector calibration tables) can be copied
   unchanged to the output dataset, array by array with Zarr: stored values,

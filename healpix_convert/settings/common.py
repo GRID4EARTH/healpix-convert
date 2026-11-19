@@ -949,7 +949,16 @@ class CopyGroupSettings(BaseModel):
     expressions, matched against the whole name of each variable (data
     variable or coordinate)."""
 
-    @field_validator("drop_variables")
+    per_input_variables: list[str] = Field(default_factory=list)
+    """Variables of the group that differ between the input datasets, copied once
+    per input instead of once: names or regular expressions, matched against the
+    whole name of each variable (after ``drop_variables``). The copy of an input
+    is written to the sub-group ``inputs/<name of the input>`` of the copied group;
+    the name of an input is the last component of its path or URL, without the
+    ``.zarr`` suffix. The other variables are copied once and must be the same in
+    every input."""
+
+    @field_validator("drop_variables", "per_input_variables")
     @classmethod
     def validate_drop_variables(cls, value: list[str]) -> list[str]:
         check_patterns(value)
@@ -981,7 +990,8 @@ class ConvertSettings(BaseModel):
     attributes of the group.
 
     With several input datasets, the group must be the same in all of them (same
-    arrays, values, fill values and attributes); otherwise the conversion fails.
+    arrays, values, fill values and attributes); otherwise the conversion fails,
+    except for the variables of ``per_input_variables``, copied once per input.
     A non-spatial group not listed here is not written (a warning is logged).
     """
 
