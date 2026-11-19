@@ -695,12 +695,13 @@ def test_per_input_variables_single_input_same_layout(tmp_path) -> None:
     assert "temperature" not in group
 
 
-def test_per_input_variables_input_name_is_the_last_component(tmp_path) -> None:
+def test_per_input_variables_input_name_is_the_last_component() -> None:
     from healpix_convert.copy_groups import input_name
 
     assert input_name("https://example.org/a/S3A_SL_1_RBT_x.zarr") == "S3A_SL_1_RBT_x"
     assert input_name("/data/S3A_SL_1_RBT_x.zarr/") == "S3A_SL_1_RBT_x"
     assert input_name("plain") == "plain"
+    assert input_name("https://h/p/x.zarr?versionId=3") == "x"
 
 
 def test_per_input_variables_same_input_name_is_refused(tmp_path) -> None:
