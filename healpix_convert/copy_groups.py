@@ -39,7 +39,8 @@ CopiedGroup = tuple[dict[str, Any], dict[str, "_Table"], dict[str, dict[str, "_T
 def input_name(input_path: Any) -> str:
     """The name of an input dataset: the last component of its path or URL, without
     a trailing ``/`` or the ``.zarr`` suffix (for a Sentinel product, its id)."""
-    name = str(input_path).rstrip("/").rsplit("/", 1)[-1]
+    text = str(input_path).split("?", 1)[0].split("#", 1)[0]  # no query or fragment of a URL
+    name = text.rstrip("/").rsplit("/", 1)[-1]
     return name.removesuffix(".zarr")
 
 
