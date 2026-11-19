@@ -367,3 +367,59 @@ def test_float_to_integer_cast_rounds_and_handles_nan():
         bin_samples(nan_only, sample_dim="t", level=5, methods={"p": "mean"}, dtypes={"p": "i2"}, lon="lon", lat="lat")
     out = bin_samples(nan_only, sample_dim="t", level=5, methods={"p": "mean"}, dtypes={"p": "i2"}, fill_values={"p": -9}, lon="lon", lat="lat")
     assert out.p.values.tolist() == [-9]
+
+
+@pytest.mark.parametrize("method", ["first", "last", "min", "max", "mode"])
+def test_int64_with_fill_values_is_reduced_exactly(method):
+    big = 2**60 + 1  # not representable in float64
+    values = np.array([-1, big, big, -1], dtype="i8")
+    out = bin_samples(
+        _one_cell(v=values), sample_dim="t", level=5, methods={"v": method}, fill_values={"v": -1}, lon="lon", lat="lat"
+    )
+    assert out.v.dtype == np.int64 and out.v.values.tolist() == [big]
+    only_fill = bin_samples(
+        _one_cell(v=np.array([-1, -1], dtype="i8")), sample_dim="t", level=5, methods={"v": method},
+        fill_values={"v": -1}, lon="lon", lat="lat",
+    )
+    assert only_fill.v.values.tolist() == [-1]
+
+
+def test_uint64_max_and_integer_mode_with_ties_and_fill():
+    top = np.iinfo("u8").max
+    out = bin_samples(
+        _one_cell(v=np.array([0, 3, top, 3], dtype="u8")), sample_dim="t", level=5,
+        methods={"v": "max"}, fill_values={"v": 0}, lon="lon", lat="lat",
+    )
+    assert out.v.values.tolist() == [top]
+    out = bin_samples(
+        _one_cell(v=np.array([9, 4, 5, 4, 5], dtype="i2")), sample_dim="t", level=5,
+        methods={"v": "mode"}, fill_values={"v": 9}, lon="lon", lat="lat",
+    )
+    assert out.v.values.tolist() == [4]  # the tie of 4 and 5: the first met, the fill never counts
+
+
+def test_float32_with_fill_values_keeps_its_dtype():
+    ds = _one_cell(v=np.array([-999.0, 2.0, 4.0], dtype="f4"))
+    for method, expected in [("mean", 3.0), ("first", 2.0), ("max", 4.0), ("mode", 2.0)]:
+        out = bin_samples(ds, sample_dim="t", level=5, methods={"v": method}, fill_values={"v": -999.0}, lon="lon", lat="lat")
+        assert out.v.dtype == np.float32 and out.v.values.tolist() == [expected], method
+    assert "_FillValue" not in out.v.encoding
+
+
+def test_integer_outputs_with_a_fill_value_get_a_fill_value_encoding(tmp_path):
+    ds = _one_cell(a=np.array([-127, 5], dtype="i1"), m=np.array([-127, 5], dtype="i1"))
+    out = bin_samples(ds, sample_dim="t", level=5, methods={"a": "first", "m": "mean"}, fill_values={"a": -127, "m": -127}, lon="lon", lat="lat")
+    assert out.a.encoding["_FillValue"] == -127 and "_FillValue" not in out.m.encoding
+    path = str(tmp_path / "t.zarr")
+    write_cell_dataset(out, path, level=5)
+    back = xr.open_zarr(path, consolidated=True)
+    assert back.a.values.tolist() == [5]
+
+
+def test_float_to_integer_cast_refuses_inf_and_out_of_range():
+    for bad in (np.inf, -np.inf, 40000.0):
+        ds = _one_cell(p=np.array([bad, bad]))
+        with pytest.raises(ValueError, match="infinite or out of the range"):
+            bin_samples(ds, sample_dim="t", level=5, methods={"p": "max"}, dtypes={"p": "i2"}, lon="lon", lat="lat")
+    ok = bin_samples(_one_cell(p=np.array([32766.6, 1.0])), sample_dim="t", level=5, methods={"p": "max"}, dtypes={"p": "i2"}, lon="lon", lat="lat")
+    assert ok.p.values.tolist() == [32767]
