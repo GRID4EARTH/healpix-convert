@@ -501,3 +501,23 @@ def test_integer_fill_cells_become_nan_when_cast_to_float():
     by_count = dict(zip(out.sample_count.values.tolist(), out.v.values.tolist()))
     assert out.v.dtype == np.float32 and np.isnan(by_count[2]) and by_count[1] == 7.0
     assert "_FillValue" not in out.v.encoding
+
+
+def test_cast_fill_is_exact_for_large_integers_and_collisions_are_checked_in_integers():
+    # int64: -2**63 + 1 is not a float64; the fill must come out exactly
+    fill = -(2**63) + 1
+    ds = _one_cell(p=np.array([np.nan, np.nan]))
+    out = bin_samples(ds, sample_dim="t", level=5, methods={"p": "mean"}, dtypes={"p": "i8"}, fill_values={"p": fill}, lon="lon", lat="lat")
+    assert out.p.dtype == np.int64 and int(out.p.values[0]) == fill
+    # int32: 16777217 is not a float32 / float64-rounded-through-float32 value
+    fill32 = 16777217
+    out = bin_samples(ds, sample_dim="t", level=5, methods={"p": "mean"}, dtypes={"p": "i4"}, fill_values={"p": fill32}, lon="lon", lat="lat")
+    assert int(out.p.values[0]) == fill32
+    # no false collision: the valid value -2**63 differs from the fill -2**63 + 1 (equal as float64)
+    from healpix_convert.samples import _cast
+
+    out = _cast("p", np.array([-(2.0**63), np.nan]), "i8", fill)
+    assert out.tolist() == [-(2**63), fill]
+    # a real collision is still refused
+    with pytest.raises(ValueError, match="equals the fill value"):
+        _cast("p", np.array([7.0, np.nan]), "i2", 7)

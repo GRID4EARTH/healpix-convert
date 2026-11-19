@@ -135,11 +135,16 @@ def _cast(name: str, values: np.ndarray, dtype, fill) -> np.ndarray:
                     f"variable {name!r}: {int(bad.sum())} value(s) are infinite or out of the range "
                     f"of {dtype} [{info.min}, {info.max}] after rounding"
                 )
-            if fill is not None and (~nan & (rounded == fill)).any():
-                raise ValueError(
-                    f"variable {name!r}: a valid value equals the fill value {fill!r} after the cast to {dtype}"
-                )
-            return np.where(nan, fill if fill is not None else 0, rounded).astype(dtype)
+            # integer domain from here on: the fill is written as an integer, never through a float
+            out = rounded.astype(dtype)
+            if fill is not None:
+                fill_int = dtype.type(int(fill))
+                if (out[~nan] == fill_int).any():
+                    raise ValueError(
+                        f"variable {name!r}: a valid value equals the fill value {fill!r} after the cast to {dtype}"
+                    )
+                out[nan] = fill_int
+            return out
         if kind in "iub" and values.size:
             low, high = int(values.min()), int(values.max())
             if low < info.min or high > info.max:
