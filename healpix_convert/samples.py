@@ -89,7 +89,8 @@ def _pick(flat: np.ndarray, ok: np.ndarray, starts: np.ndarray, which: str):
 
 
 def _cast(name: str, values: np.ndarray, dtype, fill) -> np.ndarray:
-    """Cast reduced values to ``dtype``; a float to an integer is rounded and NaN becomes ``fill``."""
+    """Cast reduced values to ``dtype``; a float to an integer is rounded and NaN becomes ``fill``.
+    Inf and values out of the range of the integer type are an error (never wrapped)."""
     dtype = np.dtype(dtype)
     if values.dtype.kind == "f" and dtype.kind in "iu":
         nan = np.isnan(values)
@@ -97,7 +98,14 @@ def _cast(name: str, values: np.ndarray, dtype, fill) -> np.ndarray:
             raise ValueError(
                 f"variable {name!r}: NaN cannot be cast to {dtype}: give its fill value in fill_values"
             )
-        rounded = np.where(nan, 0, np.rint(values))
+        rounded = np.where(nan, 0, np.rint(np.where(np.isinf(values), np.nan, values)))
+        info = np.iinfo(dtype)
+        bad = np.isinf(values) | (~nan & ((rounded < info.min) | (rounded > info.max)))
+        if bad.any():
+            raise ValueError(
+                f"variable {name!r}: {int(bad.sum())} value(s) are infinite or out of the range "
+                f"of {dtype} [{info.min}, {info.max}] after rounding"
+            )
         return np.where(nan, fill if fill is not None else 0, rounded).astype(dtype)
     return values.astype(dtype)
 
@@ -108,8 +116,14 @@ def _reduce(
     sorted_values: np.ndarray,
     starts: np.ndarray,
     counts: np.ndarray,
+    ok: np.ndarray | None = None,
+    fill=None,
 ) -> np.ndarray:
     """Reduce ``sorted_values`` (samples first, any other shape) per group.
+
+    ``ok`` (same shape, integer values only) marks the valid samples; the others are left out, and
+    ``fill`` is the result of a group without a valid sample. Integers are reduced as integers,
+    except by mean, sum and rms (float64).
 
     The samples are sorted by cell (stably, so the samples of a cell stay in
     input order); ``starts`` and ``counts`` are the first position and the size
@@ -117,6 +131,27 @@ def _reduce(
     """
     values = sorted_values
     kind = values.dtype.kind
+
+    if ok is not None and kind in "iu":
+        if method in ("mean", "sum", "rms"):
+            sorted_values = values = np.where(ok, values.astype("float64"), np.nan)
+            kind = "f"
+        else:
+            flat = values.reshape(values.shape[0], -1)
+            okf = ok.reshape(flat.shape)
+            if method in ("first", "last"):
+                out, found = _pick(flat, okf, starts, method)
+            elif method == "mode":
+                out, found = _mode(flat, okf, starts, counts, fill), np.ones((starts.size, flat.shape[1]), bool)
+            else:
+                info = np.iinfo(values.dtype)
+                if method == "min":
+                    out = np.minimum.reduceat(np.where(okf, flat, info.max), starts, axis=0)
+                else:
+                    out = np.maximum.reduceat(np.where(okf, flat, info.min), starts, axis=0)
+                found = np.add.reduceat(okf.astype("int64"), starts, axis=0) > 0
+            out = np.where(found, out, fill).astype(values.dtype)
+            return out.reshape((starts.size,) + values.shape[1:])
 
     if method in ("first", "last"):
         if kind in "fMm":
@@ -155,7 +190,7 @@ def _reduce(
     flat = sorted_values.reshape(sorted_values.shape[0], -1)
 
     if method == "mode":
-        out = _mode(flat, starts, counts)
+        out = _mode(flat, ~np.isnan(flat) if kind == "f" else np.ones(flat.shape, bool), starts, counts, np.nan)
         return out.reshape((starts.size,) + values.shape[1:])
 
     if method in ("min", "max"):
@@ -181,28 +216,29 @@ def _reduce(
     return out.astype(values.dtype) if kind == "f" else out
 
 
-def _mode(flat: np.ndarray, starts: np.ndarray, counts: np.ndarray) -> np.ndarray:
-    """Most frequent value of each group and column (the first one met on a tie).
-
-    NaN is never counted, unless a group holds nothing else (then NaN is kept).
-    """
+def _mode(flat: np.ndarray, ok: np.ndarray, starts: np.ndarray, counts: np.ndarray, missing) -> np.ndarray:
+    """Most frequent valid value of each group and column (the first one met on a tie);
+    ``missing`` where a group has no valid value. ``ok`` marks the valid values."""
     out = flat[starts].copy()
+    first_bad = ~ok[starts]
+    if first_bad.any():
+        out[first_bad] = missing
     for group in np.nonzero(counts > 1)[0]:
-        block = flat[starts[group] : starts[group] + counts[group]]
+        sl = slice(starts[group], starts[group] + counts[group])
+        block, valid = flat[sl], ok[sl]
         k, n_columns = block.shape
         if k <= 64:
-            eq = block[:, None, :] == block[None, :, :]  # NaN != NaN: never counted
-            frequency = eq.sum(axis=1)  # (k, n_columns)
+            eq = (block[:, None, :] == block[None, :, :]) & valid[:, None, :] & valid[None, :, :]
+            frequency = eq.sum(axis=1)  # (k, n_columns); 0 for an invalid sample
             best = frequency.argmax(axis=0)
             picked = block[best, np.arange(n_columns)]
-            all_nan = frequency.max(axis=0) == 0
-            out[group] = np.where(all_nan, block[0], picked)
+            none = frequency.max(axis=0) == 0
+            out[group] = np.where(none, missing, picked) if none.any() else picked
         else:
             for column in range(n_columns):
-                values = block[:, column]
-                values = values[~np.isnan(values)] if values.dtype.kind == "f" else values
+                values = block[valid[:, column], column]
                 if values.size == 0:
-                    out[group, column] = block[0, column]
+                    out[group, column] = missing
                     continue
                 unique, first_index, frequency = np.unique(
                     values, return_index=True, return_counts=True
@@ -267,11 +303,13 @@ def bin_samples(
         reduced by ``"mean"`` (the reduced values are cast to it).
     fill_values : mapping of str to number, optional
         Input fill value of a variable (e.g. -127 of an int8 variable): samples equal to it
-        are left out of the reduction like NaN. With ``"first"``, ``"last"``, ``"mode"``,
-        ``"min"`` and ``"max"`` the result keeps the integer dtype, with the fill value where a
-        cell has no valid sample; with ``"mean"``, ``"sum"`` and ``"rms"`` it is float64 (NaN
+        are left out of the reduction like NaN. A float keeps its dtype (NaN where nothing is
+        valid). With ``"first"``, ``"last"``, ``"mode"``, ``"min"`` and ``"max"`` an integer is
+        reduced as an integer (exact for int64 / uint64) and keeps its dtype, with the fill
+        value where a cell has no valid sample; an integer output gets ``encoding["_FillValue"]``; with ``"mean"``, ``"sum"`` and ``"rms"`` it is float64 (NaN
         there). Also the value that a float reduction cast by ``dtypes`` to an integer gives
-        for NaN (such a cast rounds, and without a fill value it is an error when a NaN occurs).
+        for NaN (such a cast rounds; a NaN without a fill value, an Inf or a value out of the
+        range of the integer type is an error).
     ellipsoid : str
         Ellipsoid of the cells (``"WGS84"`` or ``"sphere"``).
     count_name : str
@@ -352,28 +390,28 @@ def bin_samples(
         axis = var.dims.index(sample_dim)
         data = np.moveaxis(var.values, axis, 0)
         fill = fill_values.get(name)
-        restore = None
-        if fill is not None and data.dtype.kind in "fiub":
-            # fill samples are left out: reduce in float64 with NaN, then restore the dtype
-            work = data.astype("float64")
-            work[work == fill] = np.nan
-            if data.dtype.kind != "f" and method not in ("mean", "sum", "rms"):
-                restore = data.dtype
-            data = work
-        # reduce on the valid samples only, sorted by cell
+        sorted_data = data[order_in_ds]  # the valid samples, sorted by cell
+        ok = None
+        if fill is not None and data.dtype.kind == "f":
+            # fill samples are left out like NaN, in the input float dtype
+            sorted_data = sorted_data.copy()
+            sorted_data[sorted_data == fill] = np.nan
+        elif fill is not None and data.dtype.kind in "iu":
+            ok = sorted_data != fill
         if starts.size:
-            reduced = _reduce(name, method, data[order_in_ds], starts, counts)
+            reduced = _reduce(name, method, sorted_data, starts, counts, ok, fill)
         else:  # no valid sample: the reduction of one dummy sample, cut to no cell
             dummy = np.zeros((1,) + data.shape[1:], dtype=data.dtype)
-            reduced = _reduce(name, method, dummy, np.array([0]), np.array([1]))[:0]
-        if restore is not None:
-            reduced = _cast(name, reduced, restore, fill)
+            reduced = _reduce(name, method, dummy, np.array([0]), np.array([1]), None if ok is None else np.ones(dummy.shape, bool), fill)[:0]
         dims = list(var.dims)
         dims[axis] = cell_dim
         reduced = np.moveaxis(reduced, 0, axis)
         if dtypes and name in dtypes:
             reduced = _cast(name, reduced, dtypes[name], fill)
         out[name] = xr.Variable(tuple(dims), reduced, attrs=dict(var.attrs))
+        if fill is not None and reduced.dtype.kind in "iu":
+            # the fill value of the integer output, for generic readers (written as the Zarr fill value)
+            out[name].encoding["_FillValue"] = fill
 
     result = xr.Dataset(out, attrs=dict(ds.attrs))
     result = result.assign_coords({cell_ids_name: (cell_dim, unique.astype("uint64"))})
