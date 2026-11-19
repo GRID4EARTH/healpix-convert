@@ -88,25 +88,69 @@ def _pick(flat: np.ndarray, ok: np.ndarray, starts: np.ndarray, which: str):
     return out, found
 
 
-def _cast(name: str, values: np.ndarray, dtype, fill) -> np.ndarray:
-    """Cast reduced values to ``dtype``; a float to an integer is rounded and NaN becomes ``fill``.
-    Inf and values out of the range of the integer type are an error (never wrapped)."""
+def _check_fill(name: str, fill, dtype) -> None:
+    """The fill value must be a value of ``dtype`` (a clear error, not a raw OverflowError)."""
     dtype = np.dtype(dtype)
-    if values.dtype.kind == "f" and dtype.kind in "iu":
-        nan = np.isnan(values)
-        if nan.any() and fill is None:
-            raise ValueError(
-                f"variable {name!r}: NaN cannot be cast to {dtype}: give its fill value in fill_values"
-            )
-        rounded = np.where(nan, 0, np.rint(np.where(np.isinf(values), np.nan, values)))
+    if dtype.kind in "iu":
         info = np.iinfo(dtype)
-        bad = np.isinf(values) | (~nan & ((rounded < info.min) | (rounded > info.max)))
-        if bad.any():
+        try:
+            ok = int(fill) == fill and info.min <= int(fill) <= info.max
+        except (TypeError, ValueError, OverflowError):
+            ok = False
+        if not ok:
             raise ValueError(
-                f"variable {name!r}: {int(bad.sum())} value(s) are infinite or out of the range "
-                f"of {dtype} [{info.min}, {info.max}] after rounding"
+                f"variable {name!r}: the fill value {fill!r} is not a value of {dtype} [{info.min}, {info.max}]"
             )
-        return np.where(nan, fill if fill is not None else 0, rounded).astype(dtype)
+    elif dtype.kind == "b" and fill not in (0, 1):
+        raise ValueError(f"variable {name!r}: the fill value {fill!r} of a bool variable must be 0 or 1")
+
+
+def _cast(name: str, values: np.ndarray, dtype, fill) -> np.ndarray:
+    """Cast reduced values to ``dtype``.
+
+    To an integer: the fill value must fit ``dtype``; a float is rounded, NaN becomes ``fill``;
+    Inf, a value out of the range of the type, and a valid value that equals ``fill`` are errors
+    (never wrapped, never confused with the fill); an integer out of the range is an error.
+    From an integer to a float: the fill value (a cell without a valid sample) becomes NaN.
+    """
+    dtype = np.dtype(dtype)
+    kind = values.dtype.kind
+    if dtype.kind in "iu":
+        if fill is not None:
+            _check_fill(name, fill, dtype)
+        info = np.iinfo(dtype)
+        if kind == "f":
+            nan = np.isnan(values)
+            if nan.any() and fill is None:
+                raise ValueError(
+                    f"variable {name!r}: NaN cannot be cast to {dtype}: give its fill value in fill_values"
+                )
+            rounded = np.where(nan, 0, np.rint(np.where(np.isinf(values), np.nan, values)))
+            # the bounds as floats: 2**(bits-1) / 2**bits are exact, float(info.max) is not
+            upper = 2.0 ** (info.bits - 1) if dtype.kind == "i" else 2.0**info.bits
+            lower = -(2.0 ** (info.bits - 1)) if dtype.kind == "i" else 0.0
+            bad = np.isinf(values) | (~nan & ((rounded < lower) | (rounded >= upper)))
+            if bad.any():
+                raise ValueError(
+                    f"variable {name!r}: {int(bad.sum())} value(s) are infinite or out of the range "
+                    f"of {dtype} [{info.min}, {info.max}] after rounding"
+                )
+            if fill is not None and (~nan & (rounded == fill)).any():
+                raise ValueError(
+                    f"variable {name!r}: a valid value equals the fill value {fill!r} after the cast to {dtype}"
+                )
+            return np.where(nan, fill if fill is not None else 0, rounded).astype(dtype)
+        if kind in "iub" and values.size:
+            low, high = int(values.min()), int(values.max())
+            if low < info.min or high > info.max:
+                raise ValueError(
+                    f"variable {name!r}: values [{low}, {high}] are out of the range of {dtype} [{info.min}, {info.max}]"
+                )
+        return values.astype(dtype)
+    if dtype.kind == "f" and kind in "iu" and fill is not None:
+        out = values.astype(dtype)
+        out[values == fill] = np.nan
+        return out
     return values.astype(dtype)
 
 
@@ -306,7 +350,10 @@ def bin_samples(
         are left out of the reduction like NaN. A float keeps its dtype (NaN where nothing is
         valid). With ``"first"``, ``"last"``, ``"mode"``, ``"min"`` and ``"max"`` an integer is
         reduced as an integer (exact for int64 / uint64) and keeps its dtype, with the fill
-        value where a cell has no valid sample; an integer output gets ``encoding["_FillValue"]``; with ``"mean"``, ``"sum"`` and ``"rms"`` it is float64 (NaN
+        value where a cell has no valid sample; an integer output gets ``encoding["_FillValue"]``
+        (``write_cell_dataset`` writes it as the CF ``_FillValue`` and as the Zarr fill value);
+        a bool variable is reduced as 0 / 1 and returned as bool (a cell without a valid sample
+        holds the fill value); with ``"mean"``, ``"sum"`` and ``"rms"`` it is float64 (NaN
         there). Also the value that a float reduction cast by ``dtypes`` to an integer gives
         for NaN (such a cast rounds; a NaN without a fill value, an Inf or a value out of the
         range of the integer type is an error).
@@ -390,6 +437,11 @@ def bin_samples(
         axis = var.dims.index(sample_dim)
         data = np.moveaxis(var.values, axis, 0)
         fill = fill_values.get(name)
+        was_bool = fill is not None and data.dtype.kind == "b"
+        if fill is not None:
+            _check_fill(name, fill, data.dtype)
+        if was_bool:  # reduced as 0 / 1 integers, returned as bool
+            data, fill = data.astype("u1"), int(fill)
         sorted_data = data[order_in_ds]  # the valid samples, sorted by cell
         ok = None
         if fill is not None and data.dtype.kind == "f":
@@ -403,14 +455,17 @@ def bin_samples(
         else:  # no valid sample: the reduction of one dummy sample, cut to no cell
             dummy = np.zeros((1,) + data.shape[1:], dtype=data.dtype)
             reduced = _reduce(name, method, dummy, np.array([0]), np.array([1]), None if ok is None else np.ones(dummy.shape, bool), fill)[:0]
+        if was_bool and reduced.dtype == np.dtype("u1"):
+            reduced = reduced.astype(bool)
         dims = list(var.dims)
         dims[axis] = cell_dim
         reduced = np.moveaxis(reduced, 0, axis)
         if dtypes and name in dtypes:
-            reduced = _cast(name, reduced, dtypes[name], fill)
+            reduced = _cast(name, reduced, dtypes[name], None if was_bool else fill)
         out[name] = xr.Variable(tuple(dims), reduced, attrs=dict(var.attrs))
         if fill is not None and reduced.dtype.kind in "iu":
-            # the fill value of the integer output, for generic readers (written as the Zarr fill value)
+            # the fill value of the integer output (a CF ``_FillValue``: write_cell_dataset also sets
+            # the Zarr array fill_value to it), so that generic readers mask it
             out[name].encoding["_FillValue"] = fill
 
     result = xr.Dataset(out, attrs=dict(ds.attrs))
@@ -561,20 +616,24 @@ def write_cell_dataset(
         ds[CF_GRID_MAPPING_VARIABLE] = xr.DataArray(np.int8(0), attrs=grid_mapping)
     ds.attrs.update(get_healpix_group_attrs(healpix, metadata))
 
-    encoding = {}
-    if chunks is not None:
-        for name, var in ds.variables.items():
-            if cell_dim in var.dims:
-                encoding[str(name)] = {
-                    "chunks": tuple(max(1, min(chunks, s)) if d == cell_dim else max(1, s) for d, s in zip(var.dims, var.shape))
-                }
+    for name, var in ds.variables.items():
+        enc = dict(var.encoding)
+        if "_FillValue" in var.attrs:  # an attribute would clash with the encoding: move it
+            enc.setdefault("_FillValue", var.attrs["_FillValue"])
+            var.attrs = {k: v for k, v in var.attrs.items() if k != "_FillValue"}
+        if "_FillValue" in enc and enc["_FillValue"] is not None and var.dtype.kind in "iu":
+            enc["fill_value"] = enc["_FillValue"]  # the Zarr array fill_value agrees with the CF attribute
+        if chunks is not None and cell_dim in var.dims:
+            enc["chunks"] = tuple(
+                max(1, min(chunks, s)) if d == cell_dim else max(1, s) for d, s in zip(var.dims, var.shape)
+            )
+        var.encoding = enc
     ds.to_zarr(
         store,
         group=group,
         mode="w",
         zarr_format=3,
         consolidated=False,
-        encoding=encoding or None,
         storage_options=dict(storage_options) if storage_options else None,
     )
 

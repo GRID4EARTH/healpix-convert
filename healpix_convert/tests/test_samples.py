@@ -423,3 +423,81 @@ def test_float_to_integer_cast_refuses_inf_and_out_of_range():
             bin_samples(ds, sample_dim="t", level=5, methods={"p": "max"}, dtypes={"p": "i2"}, lon="lon", lat="lat")
     ok = bin_samples(_one_cell(p=np.array([32766.6, 1.0])), sample_dim="t", level=5, methods={"p": "max"}, dtypes={"p": "i2"}, lon="lon", lat="lat")
     assert ok.p.values.tolist() == [32767]
+
+
+def _zarr_array_json(path, name, group=None):
+    import json
+    import pathlib
+
+    base = pathlib.Path(path) / (group or "") / name / "zarr.json"
+    return json.loads(base.read_text())
+
+
+def test_fill_value_survives_chunks_and_is_the_zarr_fill_value_too(tmp_path):
+    ds = _one_cell(a=np.array([-127, 5], dtype="i1"))
+    out = bin_samples(ds, sample_dim="t", level=5, methods={"a": "first"}, fill_values={"a": -127}, lon="lon", lat="lat")
+    path = str(tmp_path / "t.zarr")
+    write_cell_dataset(out, path, level=5, chunks=1)
+    meta = _zarr_array_json(path, "a")
+    assert meta["fill_value"] == -127  # the Zarr array fill value agrees with the CF _FillValue
+    assert xr.open_zarr(path, consolidated=True).a.attrs.get("_FillValue", -127) == -127
+    raw = xr.open_zarr(path, consolidated=True, mask_and_scale=False).a
+    assert raw.dtype == np.int8
+
+
+def test_an_input_fill_value_attribute_is_moved_into_the_encoding(tmp_path):
+    ds = _one_cell(a=np.array([3, 5], dtype="i1"))
+    ds["a"].attrs["_FillValue"] = np.int8(-1)
+    out = bin_samples(ds, sample_dim="t", level=5, methods={"a": "first"}, lon="lon", lat="lat")
+    assert out.a.attrs["_FillValue"] == -1
+    path = str(tmp_path / "t.zarr")
+    write_cell_dataset(out, path, level=5)  # used to fail: "_FillValue already exists in attrs"
+    assert _zarr_array_json(path, "a")["fill_value"] == -1
+    assert out.a.attrs["_FillValue"] == -1  # the caller's dataset is not modified
+
+
+def test_cast_bounds_at_2_63_and_2_64():
+    for dtype, bad in [("i8", 2.0**63), ("u8", 2.0**64), ("i8", -(2.0**63) - 2048.0)]:
+        ds = _one_cell(p=np.array([bad, bad]))
+        with pytest.raises(ValueError, match="out of the range"):
+            bin_samples(ds, sample_dim="t", level=5, methods={"p": "max"}, dtypes={"p": dtype}, lon="lon", lat="lat")
+    ok = bin_samples(_one_cell(p=np.array([-(2.0**63)] * 2)), sample_dim="t", level=5, methods={"p": "max"}, dtypes={"p": "i8"}, lon="lon", lat="lat")
+    assert ok.p.values.tolist() == [-(2**63)]
+
+
+def test_integer_casts_check_the_range_and_the_fill_fits():
+    ds = _one_cell(v=np.array([100, 200], dtype="i2"))
+    with pytest.raises(ValueError, match="out of the range of int8"):
+        bin_samples(ds, sample_dim="t", level=5, methods={"v": "max"}, dtypes={"v": "i1"}, lon="lon", lat="lat")
+    ok = bin_samples(ds, sample_dim="t", level=5, methods={"v": "min"}, dtypes={"v": "i1"}, lon="lon", lat="lat")
+    assert ok.v.dtype == np.int8 and ok.v.values.tolist() == [100]
+    # a fill value outside the dtype of the data: a clear error
+    with pytest.raises(ValueError, match="not a value of int8"):
+        bin_samples(_one_cell(v=np.array([1, 2], dtype="i1")), sample_dim="t", level=5, methods={"v": "first"}, fill_values={"v": -1000}, lon="lon", lat="lat")
+    # ... and a fill that does not fit the output dtype of a cast
+    with pytest.raises(ValueError, match="not a value of uint8"):
+        bin_samples(_one_cell(v=np.array([1, 2], dtype="i2")), sample_dim="t", level=5, methods={"v": "first"}, dtypes={"v": "u1"}, fill_values={"v": -9}, lon="lon", lat="lat")
+
+
+def test_bool_with_fill_values_is_handled():
+    ds = _one_cell(b=np.array([True, True, False]))
+    out = bin_samples(ds, sample_dim="t", level=5, methods={"b": "first"}, fill_values={"b": False}, lon="lon", lat="lat")
+    assert out.b.dtype == np.bool_ and out.b.values.tolist() == [True]  # the False sample is the fill: left out
+    out = bin_samples(ds, sample_dim="t", level=5, methods={"b": "mean"}, fill_values={"b": False}, lon="lon", lat="lat")
+    assert out.b.values.tolist() == [1.0]
+    with pytest.raises(ValueError, match="must be 0 or 1"):
+        bin_samples(ds, sample_dim="t", level=5, methods={"b": "first"}, fill_values={"b": 5}, lon="lon", lat="lat")
+
+
+def test_a_valid_value_equal_to_the_fill_after_a_cast_is_refused():
+    ds = _one_cell(p=np.array([3.0, 5.0]))  # mean 4 -> int 4 == the fill value 4
+    with pytest.raises(ValueError, match="equals the fill value"):
+        bin_samples(ds, sample_dim="t", level=5, methods={"p": "mean"}, dtypes={"p": "i2"}, fill_values={"p": 4}, lon="lon", lat="lat")
+
+
+def test_integer_fill_cells_become_nan_when_cast_to_float():
+    ds = xr.Dataset({"lon": ("t", [0.0, 0.0, 50.0]), "lat": ("t", [0.0, 0.0, 50.0]), "v": ("t", np.array([-1, -1, 7], dtype="i2"))})
+    out = bin_samples(ds, sample_dim="t", level=6, methods={"v": "first"}, dtypes={"v": "f4"}, fill_values={"v": -1}, lon="lon", lat="lat")
+    by_count = dict(zip(out.sample_count.values.tolist(), out.v.values.tolist()))
+    assert out.v.dtype == np.float32 and np.isnan(by_count[2]) and by_count[1] == 7.0
+    assert "_FillValue" not in out.v.encoding
