@@ -386,6 +386,7 @@ def write_cell_dataset(
     cell_axis: str = "last",
     chunks: int | None = None,
     consolidate: bool = True,
+    storage_options: Mapping[str, Any] | None = None,
 ) -> None:
     """Write a dataset on sparse nested cells as a Zarr (v3) store with the DGGS
     metadata of the converters.
@@ -421,6 +422,8 @@ def write_cell_dataset(
         Chunk size along the cell dimension (all the cells in one chunk if None).
     consolidate : bool
         Write consolidated metadata (root and group).
+    storage_options : mapping, optional
+        fsspec options for a remote ``store`` URL (e.g. ``s3://``).
 
     """
     import zarr
@@ -468,9 +471,10 @@ def write_cell_dataset(
         zarr_format=3,
         consolidated=False,
         encoding=encoding or None,
+        storage_options=dict(storage_options) if storage_options else None,
     )
 
-    root = zarr.open_group(store, mode="r+")
+    root = zarr.open_group(store, mode="r+", storage_options=dict(storage_options) if storage_options else None)
     write_root_conventions(root, metadata)
     if root_attrs:
         root.attrs.update(dict(root_attrs))
