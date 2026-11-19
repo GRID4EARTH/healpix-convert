@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- `ERA5Converter` takes its variable tables as arguments: `enda_variables`
+  (an empty table writes no enda group and requests nothing from the EDA, so
+  any hour can be converted), `oper_variables`, and `pressure_levels` with
+  `pl_variables` (temperature, specific and relative humidity by default),
+  requested from the oper stream on the oper grid and written to the oper group
+  as `t_isobaric`, `q_isobaric`, `r_isobaric` with dimensions
+  `(time, isobaric, cells)`, one level per chunk, and an `isobaric` coordinate
+  in hPa. A missing level is refused. `root_attributes` adds attributes to the
+  root group (e.g. the version of a production). The STAC properties now record
+  the request of each GRIB file (`source_requests`, also public as
+  `requests()`), the experiment version actually received (`source_expver`:
+  `0001` ERA5, `0005` ERA5T; per analysis time in the `source_expver`
+  attribute of each group), the resampler settings (`resampling:parameters`),
+  and `processing:datetime`, `processing:software`, `processing:lineage`
+  (with the processing extension declared).
+  Without the new arguments the groups, arrays, values and GRIB file names are
+  unchanged; a table other than the default gets its own GRIB file name, so a
+  file downloaded for another table is never reused. A requested variable that
+  is missing from the GRIB is now refused instead of being left out with a
+  warning.
 - New `copy_groups` setting: non-spatial input groups (with data but without
   latitude / longitude, e.g. per-detector calibration tables) can be copied
   unchanged to the output dataset, array by array with Zarr: stored values,
