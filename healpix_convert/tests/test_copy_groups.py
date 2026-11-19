@@ -262,7 +262,9 @@ def test_settings_validation(extra, match) -> None:
 def test_settings_roundtrip() -> None:
     settings = _settings({"conditions/instrument": {"drop_variables": ["x"]}})
     dumped = settings.model_dump(mode="json")
-    assert dumped["copy_groups"] == {"conditions/instrument": {"drop_variables": ["x"]}}
+    assert dumped["copy_groups"] == {
+        "conditions/instrument": {"drop_variables": ["x"], "per_input_variables": []}
+    }
     assert ConvertSettings.model_validate(dumped) == settings
 
 
@@ -639,3 +641,106 @@ def test_copied_group_has_its_own_consolidated_metadata(tmp_path) -> None:
         out, path="conditions/instrument", mode="r", use_consolidated=True
     )
     assert "solar_flux" in group.metadata.consolidated_metadata.metadata
+
+
+def test_per_input_variables_one_sub_group_per_input(tmp_path) -> None:
+    # the variable that differs between the inputs is copied once per input, into
+    # inputs/<input name>; the others once, and must still be the same
+    srcs = [
+        _input(tmp_path, "frame_a", lat0=-1.0),
+        _input(tmp_path, "frame_b", lat0=0.5, temperature_offset=3.0),
+    ]
+    out = tmp_path / "out.zarr"
+    settings = _settings(
+        {"conditions/instrument": {"per_input_variables": ["temp.*"]}}
+    )
+
+    create_healpix_dataset(srcs, settings, str(out))
+
+    root = zarr.open_group(out, mode="r")
+    group = root["conditions/instrument"]
+    assert "temperature" not in group  # not at the group level
+    assert sorted(a for a, _ in group.arrays()) == ["detectors", "gain", "solar_flux"]
+    for name, offset in (("frame_a", 0.0), ("frame_b", 3.0)):
+        array = group[f"inputs/{name}/temperature"]
+        assert array[...].tolist() == [offset + i for i in range(4)]
+        assert array.attrs["units"] == "K"
+        assert tuple(array.metadata.dimension_names) == ("rows",)
+    # in the consolidated metadata of the output
+    tree = xr.open_datatree(out, engine="zarr", consolidated=True)
+    assert "temperature" in tree["conditions/instrument/inputs/frame_b"].data_vars
+
+    # a shared variable that differs is still refused
+    srcs2 = [
+        _input(tmp_path, "frame_c", lat0=-1.0),
+        _input(tmp_path, "frame_d", lat0=0.5, flux_offset=1.0),
+    ]
+    with pytest.raises(ValueError, match=r"differs .*\['solar_flux'\]"):
+        create_healpix_dataset(srcs2, settings, str(tmp_path / "out2.zarr"))
+
+
+def test_per_input_variables_single_input_same_layout(tmp_path) -> None:
+    # one input gives one sub-group: the layout does not depend on the number of inputs
+    src = _input(tmp_path, "only_frame")
+    out = tmp_path / "out.zarr"
+
+    create_healpix_dataset(
+        [src],
+        _settings({"conditions/instrument": {"per_input_variables": ["temperature"]}}),
+        str(out),
+    )
+
+    group = zarr.open_group(out, mode="r")["conditions/instrument"]
+    assert group["inputs/only_frame/temperature"].shape == (4,)
+    assert "temperature" not in group
+
+
+def test_per_input_variables_input_name_is_the_last_component(tmp_path) -> None:
+    from healpix_convert.copy_groups import input_name
+
+    assert input_name("https://example.org/a/S3A_SL_1_RBT_x.zarr") == "S3A_SL_1_RBT_x"
+    assert input_name("/data/S3A_SL_1_RBT_x.zarr/") == "S3A_SL_1_RBT_x"
+    assert input_name("plain") == "plain"
+
+
+def test_per_input_variables_same_input_name_is_refused(tmp_path) -> None:
+    (tmp_path / "x").mkdir()
+    (tmp_path / "y").mkdir()
+    srcs = [_input(tmp_path / "x", "same"), _input(tmp_path / "y", "same", lat0=0.5)]
+
+    with pytest.raises(ValueError, match="same name"):
+        create_healpix_dataset(
+            srcs,
+            _settings({"conditions/instrument": {"per_input_variables": ["temperature"]}}),
+            str(tmp_path / "out.zarr"),
+        )
+
+
+def test_per_input_variables_invalid_pattern() -> None:
+    with pytest.raises(pydantic.ValidationError, match="invalid regular expression"):
+        _settings({"conditions/instrument": {"per_input_variables": ["("]}})
+
+
+def test_per_input_variables_all_variables_of_a_group(tmp_path) -> None:
+    # a group that holds only per-row tables (e.g. times per row): every variable per input
+    srcs = [
+        _input(tmp_path, "frame_a", lat0=-1.0),
+        _input(tmp_path, "frame_b", lat0=0.5, temperature_offset=3.0, flux_offset=2.0),
+    ]
+    out = tmp_path / "out.zarr"
+
+    create_healpix_dataset(
+        srcs,
+        _settings({"conditions/instrument": {"per_input_variables": [".*"]}}),
+        str(out),
+    )
+
+    group = zarr.open_group(out, mode="r")["conditions/instrument"]
+    assert not list(group.arrays())
+    assert sorted(a for a, _ in group["inputs/frame_b"].arrays()) == [
+        "detectors",
+        "gain",
+        "solar_flux",
+        "temperature",
+    ]
+    assert group["inputs/frame_b/solar_flux"][0, 0] == 1002.0
