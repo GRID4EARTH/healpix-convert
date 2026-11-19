@@ -268,3 +268,15 @@ def test_write_cell_dataset_cell_axis_first_and_chunks(tmp_path):
     assert back.temperature.dims == ("cells", "z")
     assert "ellipsoid" not in back.attrs["dggs"]
     assert back.temperature.encoding["chunks"][0] == 2
+
+
+def test_dtypes_casts_the_reduced_values():
+    ds = xr.Dataset(
+        {"lon": ("t", [0.0, 0.0]), "lat": ("t", [0.0, 0.0]), "p": ("t", np.array([10, 21], dtype="i1"))}
+    )
+    out = bin_samples(
+        ds, sample_dim="t", level=5, methods={"p": "mean"}, dtypes={"p": "float32"}, lon="lon", lat="lat"
+    )
+    assert out.p.dtype == np.float32 and out.p.values.tolist() == [15.5]
+    out = bin_samples(ds, sample_dim="t", level=5, methods={"p": "mean"}, lon="lon", lat="lat")
+    assert out.p.dtype == np.float64
