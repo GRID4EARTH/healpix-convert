@@ -13,7 +13,9 @@
   carried through. `split_by_parent` cuts the result into one dataset per cell
   of a coarser level, and `write_cell_dataset` writes one as a Zarr store with
   the DGGS and CF metadata of the converters (`cells` dimension, `cell_ids`
-  coordinate, cell dimension last). Nothing is resampled: a sample is never
+  coordinate, cell dimension last). `first` and `last` take the first / last valid
+  sample (not NaN, NaT or the fill value given in `fill_values`), an empty input gives
+  an empty dataset, and `valid_positions` is the rule for usable positions. Nothing is resampled: a sample is never
   spread over cells, so the counts add up to the number of valid samples.
 - New `copy_groups` setting: non-spatial input groups (with data but without
   latitude / longitude, e.g. per-detector calibration tables) can be copied
