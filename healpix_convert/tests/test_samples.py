@@ -280,3 +280,90 @@ def test_dtypes_casts_the_reduced_values():
     assert out.p.dtype == np.float32 and out.p.values.tolist() == [15.5]
     out = bin_samples(ds, sample_dim="t", level=5, methods={"p": "mean"}, lon="lon", lat="lat")
     assert out.p.dtype == np.float64
+
+
+def _one_cell(**variables):
+    n = len(next(iter(variables.values())))
+    return xr.Dataset({"lon": ("t", np.zeros(n)), "lat": ("t", np.zeros(n)), **{k: ("t", np.asarray(v)) for k, v in variables.items()}})
+
+
+@pytest.mark.parametrize("method,expected", [("first", 2.0), ("last", 4.0)])
+def test_first_and_last_skip_nan(method, expected):
+    ds = _one_cell(v=[np.nan, 2.0, 3.0, 4.0, np.nan])
+    out = bin_samples(ds, sample_dim="t", level=5, methods={"v": method}, lon="lon", lat="lat")
+    assert out.v.values.tolist() == [expected]
+    all_nan = _one_cell(v=[np.nan, np.nan])
+    out = bin_samples(all_nan, sample_dim="t", level=5, methods={"v": method}, lon="lon", lat="lat")
+    assert np.isnan(out.v.values).all()
+
+
+def test_first_skips_nat_per_column():
+    t = np.array(["NaT", "2026-01-02", "2026-01-03"], dtype="datetime64[ns]")
+    out = bin_samples(_one_cell(time=t), sample_dim="t", level=5, methods={"time": "first"}, lon="lon", lat="lat")
+    assert out.time.values[0] == t[1]
+
+
+def test_fill_values_are_left_out_of_every_reduction():
+    ds = _one_cell(
+        a=np.array([-127, 5, 7, 5], dtype="i1"),
+        b=np.array([-127, 5, 9], dtype="i1")[:3].tolist() + [-127],
+    )
+    ds["b"] = ds["b"].astype("i1")
+    fills = {"a": -127, "b": -127}
+    out = bin_samples(ds, sample_dim="t", level=5, methods={"a": "first", "b": "max"}, fill_values=fills, lon="lon", lat="lat")
+    assert out.a.dtype == np.int8 and out.a.values.tolist() == [5]
+    assert out.b.values.tolist() == [9]
+    out = bin_samples(ds, sample_dim="t", level=5, methods={"a": "mean", "b": "mode"}, fill_values=fills, lon="lon", lat="lat")
+    assert out.a.dtype == np.float64 and out.a.values.tolist() == pytest.approx([17 / 3])
+    assert out.b.dtype == np.int8 and out.b.values.tolist() == [5]
+    # a cell with nothing valid: the fill value, not 0 and not NaN
+    only_fill = _one_cell(a=np.array([-127, -127], dtype="i1"))
+    out = bin_samples(only_fill, sample_dim="t", level=5, methods={"a": "first"}, fill_values={"a": -127}, lon="lon", lat="lat")
+    assert out.a.values.tolist() == [-127] and out.a.dtype == np.int8
+    out = bin_samples(only_fill, sample_dim="t", level=5, methods={"a": "mean"}, fill_values={"a": -127}, lon="lon", lat="lat")
+    assert np.isnan(out.a.values).all()
+
+
+def test_valid_positions_is_the_rule_of_bin_samples():
+    from healpix_convert.samples import valid_positions
+
+    lon = np.array([0.0, np.nan, 1.0, 2.0, 400.0])
+    lat = np.array([0.0, 0.0, np.nan, 95.0, 0.0])
+    ds = xr.Dataset({"lon": ("t", lon), "lat": ("t", lat), "v": ("t", np.arange(5.0))})
+    out = bin_samples(ds, sample_dim="t", level=6, methods={"v": "mean"}, lon="lon", lat="lat")
+    assert valid_positions(lon, lat).tolist() == [True, False, False, False, False]
+    assert int(out.sample_count.sum()) == int(valid_positions(lon, lat).sum())
+
+
+def test_no_valid_sample_gives_an_empty_dataset():
+    ds = xr.Dataset(
+        {
+            "lon": ("t", [np.nan, np.nan]),
+            "lat": ("t", [np.nan, np.nan]),
+            "v": (("t", "z"), np.ones((2, 4), dtype="f4")),
+            "k": ("t", np.ones(2, dtype="i1")),
+            "s": ((), 3),
+        }
+    )
+    out = bin_samples(ds, sample_dim="t", level=6, methods={"v": "mean", "k": "mode"}, lon="lon", lat="lat")
+    assert out.sizes["cells"] == 0 and out.sizes["z"] == 4
+    assert out.sample_count.shape == (0,) and out.attrs["n_samples_binned"] == 0
+    assert out.v.dtype == np.float32 and out.k.dtype == np.int8
+    assert int(out.s) == 3
+
+
+def test_chunks_zero_is_refused(tmp_path):
+    out = bin_samples(_samples(), sample_dim="t", level=LEVEL, methods=METHODS, lon="lon", lat="lat")
+    with pytest.raises(ValueError, match="chunks"):
+        write_cell_dataset(out, str(tmp_path / "x.zarr"), level=LEVEL, chunks=0)
+
+
+def test_float_to_integer_cast_rounds_and_handles_nan():
+    ds = _one_cell(p=np.array([1.0, 2.0, np.nan]))
+    out = bin_samples(ds, sample_dim="t", level=5, methods={"p": "mean"}, dtypes={"p": "i2"}, lon="lon", lat="lat")
+    assert out.p.values.tolist() == [2] and out.p.dtype == np.int16  # 1.5 rounds to 2
+    nan_only = _one_cell(p=np.array([np.nan, np.nan]))
+    with pytest.raises(ValueError, match="NaN cannot be cast"):
+        bin_samples(nan_only, sample_dim="t", level=5, methods={"p": "mean"}, dtypes={"p": "i2"}, lon="lon", lat="lat")
+    out = bin_samples(nan_only, sample_dim="t", level=5, methods={"p": "mean"}, dtypes={"p": "i2"}, fill_values={"p": -9}, lon="lon", lat="lat")
+    assert out.p.values.tolist() == [-9]

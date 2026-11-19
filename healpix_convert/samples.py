@@ -65,6 +65,43 @@ def _cell_ids(lon: np.ndarray, lat: np.ndarray, level: int, ellipsoid: str):
     )
 
 
+def valid_positions(lon, lat) -> np.ndarray:
+    """Which samples have a usable position: finite longitude and latitude, ``|lat| <= 90`` and
+    ``|lon| <= 360`` (degrees). The one rule of :py:func:`bin_samples`; use it to predict which
+    samples it will bin."""
+    lon = np.asarray(lon, dtype="float64")
+    lat = np.asarray(lat, dtype="float64")
+    return np.isfinite(lon) & np.isfinite(lat) & (np.abs(lat) <= 90.0) & (np.abs(lon) <= 360.0)
+
+
+def _pick(flat: np.ndarray, ok: np.ndarray, starts: np.ndarray, which: str):
+    """First / last row of each group whose value is ``ok`` (per column); ``(values, found)``."""
+    n, n_columns = flat.shape
+    index = np.arange(n)[:, None]
+    if which == "first":
+        position = np.minimum.reduceat(np.where(ok, index, n), starts, axis=0)
+        found = position < n
+    else:
+        position = np.maximum.reduceat(np.where(ok, index, -1), starts, axis=0)
+        found = position >= 0
+    out = flat[np.where(found, position, 0), np.arange(n_columns)[None, :]]
+    return out, found
+
+
+def _cast(name: str, values: np.ndarray, dtype, fill) -> np.ndarray:
+    """Cast reduced values to ``dtype``; a float to an integer is rounded and NaN becomes ``fill``."""
+    dtype = np.dtype(dtype)
+    if values.dtype.kind == "f" and dtype.kind in "iu":
+        nan = np.isnan(values)
+        if nan.any() and fill is None:
+            raise ValueError(
+                f"variable {name!r}: NaN cannot be cast to {dtype}: give its fill value in fill_values"
+            )
+        rounded = np.where(nan, 0, np.rint(values))
+        return np.where(nan, fill if fill is not None else 0, rounded).astype(dtype)
+    return values.astype(dtype)
+
+
 def _reduce(
     name: str,
     method: str,
@@ -82,6 +119,14 @@ def _reduce(
     kind = values.dtype.kind
 
     if method in ("first", "last"):
+        if kind in "fMm":
+            # the first / last VALID sample (not NaN / NaT) of each cell and column
+            flat = sorted_values.reshape(sorted_values.shape[0], -1)
+            ok = ~np.isnan(flat) if kind == "f" else ~np.isnat(flat)
+            out, found = _pick(flat, ok, starts, method)
+            missing = np.nan if kind == "f" else np.array("NaT", dtype=values.dtype)
+            out = np.where(found, out, missing).astype(values.dtype)
+            return out.reshape((starts.size,) + values.shape[1:])
         index = starts if method == "first" else starts + counts - 1
         return sorted_values[index]
 
@@ -177,6 +222,7 @@ def bin_samples(
     lat: str = "latitude",
     default_method: str | None = None,
     dtypes: Mapping[str, Any] | None = None,
+    fill_values: Mapping[str, Any] | None = None,
     ellipsoid: str = "WGS84",
     count_name: str = SAMPLE_COUNT,
     cell_dim: str = CELL_DIM,
@@ -204,7 +250,8 @@ def bin_samples(
         ``"mode"`` (most frequent value, the first one on a tie), ``"min"``,
         ``"max"``, ``"sum"``, ``"rms"`` (NaN-aware), or ``"drop"`` to leave the
         variable out. ``"first"`` and ``"last"`` follow the input order of the
-        samples; they work for any dtype, the others for numbers (``"min"`` and
+        samples and take the first / last VALID sample (not NaN, not NaT, not the fill
+        value) of each cell and column, like the other methods; they work for any dtype, the others for numbers (``"min"`` and
         ``"max"`` also for times). Floating point values keep their dtype,
         integer and other values reduced by ``"mean"``, ``"sum"`` or
         ``"rms"`` come out as float64.
@@ -218,6 +265,13 @@ def bin_samples(
     dtypes : mapping of str to dtype, optional
         Output dtype of a variable, e.g. ``"float32"`` for an integer variable
         reduced by ``"mean"`` (the reduced values are cast to it).
+    fill_values : mapping of str to number, optional
+        Input fill value of a variable (e.g. -127 of an int8 variable): samples equal to it
+        are left out of the reduction like NaN. With ``"first"``, ``"last"``, ``"mode"``,
+        ``"min"`` and ``"max"`` the result keeps the integer dtype, with the fill value where a
+        cell has no valid sample; with ``"mean"``, ``"sum"`` and ``"rms"`` it is float64 (NaN
+        there). Also the value that a float reduction cast by ``dtypes`` to an integer gives
+        for NaN (such a cast rounds, and without a fill value it is an error when a NaN occurs).
     ellipsoid : str
         Ellipsoid of the cells (``"WGS84"`` or ``"sphere"``).
     count_name : str
@@ -264,13 +318,7 @@ def bin_samples(
     longitude = ds[lon].values.astype("float64")
     latitude = ds[lat].values.astype("float64")
     n_input = longitude.size
-    valid = (
-        np.isfinite(longitude)
-        & np.isfinite(latitude)
-        & (np.abs(latitude) <= 90.0)
-        & (np.abs(longitude) <= 360.0)
-    )
-    keep = np.nonzero(valid)[0]
+    keep = np.nonzero(valid_positions(longitude, latitude))[0]
     cells = _cell_ids(longitude[keep], latitude[keep], level, ellipsoid)
 
     # stable: the samples of a cell stay in input order, "first" is the first sample
@@ -278,6 +326,7 @@ def bin_samples(
     sorted_cells = cells[order]
     unique, starts, counts = np.unique(sorted_cells, return_index=True, return_counts=True)
     order_in_ds = keep[order]  # positions in the input, sorted by cell
+    fill_values = dict(fill_values or {})
 
     out: dict[str, xr.Variable] = {}
     skipped = {lon, lat}
@@ -302,13 +351,28 @@ def bin_samples(
             continue
         axis = var.dims.index(sample_dim)
         data = np.moveaxis(var.values, axis, 0)
+        fill = fill_values.get(name)
+        restore = None
+        if fill is not None and data.dtype.kind in "fiub":
+            # fill samples are left out: reduce in float64 with NaN, then restore the dtype
+            work = data.astype("float64")
+            work[work == fill] = np.nan
+            if data.dtype.kind != "f" and method not in ("mean", "sum", "rms"):
+                restore = data.dtype
+            data = work
         # reduce on the valid samples only, sorted by cell
-        reduced = _reduce(name, method, data[order_in_ds], starts, counts)
+        if starts.size:
+            reduced = _reduce(name, method, data[order_in_ds], starts, counts)
+        else:  # no valid sample: the reduction of one dummy sample, cut to no cell
+            dummy = np.zeros((1,) + data.shape[1:], dtype=data.dtype)
+            reduced = _reduce(name, method, dummy, np.array([0]), np.array([1]))[:0]
+        if restore is not None:
+            reduced = _cast(name, reduced, restore, fill)
         dims = list(var.dims)
         dims[axis] = cell_dim
         reduced = np.moveaxis(reduced, 0, axis)
         if dtypes and name in dtypes:
-            reduced = reduced.astype(dtypes[name])
+            reduced = _cast(name, reduced, dtypes[name], fill)
         out[name] = xr.Variable(tuple(dims), reduced, attrs=dict(var.attrs))
 
     result = xr.Dataset(out, attrs=dict(ds.attrs))
@@ -428,6 +492,8 @@ def write_cell_dataset(
     """
     import zarr
 
+    if chunks is not None and chunks < 1:
+        raise ValueError(f"chunks must be a positive number of cells, got {chunks}")
     if cell_axis not in ("last", "first"):
         raise ValueError(f"cell_axis must be 'last' or 'first', got {cell_axis!r}")
     metadata = metadata if metadata is not None else MetadataSettings()
@@ -462,7 +528,7 @@ def write_cell_dataset(
         for name, var in ds.variables.items():
             if cell_dim in var.dims:
                 encoding[str(name)] = {
-                    "chunks": tuple(min(chunks, s) if d == cell_dim else s for d, s in zip(var.dims, var.shape))
+                    "chunks": tuple(max(1, min(chunks, s)) if d == cell_dim else max(1, s) for d, s in zip(var.dims, var.shape))
                 }
     ds.to_zarr(
         store,
