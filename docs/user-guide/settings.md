@@ -52,7 +52,12 @@ generated from the model, e.g., to get completion and validation in an editor.
   left out of the copy (names or regular expressions matched against the whole
   name). With several input datasets, the group must be the same in all of
   them (same arrays, dimensions, data types, stored values, fill values and
-  attributes, and the same attributes of the group). The copied groups are
+  attributes, and the same attributes of the group), except for the variables
+  of `per_input_variables` (names or regular expressions, like
+  `drop_variables`): those may differ between the inputs and are copied once
+  per input, to the sub-group `inputs/<name of the input>` of the copied group
+  (the name of an input is the last component of its path or URL without
+  `.zarr`; two inputs cannot have the same name). The copied groups are
   read whole from every input and checked by the preparation stage
   (`prepare_healpix_dataset`), before anything is written,
   so a group that cannot be copied stops the conversion before it starts:
