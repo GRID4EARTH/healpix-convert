@@ -8,7 +8,7 @@ variables that have this dimension, possibly together with other dimensions
 (e.g. a vertical axis). The output is a dataset on a sparse list of the HEALPix
 cells that hold at least one sample.
 
-Three functions, which are independent of any product:
+Four functions, which are independent of any product:
 
 - :py:func:`bin_samples` puts each sample into the cell that contains it, counts
   the samples of each cell (``sample_count``) and reduces the variables of
@@ -16,7 +16,9 @@ Three functions, which are independent of any product:
 - :py:func:`split_by_parent` cuts the result into one dataset per cell of a
   coarser level (the "tiles");
 - :py:func:`write_cell_dataset` writes one such dataset as a Zarr store with the
-  same DGGS / CF metadata as the stores of the converters.
+  same DGGS / CF metadata as the stores of the converters; with ``capacity`` the
+  store has a fixed number of cells (:py:func:`pad_cells`) and one chunk per array,
+  so that tile stores with different numbers of cells have the same layout.
 
 Nothing is resampled: a sample is never spread over several cells, so the
 counts of the cells add up to the number of valid input samples.
@@ -52,6 +54,13 @@ DROP = "drop"
 CELL_DIM = "cells"
 CELL_IDS = "cell_ids"
 SAMPLE_COUNT = "sample_count"
+
+#: Fill value of the cell ids of the padding cells of a fixed-capacity store (not an id of any level).
+PAD_CELL_ID = int(np.iinfo("uint64").max)
+#: Group attributes of a fixed-capacity store: the capacity, and how many of its cells are real (the
+#: first ones: the real cells are sorted, the padding comes after them).
+CAPACITY_ATTR = "healpix_convert:cell_capacity"
+N_CELLS_ATTR = "healpix_convert:n_cells"
 
 
 def _cell_ids(lon: np.ndarray, lat: np.ndarray, level: int, ellipsoid: str):
@@ -534,6 +543,68 @@ def split_by_parent(
     return out
 
 
+def _pad_value(name: str, var: xr.Variable, cell_ids_name: str, count_name: str):
+    """The value of a padding cell of ``var``: the one the store reads for a chunk that is missing."""
+    if name == cell_ids_name:
+        return np.uint64(PAD_CELL_ID)
+    if name == count_name:
+        return var.dtype.type(0)
+    kind = var.dtype.kind
+    if kind == "f":
+        return var.dtype.type("nan")
+    if kind in "mM":
+        return np.array("NaT", dtype=var.dtype)[()]
+    if kind in "iub":
+        fill = var.encoding.get("_FillValue", var.attrs.get("_FillValue"))
+        return var.dtype.type(0 if fill is None else fill)
+    if kind in "US":
+        return var.dtype.type("")
+    raise ValueError(f"variable {name!r}: no padding value for dtype {var.dtype}")
+
+
+def pad_cells(
+    ds: xr.Dataset,
+    capacity: int,
+    *,
+    cell_dim: str = CELL_DIM,
+    cell_ids_name: str = CELL_IDS,
+    count_name: str = SAMPLE_COUNT,
+) -> xr.Dataset:
+    """Pad a dataset on sparse cells to exactly ``capacity`` cells.
+
+    The real cells stay first, in their order; the padding cells come after them. A padding cell has the
+    cell id ``PAD_CELL_ID`` (so the ids stay ascending), a count of 0, NaN / NaT in float / time
+    variables, the ``_FillValue`` of an integer variable (0 when it has none) and an empty string. The
+    result has a fixed length whatever the number of cells, so the stores of different tiles have the
+    same shapes. A dataset with more than ``capacity`` cells is an error: nothing is cut off.
+    """
+    if int(capacity) != capacity or capacity < 1:
+        raise ValueError(f"capacity must be a positive number of cells, got {capacity!r}")
+    n = ds.sizes[cell_dim]
+    if n > capacity:
+        raise ValueError(f"{n} cells do not fit the capacity of {capacity} cells: raise the capacity")
+    out = {}
+    for name, var in ds.variables.items():
+        if cell_dim not in var.dims:
+            out[name] = var
+            continue
+        axis = var.dims.index(cell_dim)
+        shape = list(var.shape)
+        shape[axis] = capacity - n
+        pad = np.full(shape, _pad_value(name, var, cell_ids_name, count_name), dtype=var.dtype)
+        data = np.concatenate([var.values, pad], axis=axis)
+        new = xr.Variable(var.dims, data, var.attrs, var.encoding)
+        out[name] = new
+    result = xr.Dataset(
+        {k: v for k, v in out.items() if k not in ds.coords},
+        coords={k: v for k, v in out.items() if k in ds.coords},
+        attrs=dict(ds.attrs),
+    )
+    result.attrs[CAPACITY_ATTR] = int(capacity)
+    result.attrs[N_CELLS_ATTR] = int(n)
+    return result
+
+
 def write_cell_dataset(
     ds: xr.Dataset,
     store: Any,
@@ -547,6 +618,7 @@ def write_cell_dataset(
     cell_ids_name: str = CELL_IDS,
     cell_axis: str = "last",
     chunks: int | None = None,
+    capacity: int | None = None,
     consolidate: bool = True,
     storage_options: Mapping[str, Any] | None = None,
 ) -> None:
@@ -582,6 +654,14 @@ def write_cell_dataset(
         ``"first"`` keeps the order of the dataset.
     chunks : int, optional
         Chunk size along the cell dimension (all the cells in one chunk if None).
+    capacity : int, optional
+        Write a fixed-capacity store: the dataset is padded to exactly ``capacity`` cells with
+        :py:func:`pad_cells` and every array is one chunk, so that the stores of different tiles have the
+        same array shapes and chunk grids (they can then be referenced as chunks of one larger array). The
+        padding cells have ``cell_ids == PAD_CELL_ID`` and ``sample_count == 0``; the Zarr fill value of the
+        cell ids is ``PAD_CELL_ID`` too, so that a missing chunk reads as padding. The group attributes
+        ``healpix_convert:cell_capacity`` and ``healpix_convert:n_cells`` (the real cells) are written.
+        Cannot be combined with ``chunks``.
     consolidate : bool
         Write consolidated metadata (root and group).
     storage_options : mapping, optional
@@ -592,6 +672,10 @@ def write_cell_dataset(
 
     if chunks is not None and chunks < 1:
         raise ValueError(f"chunks must be a positive number of cells, got {chunks}")
+    if capacity is not None and chunks is not None:
+        raise ValueError("capacity and chunks cannot be combined: a fixed-capacity store is one chunk per array")
+    if capacity is not None:
+        ds = pad_cells(ds, capacity, cell_dim=cell_dim, cell_ids_name=cell_ids_name)
     if cell_axis not in ("last", "first"):
         raise ValueError(f"cell_axis must be 'last' or 'first', got {cell_axis!r}")
     metadata = metadata if metadata is not None else MetadataSettings()
@@ -628,6 +712,12 @@ def write_cell_dataset(
             var.attrs = {k: v for k, v in var.attrs.items() if k != "_FillValue"}
         if "_FillValue" in enc and enc["_FillValue"] is not None and var.dtype.kind in "iu":
             enc["fill_value"] = enc["_FillValue"]  # the Zarr array fill_value agrees with the CF attribute
+        if capacity is not None and var.ndim:
+            enc["chunks"] = tuple(max(1, s) for s in var.shape)  # one chunk per array
+            if name == cell_ids_name:
+                enc["fill_value"] = PAD_CELL_ID  # a missing chunk reads as padding (no _FillValue: xarray would mask)
+            if var.dtype.kind in "mM" and enc.get("_FillValue") is None:
+                enc["_FillValue"] = enc["fill_value"] = int(np.iinfo("int64").min)  # NaT, also for a missing chunk
         if chunks is not None and cell_dim in var.dims:
             enc["chunks"] = tuple(
                 max(1, min(chunks, s)) if d == cell_dim else max(1, s) for d, s in zip(var.dims, var.shape)

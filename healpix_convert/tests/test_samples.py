@@ -521,3 +521,112 @@ def test_cast_fill_is_exact_for_large_integers_and_collisions_are_checked_in_int
     # a real collision is still refused
     with pytest.raises(ValueError, match="equals the fill value"):
         _cast("p", np.array([7.0, np.nan]), "i2", 7)
+
+
+# -- fixed capacity: every tile store has the same shapes, one chunk per array ------------------------------------
+
+
+def _binned(n=40, **kw):
+    out = bin_samples(_samples(n, **kw), sample_dim="t", level=LEVEL, methods=METHODS, lon="lon", lat="lat")
+    out["time"].encoding["units"] = "seconds since 2026-01-01"
+    return out
+
+
+def test_pad_cells_keeps_the_real_cells_first_and_pads_with_fill():
+    from healpix_convert.samples import CAPACITY_ATTR, N_CELLS_ATTR, PAD_CELL_ID, pad_cells
+
+    out = _binned()
+    n = out.sizes["cells"]
+    padded = pad_cells(out, n + 5)
+    assert padded.sizes["cells"] == n + 5 and padded.attrs[CAPACITY_ATTR] == n + 5 and padded.attrs[N_CELLS_ATTR] == n
+    np.testing.assert_array_equal(padded.cell_ids.values[:n], out.cell_ids.values)
+    assert (padded.cell_ids.values[n:] == PAD_CELL_ID).all() and (np.diff(padded.cell_ids.values.astype("float64")) >= 0).all()
+    assert (padded.sample_count.values[n:] == 0).all() and padded.sample_count.dtype == out.sample_count.dtype
+    assert np.isnan(padded.temperature.isel(cells=slice(n, None)).values).all()
+    np.testing.assert_array_equal(padded.temperature.isel(cells=slice(0, n)).values, out.temperature.values)
+    assert np.isnat(padded.time.values[n:]).all()
+    np.testing.assert_array_equal(padded.time.values[:n], out.time.values)
+    assert padded.dtypes == out.dtypes
+    assert padded.classes.equals(out.classes)  # variables without cells are untouched
+    assert CAPACITY_ATTR not in out.attrs  # the input is not changed
+
+
+def test_pad_cells_too_many_cells_is_an_error_and_zero_padding_is_allowed():
+    from healpix_convert.samples import pad_cells
+
+    out = _binned()
+    n = out.sizes["cells"]
+    with pytest.raises(ValueError, match="do not fit the capacity"):
+        pad_cells(out, n - 1)
+    assert pad_cells(out, n).sizes["cells"] == n
+    for bad in (0, -3, 2.5):
+        with pytest.raises(ValueError, match="positive number of cells"):
+            pad_cells(out, bad)
+
+
+def test_integer_padding_uses_the_fill_value_of_the_variable():
+    from healpix_convert.samples import pad_cells
+
+    out = _binned()
+    out["kind"].encoding["_FillValue"] = -7
+    padded = pad_cells(out, out.sizes["cells"] + 2)
+    assert (padded.kind.isel(cells=slice(-2, None)).values == -7).all()
+
+
+def test_two_tiles_with_different_numbers_of_cells_have_the_same_layout(tmp_path):
+    import zarr
+
+    from healpix_convert.samples import PAD_CELL_ID
+
+    paths = []
+    for i, n in enumerate((20, 40)):
+        out = _binned(n)
+        path = str(tmp_path / f"t{i}.zarr")
+        write_cell_dataset(out, path, level=LEVEL, group="g", capacity=64, root_attrs={"x": i})
+        paths.append((path, out))
+    metas = []
+    for path, out in paths:
+        g = zarr.open_group(path, mode="r")["g"]
+        assert g.attrs["healpix_convert:cell_capacity"] == 64
+        assert g.attrs["healpix_convert:n_cells"] == out.sizes["cells"]
+        layout = {}
+        for name, a in g.arrays():
+            if a.ndim:
+                assert a.chunks == a.shape, name  # one chunk per array
+                layout[name] = repr((a.shape, a.chunks, str(a.dtype), a.fill_value, dict(a.attrs)))  # NaN != NaN
+        assert g["cell_ids"].fill_value == PAD_CELL_ID and g["cell_ids"].shape == (64,)
+        assert g["sample_count"].shape == (64,) and g["temperature"].shape == (6, 64)
+        metas.append(layout)
+    assert metas[0] == metas[1]  # the same shapes, chunks, dtypes, fill values and attributes
+
+    # reading back: the real cells and then the padding
+    for path, out in paths:
+        n = out.sizes["cells"]
+        back = xr.open_zarr(path, group="g", consolidated=True).load()
+        np.testing.assert_array_equal(back.cell_ids.values[:n], out.cell_ids.values)
+        assert (back.cell_ids.values[n:] == PAD_CELL_ID).all() and (back.sample_count.values[n:] == 0).all()
+        np.testing.assert_allclose(back.temperature.values[:, :n].T, out.temperature.values)
+        assert np.isnan(back.temperature.values[:, n:]).all() and np.isnat(back.time.values[n:]).all()
+        np.testing.assert_array_equal(back.time.values[:n], out.time.values)
+
+
+def test_capacity_and_chunks_cannot_be_combined_and_a_missing_chunk_reads_as_padding(tmp_path):
+    import json
+    import shutil
+
+    import zarr
+
+    from healpix_convert.samples import PAD_CELL_ID
+
+    out = _binned()
+    with pytest.raises(ValueError, match="cannot be combined"):
+        write_cell_dataset(out, str(tmp_path / "a.zarr"), level=LEVEL, capacity=64, chunks=4)
+    path = str(tmp_path / "b.zarr")
+    write_cell_dataset(out, path, level=LEVEL, group="g", capacity=64)
+    for name in ("cell_ids", "sample_count", "time"):  # the chunk objects are not there: fill values
+        shutil.rmtree(f"{path}/g/{name}/c")
+    back = xr.open_zarr(path, group="g", consolidated=True).load()
+    assert (back.cell_ids.values == PAD_CELL_ID).all() and (back.sample_count.values == 0).all()
+    assert np.isnat(back.time.values).all()
+    assert json.loads(open(f"{path}/g/cell_ids/zarr.json").read())["fill_value"] == PAD_CELL_ID
+    assert zarr.open_group(path, mode="r")["g"]["cell_ids"].fill_value == PAD_CELL_ID
