@@ -180,6 +180,25 @@ def test_polytope_retrieve_temp_names_are_unique(tmp_path):
     assert other.exists()
 
 
+def test_polytope_retrieve_removes_stale_part_files(tmp_path):
+    import os
+    import time
+
+    out = tmp_path / "f.grib"
+    old = tmp_path / "f.grib.1.deadbeef.part"
+    fresh = tmp_path / "f.grib.2.cafebabe.part"
+    unrelated = tmp_path / "g.grib.1.deadbeef.part"
+    for f in (old, fresh, unrelated):
+        f.write_bytes(b"x")
+    stale = time.time() - 2 * 86400
+    os.utime(old, (stale, stale))
+    os.utime(unrelated, (stale, stale))
+    client = FakeClient()
+    client.final = out
+    polytope_retrieve({}, "h", out, client=client)
+    assert not old.exists() and fresh.exists() and unrelated.exists()
+
+
 def test_polytope_retrieve_collection_and_failure(tmp_path):
     out = tmp_path / "f.grib"
     client = FakeClient(fail=True)
@@ -375,12 +394,93 @@ def test_read_grib_monthly_mean_in_months(tmp_path):
     )
 
 
-def test_read_grib_monthly_mean_must_start_on_the_first(tmp_path):
+MONTH_RAW = {
+    "indicatorOfUnitOfTimeRange": 3,
+    "forecastTime": 0,
+    "indicatorOfUnitForTimeRange": 3,
+    "lengthOfTimeRange": 1,
+    "yearOfEndOfOverallTimeInterval": 2026,
+    "monthOfEndOfOverallTimeInterval": 2,
+    "dayOfEndOfOverallTimeInterval": 1,
+}
+
+
+def test_read_grib_monthly_mean_in_months_must_start_on_the_first(tmp_path):
     p = write_grib(
         tmp_path / "month_bad.grib",
-        [grib_message(_flat(1), param_id=167, avg=True, date=20260115, step=(0, 744))],
+        [grib_message(_flat(1), param_id=167, avg=True, date=20260115, raw=MONTH_RAW)],
     )
     with pytest.raises(ValueError, match="first day of a month"):
+        read_healpix_grib(p)
+
+
+def test_read_grib_month_validity_must_match_the_months(tmp_path):
+    raw = {**MONTH_RAW, "lengthOfTimeRange": 2}  # two months, but validity is one month later
+    p = write_grib(
+        tmp_path / "month_len.grib",
+        [grib_message(_flat(1), param_id=167, avg=True, date=20260101, raw=raw)],
+    )
+    with pytest.raises(ValueError, match="month"):
+        read_healpix_grib(p)
+
+
+def test_read_grib_non_monthly_means_are_plain_periods(tmp_path):
+    p = write_grib(
+        tmp_path / "plain.grib",
+        [
+            # 4-week mean from the 1st, and a 30-day mean from the 15th
+            grib_message(_flat(1), param_id=167, avg=True, date=20260101, step=(0, 672)),
+            grib_message(_flat(2), param_id=167, avg=True, date=20260115, step=(0, 720)),
+        ],
+    )
+    ds = read_healpix_grib(p)
+    np.testing.assert_array_equal(
+        ds["time"].values, np.array(["2026-01-01", "2026-01-15"], dtype="datetime64[ns]")
+    )
+    np.testing.assert_array_equal(
+        ds["time_bounds"].values,
+        np.array(
+            [["2026-01-01", "2026-01-29"], ["2026-01-15", "2026-02-14"]], dtype="datetime64[ns]"
+        ),
+    )
+
+
+def test_grib_times_seconds_unit_is_accepted(monkeypatch):
+    import eccodes as ec
+
+    from healpix_convert.converters import climatedt
+
+    keys = {
+        "validityDate": 20260101,
+        "validityTime": 100,
+        "dataDate": 20260101,
+        "dataTime": 0,
+        "stepType": "avg",
+        "stepUnits": 13,
+        "indicatorOfUnitOfTimeRange": 254,  # seconds (eccodes cannot write it, so a fake handle)
+        "startStep": 0,
+    }
+    monkeypatch.setattr(ec, "codes_get", lambda h, k, *a: keys[k])
+    monkeypatch.setattr(ec, "codes_is_defined", lambda h, k: k in keys)
+    start, end = climatedt._grib_times(None)
+    assert start == np.datetime64("2026-01-01T00:00") and end == np.datetime64("2026-01-01T01:00")
+
+
+def test_read_grib_times_skips_malformed_messages_outside(tmp_path):
+    bad = grib_message(
+        _flat(9),
+        param_id=167,
+        avg=True,
+        date=20260301,
+        raw={"indicatorOfUnitOfTimeRange": 4},  # years: unsupported
+    )
+    good = grib_message(_flat(1), param_id=167, date=20260101, time=200)
+    p = write_grib(tmp_path / "mixed.grib", [bad, good])
+    ds = read_healpix_grib(p, times=[np.datetime64("2026-01-01T02:00")])
+    np.testing.assert_allclose(ds["2t"].values, 1.0)
+    with pytest.raises(ValueError, match="stepUnits"):
+        read_healpix_grib(p, times=[np.datetime64("2026-03-01T00:00")])
+    with pytest.raises(ValueError, match="stepUnits"):
         read_healpix_grib(p)
 
 

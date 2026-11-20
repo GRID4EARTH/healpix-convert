@@ -31,10 +31,12 @@ Usage
 
 from __future__ import annotations
 
+import glob
 import hashlib
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -101,9 +103,23 @@ class CDTPrepareResult:
     var_meta: dict  # {var: (param_id, unit, long_name)}
 
 
+_LAYER_DIM_NAMES = (
+    "oceanModel",
+    "layer",
+    "level",
+    "isobaricInhPa",
+    "hybrid",
+    "heightAboveGround",
+    "depthBelowLandLayer",
+)
+
+
 def _is_layer_dim(name: str) -> bool:
-    """A layer dimension as cfgrib names it (oceanModelLayer, ...) or ``oceanModel`` / ``layer``."""
-    return "Layer" in name or name in ("oceanModel", "layer")
+    """A vertical / layer dimension: cfgrib names such as ``oceanModelLayer``,
+    ``depthBelowLandLayer`` (anything containing "Layer"), ``oceanModel``,
+    ``layer``, ``level``, ``isobaricInhPa``, ``hybrid`` and ``heightAboveGround``.
+    Any other extra dimension is not a layer."""
+    return "Layer" in name or name in _LAYER_DIM_NAMES
 
 
 class ClimateDTConverter:
@@ -502,11 +518,10 @@ _STEP_UNITS = {
     1: "h",
     2: "D",
     13: "s",
+    254: "s",  # indicatorOfUnitOfTimeRange: second
 }
 _STEP_UNIT_MULT = {10: ("h", 3), 11: ("h", 6), 12: ("h", 12)}
 _STEP_UNIT_MONTH = 3
-# a period of 28 to 31 days is a monthly mean: it starts on the first day of a month
-_MONTHLY_DAYS = (28, 31)
 
 
 def _as_paths(paths) -> list[Path]:
@@ -527,11 +542,20 @@ def polytope_retrieve(
 
     The data is written to ``<out_path>.<pid>.<random>.part`` (a name no other
     worker uses) and renamed atomically when complete, so a file under its
-    final name is always whole. No retry here (the caller retries). ``client`` is any object with ``.retrieve(collection, request,
+    final name is always whole. ``<out_path>.*.part`` files older than one day
+    (left by killed workers) are removed first. No retry here (the caller retries). ``client`` is any object with ``.retrieve(collection, request,
     path)``; the default is ``polytope.api.Client(address=address)``.
     """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # leftovers of killed workers (a live download is far younger than a day)
+    cutoff = time.time() - 86400
+    for old in out_path.parent.glob(f"{glob.escape(out_path.name)}.*.part"):
+        try:
+            if old.stat().st_mtime < cutoff:
+                old.unlink(missing_ok=True)
+        except OSError:
+            pass
     part = out_path.with_name(f"{out_path.name}.{os.getpid()}.{uuid4().hex[:8]}.part")
     if client is None:
         try:
@@ -566,21 +590,41 @@ def _grib_messages(path: Path):
                 ec.codes_release(h)
 
 
-def _grib_times(h) -> tuple[np.datetime64, np.datetime64]:
-    """(start, end) of the message: the averaging period for stepType avg, else (valid, valid)."""
+def _grib_stamp(h, date_key: str, time_key: str) -> np.datetime64:
     import eccodes as ec
 
-    def stamp(date_key: str, time_key: str) -> np.datetime64:
-        d, t = int(ec.codes_get(h, date_key)), int(ec.codes_get(h, time_key))
-        return np.datetime64(
-            f"{d // 10000:04d}-{d // 100 % 100:02d}-{d % 100:02d}" f"T{t // 100:02d}:{t % 100:02d}",
-            "s",
-        )
+    d, t = int(ec.codes_get(h, date_key)), int(ec.codes_get(h, time_key))
+    return np.datetime64(
+        f"{d // 10000:04d}-{d // 100 % 100:02d}-{d % 100:02d}T{t // 100:02d}:{t % 100:02d}", "s"
+    )
 
-    valid = stamp("validityDate", "validityTime")
+
+def _grib_bounds(h) -> tuple[np.datetime64, np.datetime64, bool]:
+    """Cheap keys only: (reference, valid, is_avg). The start of the message lies in
+    [reference, valid] for stepType avg and equals valid otherwise."""
+    import eccodes as ec
+
+    return (
+        _grib_stamp(h, "dataDate", "dataTime"),
+        _grib_stamp(h, "validityDate", "validityTime"),
+        ec.codes_get(h, "stepType") == "avg",
+    )
+
+
+def _grib_times(h) -> tuple[np.datetime64, np.datetime64]:
+    """(start, end) of the message: the averaging period for stepType avg, else (valid, valid).
+
+    A period in months (month time unit) is a calendar-month mean: it must start on the
+    first of a month and end ``lengthOfTimeRange`` months later. Hour / day periods
+    are plain periods (dataDate + startStep to the validity time); when both ends are on the
+    first of a month at 00:00 they are calendar months, which needs no further handling.
+    """
+    import eccodes as ec
+
+    valid = _grib_stamp(h, "validityDate", "validityTime")
     if ec.codes_get(h, "stepType") != "avg":
         return valid, valid
-    reference = stamp("dataDate", "dataTime")
+    reference = _grib_stamp(h, "dataDate", "dataTime")
     unit = int(ec.codes_get(h, "stepUnits"))
     # eccodes converts a month step to 30-day hours: read the raw unit and offset
     raw_unit = (
@@ -598,18 +642,28 @@ def _grib_times(h) -> tuple[np.datetime64, np.datetime64]:
         ref_month = reference.astype("datetime64[M]")
         into_month = reference - ref_month.astype("datetime64[s]")  # day and time of day
         start = (ref_month + np.timedelta64(months, "M")).astype("datetime64[s]") + into_month
-    elif unit in _STEP_UNITS:
+        if start != start.astype("datetime64[M]").astype("datetime64[s]"):
+            raise ValueError(f"monthly mean starting {start}, not on the first day of a month")
+        length_unit = (
+            int(ec.codes_get(h, "indicatorOfUnitForTimeRange"))
+            if ec.codes_is_defined(h, "indicatorOfUnitForTimeRange")
+            else None
+        )
+        if length_unit == _STEP_UNIT_MONTH:
+            n = int(ec.codes_get(h, "lengthOfTimeRange", int))
+        else:
+            n = int(valid.astype("datetime64[M]") - start.astype("datetime64[M]"))
+        expected = (start.astype("datetime64[M]") + np.timedelta64(n, "M")).astype("datetime64[s]")
+        if n < 1 or valid != expected:
+            raise ValueError(
+                f"monthly mean starting {start}: validity {valid} is not {n} month(s) later"
+            )
+        return start, valid
+    if unit in _STEP_UNITS:
         start = reference + np.timedelta64(int(ec.codes_get(h, "startStep")), _STEP_UNITS[unit])
-    elif unit in _STEP_UNIT_MULT:
+    else:
         u, mult = _STEP_UNIT_MULT[unit]
         start = reference + np.timedelta64(int(ec.codes_get(h, "startStep")) * mult, u)
-    else:
-        raise ValueError(f"unsupported GRIB stepUnits {unit}")
-    days = (valid - start) / np.timedelta64(1, "D")
-    if _STEP_UNIT_MONTH in (unit, raw_unit) or _MONTHLY_DAYS[0] <= days <= _MONTHLY_DAYS[1]:
-        first_of_month = start.astype("datetime64[M]").astype("datetime64[s]")
-        if start != first_of_month:
-            raise ValueError(f"monthly mean starting {start}, not on the first day of a month")
     return start, valid
 
 
@@ -702,6 +756,8 @@ def read_healpix_grib(paths, *, param_ids=None, times=None) -> xr.Dataset:
     wanted = None if param_ids is None else {int(p) for p in param_ids}
     keep_times = None if times is None else {np.datetime64(t, "s") for t in times}
     paths = _as_paths(paths)
+    if keep_times:
+        min_keep, max_keep = min(keep_times), max(keep_times)
 
     # pass 1: the metadata of every message
     msgs: list[dict] = []
@@ -718,6 +774,18 @@ def read_healpix_grib(paths, *, param_ids=None, times=None) -> xr.Dataset:
                 grid = g
             elif g != grid:
                 raise ValueError(f"{path}: grid {g} differs from {grid}")
+            if keep_times is not None:
+                # cheap keys first: a message clearly outside the requested times is
+                # skipped even if its period cannot be interpreted
+                reference, valid, is_avg = _grib_bounds(h)
+                if not keep_times:
+                    outside = True
+                elif is_avg:
+                    outside = valid < min_keep or reference > max_keep
+                else:
+                    outside = valid not in keep_times
+                if outside:
+                    continue
             start, end = _grib_times(h)
             if keep_times is not None and start not in keep_times:
                 continue

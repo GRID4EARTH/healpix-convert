@@ -190,6 +190,17 @@ def test_layers_are_written_one_map_per_layer(tmp_path) -> None:
     assert np.isnan(t2m[0, 1, cells][lat_w > 12.0]).all()
 
 
+def test_level_dimension_is_written_as_a_layer(tmp_path) -> None:
+    conv, _ = _converter(tmp_path)
+    base = conv._ds["t2m"]
+    conv._ds["t2m"] = (("valid_time", "level", "values"), np.stack([base.values] * 2, axis=1))
+    conv._ds = conv._ds.assign_coords(level=[1, 7])
+    assert conv._extra_dims(conv._ds["t2m"], "valid_time") == ["level"]
+    conv._init_zarr(
+        str(tmp_path / "level.zarr"), 2, *conv._get_time_range(), {"t2m": (None, "K", "t")}, False
+    )
+
+
 def test_extra_dimension_must_be_a_layer(tmp_path) -> None:
     conv, _ = _converter(tmp_path)
     base = conv._ds["t2m"]
@@ -204,6 +215,16 @@ def test_extra_dimension_must_be_a_layer(tmp_path) -> None:
         )
     with pytest.raises(NotImplementedError, match="step"):
         conv._wgs84_map("t2m", 0, "valid_time")
-    for name in ("oceanModelLayer", "oceanModel", "layer", "depthLayer"):
+    for name in (
+        "oceanModelLayer",
+        "oceanModel",
+        "layer",
+        "depthLayer",
+        "level",
+        "isobaricInhPa",
+        "hybrid",
+        "heightAboveGround",
+        "depthBelowLandLayer",
+    ):
         assert climatedt._is_layer_dim(name)
-    assert not climatedt._is_layer_dim("step") and not climatedt._is_layer_dim("level")
+    assert not climatedt._is_layer_dim("step") and not climatedt._is_layer_dim("number")
