@@ -162,9 +162,7 @@ class ClimateDTConverter:
 
     # ── Step 1: prepare ───────────────────────────────────────────────────────
 
-    def prepare(
-        self, output_path: str, force_download: bool = False
-    ) -> CDTPrepareResult:
+    def prepare(self, output_path: str, force_download: bool = False) -> CDTPrepareResult:
         """Download ClimateDT GRIB (if needed) and initialise the zarr skeleton."""
         grib_path = self._grib_path()
 
@@ -181,9 +179,7 @@ class ClimateDTConverter:
         # keep only vars present in the dataset
         var_meta = {k: v for k, v in var_meta.items() if k in self._ds.data_vars}
 
-        n_times = max(
-            self._ds.sizes.get("valid_time", self._ds.sizes.get("time", 1)), 1
-        )
+        n_times = max(self._ds.sizes.get("valid_time", self._ds.sizes.get("time", 1)), 1)
         n_chunks = _N_PARENT
 
         self._init_zarr(output_path, n_times, start_dt, end_dt, var_meta, is_ocean)
@@ -262,9 +258,7 @@ class ClimateDTConverter:
         try:
             import polytope.api as polytope
         except ImportError:
-            raise ImportError(
-                "Install polytope: pip install polytope-client destinelab"
-            )
+            raise ImportError("Install polytope: pip install polytope-client destinelab")
         log.info(f"Downloading ClimateDT → {grib_path}")
         client = polytope.Client(address=POLYTOPE_ADDRESS)
         request = {
@@ -408,9 +402,7 @@ class ClimateDTConverter:
         made_dims: set[str] = set()
         for var, (_, unit, long_name) in var_meta.items():
             # dimensions besides time and cells (e.g. ocean layers); the cells come last
-            extra = (
-                [d for d in ds[var].dims if d != t_dim][:-1] if var in ds.data_vars else []
-            )
+            extra = [d for d in ds[var].dims if d != t_dim][:-1] if var in ds.data_vars else []
             sizes = {d: ds.sizes[d] for d in extra}
             for d in extra:
                 if d not in made_dims:
@@ -453,9 +445,7 @@ class ClimateDTConverter:
 
         return StacItem(
             stac_version="1.1.0",
-            stac_extensions=[
-                "https://stac-extensions.github.io/product/v1.0.0/schema.json"
-            ],
+            stac_extensions=["https://stac-extensions.github.io/product/v1.0.0/schema.json"],
             id=f"S00__{pt}_{vs}_{ve}_{cr}",
             bbox=[-180.0, -90.0, 180.0, 90.0],
             geometry=shapely.geometry.mapping(shapely.box(-180, -90, 180, 90)),
@@ -525,9 +515,7 @@ def polytope_retrieve(
         try:
             import polytope.api as polytope
         except ImportError:
-            raise ImportError(
-                "Install polytope: pip install polytope-client destinelab"
-            )
+            raise ImportError("Install polytope: pip install polytope-client destinelab")
         client = polytope.Client(address=address)
     part.unlink(missing_ok=True)
     try:
@@ -563,8 +551,7 @@ def _grib_times(h) -> tuple[np.datetime64, np.datetime64]:
     def stamp(date_key: str, time_key: str) -> np.datetime64:
         d, t = int(ec.codes_get(h, date_key)), int(ec.codes_get(h, time_key))
         return np.datetime64(
-            f"{d // 10000:04d}-{d // 100 % 100:02d}-{d % 100:02d}"
-            f"T{t // 100:02d}:{t % 100:02d}",
+            f"{d // 10000:04d}-{d // 100 % 100:02d}-{d % 100:02d}" f"T{t // 100:02d}:{t % 100:02d}",
             "s",
         )
 
@@ -629,9 +616,7 @@ def check_grib_params(paths, expected_param_ids) -> dict:
         )
     missing = sorted(expected - set(counts))
     if missing:
-        raise ValueError(
-            f"paramId {missing} not found in the GRIB (found {sorted(counts)})"
-        )
+        raise ValueError(f"paramId {missing} not found in the GRIB (found {sorted(counts)})")
     return {
         "messages": n,
         "param_ids": dict(sorted(counts.items())),
@@ -720,9 +705,7 @@ def read_healpix_grib(paths, *, param_ids=None) -> xr.Dataset:
     has_layer: dict[str, bool] = {}
     for m in msgs:
         attrs.setdefault(m["name"], m["attrs"])
-        if has_layer.setdefault(m["name"], m["layer"] is not None) != (
-            m["layer"] is not None
-        ):
+        if has_layer.setdefault(m["name"], m["layer"] is not None) != (m["layer"] is not None):
             raise ValueError(f"{m['name']}: messages with and without a layer")
         if m["attrs"]["stepType"] == "avg":
             ends[m["start"]] = m["end"]
@@ -835,9 +818,7 @@ def read_covjson_points(path, *, level: int) -> xr.Dataset:
         else:
             raise ValueError(f"{path}: no time axis and no Forecast date in a coverage")
         for name, rng in cov["ranges"].items():
-            vals = np.array(
-                [np.nan if v is None else v for v in rng["values"]], dtype=np.float64
-            )
+            vals = np.array([np.nan if v is None else v for v in rng["values"]], dtype=np.float64)
             if vals.size != npts * len(tvals):
                 raise ValueError(
                     f"{path}: {name} has {vals.size} values for {npts} points x {len(tvals)} times"
@@ -1129,14 +1110,10 @@ def write_cell_store(
         for L in levels
     }
     kwargs = {"storage_options": storage_options} if storage_options else {}
-    root = zarr.open_group(
-        str(out_path), mode="w", zarr_format=3, use_consolidated=False, **kwargs
-    )
+    root = zarr.open_group(str(out_path), mode="w", zarr_format=3, use_consolidated=False, **kwargs)
     root.attrs.update(_json_safe({**root_attrs, "stac_discovery": stac_item}))
     grp = root.require_group(group)
-    grp.attrs["multiscales"] = {
-        "layout": [{"asset": str(L), "dggs": dggs[L]} for L in levels]
-    }
+    grp.attrs["multiscales"] = {"layout": [{"asset": str(L), "dggs": dggs[L]} for L in levels]}
 
     current = dict(data)
     for L in levels:
@@ -1174,9 +1151,7 @@ def write_cell_store(
             )
             la[...] = layer
         if L > coarsest_level:
-            current = {
-                name: _nanmean4(arr) for name, arr in current.items()
-            }
+            current = {name: _nanmean4(arr) for name, arr in current.items()}
     zarr.consolidate_metadata(root.store, path=group)
     zarr.consolidate_metadata(root.store)
     return {

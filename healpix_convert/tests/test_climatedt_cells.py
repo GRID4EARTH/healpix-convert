@@ -108,10 +108,7 @@ def ocean_field(layer: int):
 def ocean_grib(tmp_path):
     return write_grib(
         tmp_path / "ocean.grib",
-        [
-            grib_message(ocean_field(k), param_id=263501, avg=True, layer=k)
-            for k in (1, 2, 3)
-        ],
+        [grib_message(ocean_field(k), param_id=263501, avg=True, layer=k) for k in (1, 2, 3)],
     )
 
 
@@ -359,9 +356,7 @@ def test_constant_field_stays_constant(method):
     assert ids.size > 0.9 * cells.size
     np.testing.assert_allclose(vals, 7.5, rtol=1e-3 if method == "psf" else 1e-5)
     # clipped to the input range: exactly constant
-    ids2, vals2 = SphereToEllipsoid(LEVEL, method=method).resample(
-        cells, np.full(cells.size, 7.5)
-    )
+    ids2, vals2 = SphereToEllipsoid(LEVEL, method=method).resample(cells, np.full(cells.size, 7.5))
     np.testing.assert_array_equal(vals2, np.float32(7.5))
 
 
@@ -504,9 +499,7 @@ def test_write_cell_store_layout(tmp_path):
         ids = lg["cell_ids"]
         assert ids.dtype == np.uint64 and ids.metadata.dimension_names == ("cells",)
         assert nL % ids.chunks[0] == 0 and nL % chunk == 0
-        np.testing.assert_array_equal(
-            ids[:], cell * nL + np.arange(nL, dtype=np.uint64)
-        )
+        np.testing.assert_array_equal(ids[:], cell * nL + np.arange(nL, dtype=np.uint64))
         lay = lg["layer"]
         np.testing.assert_array_equal(lay[:], [1, 2])
         assert lay.metadata.dimension_names == ("layer",)
