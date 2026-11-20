@@ -57,6 +57,8 @@ def grib_message(
     layer=None,
     nside=NSIDE,
     ordering="nested",
+    step=(0, 24),
+    raw=None,
 ):
     """One HEALPix GRIB2 message (NaN in ``values`` → bitmap, as in the real files)."""
     import eccodes as ec
@@ -72,9 +74,12 @@ def grib_message(
         if avg:
             ec.codes_set(h, "productDefinitionTemplateNumber", 8)
             ec.codes_set(h, "typeOfStatisticalProcessing", 0)
-            ec.codes_set(h, "lengthOfTimeRange", 24)
+            ec.codes_set(h, "forecastTime", step[0])
+            ec.codes_set(h, "lengthOfTimeRange", step[1] - step[0])
             ec.codes_set(h, "indicatorOfUnitForTimeRange", 1)
-            ec.codes_set(h, "endStep", 24)
+            ec.codes_set(h, "endStep", step[1])
+        for key, value in (raw or {}).items():  # raw keys, in order (eccodes is order-sensitive)
+            ec.codes_set(h, key, value)
         if layer is not None:
             ec.codes_set(h, "typeOfFirstFixedSurface", 168)  # oceanModelLayer
             ec.codes_set(h, "level", layer)
@@ -150,8 +155,29 @@ def test_polytope_retrieve_writes_part_then_renames(tmp_path):
     request = {"param": "167"}
     res = polytope_retrieve(request, "host.example", out, client=client)
     assert res == out and out.read_bytes() == b"GRIB-ish"
-    assert not (tmp_path / "sub" / "f.grib.part").exists()
-    assert client.calls == [("destination-earth", request, str(out) + ".part")]
+    assert list((tmp_path / "sub").glob("*.part")) == []
+    (path,) = [c[2] for c in client.calls]
+    assert path.startswith(str(out) + ".") and path.endswith(".part") and path != str(out) + ".part"
+    assert client.calls == [("destination-earth", request, path)]
+
+
+def test_polytope_retrieve_temp_names_are_unique(tmp_path):
+    out = tmp_path / "f.grib"
+    paths = []
+    for _ in range(2):
+        client = FakeClient()
+        client.final = out
+        polytope_retrieve({}, "h", out, client=client)
+        paths.append(client.calls[0][2])
+        out.unlink()
+    assert paths[0] != paths[1]
+    # another worker's partial file is left alone
+    other = tmp_path / "f.grib.1.deadbeef.part"
+    other.write_bytes(b"x")
+    client = FakeClient()
+    client.final = out
+    polytope_retrieve({}, "h", out, client=client)
+    assert other.exists()
 
 
 def test_polytope_retrieve_collection_and_failure(tmp_path):
@@ -161,7 +187,7 @@ def test_polytope_retrieve_collection_and_failure(tmp_path):
     with pytest.raises(RuntimeError, match="boom"):
         polytope_retrieve({}, "h", out, collection="other", client=client)
     assert client.calls[0][0] == "other"
-    assert not out.exists() and not (tmp_path / "f.grib.part").exists()
+    assert not out.exists() and list(tmp_path.glob("*.part")) == []
 
 
 # ── GRIB ─────────────────────────────────────────────────────────────────────
@@ -197,7 +223,8 @@ def test_read_grib_ocean_layers_mask_and_times(ocean_grib):
     assert v.attrs["units"] == "K"
     assert v.attrs["stepType"] == "avg"
     assert v.attrs["typeOfLevel"] == "oceanModelLayer"
-    assert v.attrs["GRIB_stepRange"] == "0-24"
+    assert "GRIB_stepRange" not in v.attrs
+    assert ds["step_range"].dims == ("time",) and ds["step_range"].values[0] == "0-24"
     assert v.attrs["long_name"]
 
 
@@ -249,6 +276,127 @@ def test_check_grib_params(ocean_grib, atmos_grib):
 def test_check_grib_params_missing(atmos_grib):
     with pytest.raises(ValueError, match="not found"):
         check_grib_params([atmos_grib], [167, 235055])
+
+
+def _flat(v=0.0):
+    return np.full(NCELL, v)
+
+
+def test_read_grib_refuses_two_ends_for_one_start(tmp_path):
+    p = write_grib(
+        tmp_path / "ends.grib",
+        [
+            grib_message(_flat(1), param_id=167, avg=True, step=(0, 24)),
+            grib_message(_flat(2), param_id=235055, avg=True, step=(0, 48)),
+        ],
+    )
+    with pytest.raises(ValueError, match="two averaging periods"):
+        read_healpix_grib(p)
+
+
+def test_read_grib_refuses_one_name_two_param_ids(tmp_path):
+    # paramIds 141 and 228141 are both the shortName "sd"
+    p = write_grib(
+        tmp_path / "names.grib",
+        [grib_message(_flat(1), param_id=141), grib_message(_flat(2), param_id=228141, time=600)],
+    )
+    with pytest.raises(ValueError, match="two paramIds"):
+        read_healpix_grib(p)
+
+
+def test_read_grib_times_selects_before_decoding(tmp_path, monkeypatch):
+    import eccodes as ec
+
+    p = write_grib(
+        tmp_path / "t.grib",
+        [grib_message(_flat(k), param_id=167, time=100 * k) for k in range(4)],
+    )
+    decoded = []
+    real = ec.codes_get_values
+    monkeypatch.setattr(ec, "codes_get_values", lambda h: decoded.append(1) or real(h))
+    ds = read_healpix_grib(p, times=[np.datetime64("2026-01-01T02:00")])
+    assert len(decoded) == 1  # one message decoded, once
+    assert ds["2t"].shape == (1, NCELL)
+    np.testing.assert_allclose(ds["2t"].values, 2.0)
+    assert ds["time"].values[0] == np.datetime64("2026-01-01T02:00", "ns")
+    with pytest.raises(ValueError, match="not in the GRIB"):
+        read_healpix_grib(p, times=[np.datetime64("2026-03-01T00:00")])
+    # a bitmap message is decoded once too
+    decoded.clear()
+    pm = write_grib(tmp_path / "m.grib", [grib_message(ocean_field(1), param_id=263501, layer=1)])
+    ds = read_healpix_grib(pm)
+    assert len(decoded) == 1 and np.isnan(ds["avg_thetao"].values).any()
+
+
+def test_read_grib_monthly_means_in_hours(tmp_path):
+    p = write_grib(
+        tmp_path / "month_h.grib",
+        [
+            grib_message(_flat(1), param_id=167, avg=True, date=20260101, step=(0, 744)),
+            grib_message(_flat(2), param_id=167, avg=True, date=20260101, step=(744, 1416)),
+        ],
+    )
+    ds = read_healpix_grib(p)
+    np.testing.assert_array_equal(
+        ds["time"].values, np.array(["2026-01-01", "2026-02-01"], dtype="datetime64[ns]")
+    )
+    np.testing.assert_array_equal(
+        ds["time_bounds"].values,
+        np.array(
+            [["2026-01-01", "2026-02-01"], ["2026-02-01", "2026-03-01"]], dtype="datetime64[ns]"
+        ),
+    )
+    # one stepRange per time, not the first message's for all
+    assert list(ds["step_range"].values) == ["0-744", "744-1416"]
+    assert "GRIB_stepRange" not in ds["avg_2t"].attrs
+    info = check_grib_params(p, [228004])
+    assert info["dates"] == ["2026-01-01T00:00", "2026-02-01T00:00"]
+
+
+def test_read_grib_monthly_mean_in_months(tmp_path):
+    month = {
+        "indicatorOfUnitOfTimeRange": 3,
+        "forecastTime": 1,
+        "indicatorOfUnitForTimeRange": 3,
+        "lengthOfTimeRange": 1,
+        "yearOfEndOfOverallTimeInterval": 2026,
+        "monthOfEndOfOverallTimeInterval": 3,
+        "dayOfEndOfOverallTimeInterval": 1,
+    }
+    p = write_grib(
+        tmp_path / "month_m.grib",
+        [grib_message(_flat(1), param_id=167, avg=True, date=20260101, raw=month)],
+    )
+    ds = read_healpix_grib(p)
+    # eccodes reports 720 hours here; the calendar month is used instead
+    assert ds["time"].values[0] == np.datetime64("2026-02-01", "ns")
+    np.testing.assert_array_equal(
+        ds["time_bounds"].values[0], np.array(["2026-02-01", "2026-03-01"], dtype="datetime64[ns]")
+    )
+
+
+def test_read_grib_monthly_mean_must_start_on_the_first(tmp_path):
+    p = write_grib(
+        tmp_path / "month_bad.grib",
+        [grib_message(_flat(1), param_id=167, avg=True, date=20260115, step=(0, 744))],
+    )
+    with pytest.raises(ValueError, match="first day of a month"):
+        read_healpix_grib(p)
+
+
+def test_read_grib_refuses_unsupported_step_units(tmp_path):
+    p = write_grib(
+        tmp_path / "years.grib",
+        [grib_message(_flat(1), param_id=167, avg=True, raw={"indicatorOfUnitOfTimeRange": 4})],
+    )
+    with pytest.raises(ValueError, match="stepUnits"):
+        read_healpix_grib(p)
+
+
+def test_check_grib_params_refuses_ring_ordering(tmp_path):
+    p = write_grib(tmp_path / "ring.grib", [grib_message(_flat(1), param_id=167, ordering="ring")])
+    with pytest.raises(ValueError, match="nested"):
+        check_grib_params(p, [167])
 
 
 # ── CoverageJSON ─────────────────────────────────────────────────────────────
@@ -342,6 +490,26 @@ def test_read_covjson_same_cell_in_two_layers_is_fine(tmp_path):
     p.write_text(json.dumps(covjson([(lat[5], lon[5])], levels=(1, 2, 3))))
     ds = read_covjson_points(p, level=LEVEL)
     assert ds["avg_thetao"].shape == (1, 3, 1)
+
+
+def test_read_covjson_checks_shape_and_axis_names(tmp_path):
+    _, lon, lat = sphere_lonlat()
+    doc = covjson([(lat[5], lon[5]), (lat[9], lon[9])], levels=(1,))
+    rng = doc["coverages"][0]["ranges"]["avg_thetao"]
+    p = tmp_path / "s.json"
+    # a matching (t, points) layout is accepted
+    rng.update(shape=[1, 2], axisNames=["t", "composite"])
+    p.write_text(json.dumps(doc))
+    assert read_covjson_points(p, level=LEVEL)["avg_thetao"].shape == (1, 1, 2)
+    # points first, time second: not the assumed order
+    rng.update(shape=[2, 1], axisNames=["composite", "t"])
+    p.write_text(json.dumps(doc))
+    with pytest.raises(ValueError, match="shape"):
+        read_covjson_points(p, level=LEVEL)
+    rng.update(shape=[1, 2], axisNames=["composite", "t"])
+    p.write_text(json.dumps(doc))
+    with pytest.raises(ValueError, match="axisNames"):
+        read_covjson_points(p, level=LEVEL)
 
 
 # ── sphere → ellipsoid ───────────────────────────────────────────────────────
@@ -464,11 +632,11 @@ def test_write_cell_store_layout(tmp_path):
         stac_item=stac,
         layer=np.array([1, 2], dtype="int32"),
         chunk_level=2,
-        coarsest_level=2,
+        coarsest_level=1,
     )
     assert res == {
         "variables": ["a", "b"],
-        "levels": [3, 2],
+        "levels": [3, 2, 1],
         "n_valid": {"a": n - 5, "b": 2 * n - 4},
     }
     root = zarr.open_group(str(out), mode="r")
@@ -482,12 +650,13 @@ def test_write_cell_store_layout(tmp_path):
         "layout": [
             {"asset": "3", "dggs": dict(DGGS, refinement_level=3)},
             {"asset": "2", "dggs": dict(DGGS, refinement_level=2)},
+            {"asset": "1", "dggs": dict(DGGS, refinement_level=1)},
         ]
     }
-    for L, nL in ((3, n), (2, n // 4)):
+    for L, nL in ((3, n), (2, n // 4), (1, n // 16)):
         lg = g[str(L)]
         assert lg.attrs["dggs"] == dict(DGGS, refinement_level=L)
-        chunk = 4 ** (L - 2)
+        chunk = 4 ** (L - 2) if L >= 2 else nL  # the coarsest level is one chunk
         arr_a, arr_b = lg["a"], lg["b"]
         assert arr_a.shape == (nL,) and arr_a.dtype == np.float32
         assert arr_a.chunks == (chunk,)
@@ -513,6 +682,28 @@ def test_write_cell_store_layout(tmp_path):
     np.testing.assert_allclose(g["2/b"][:], cb, rtol=1e-6)
     assert np.isnan(g["2/a"][0])  # all four children NaN
     assert not np.isnan(g["2/a"][1])  # one NaN child of four: still a mean
+    assert g["1/a"].chunks == (1,)
+
+
+def test_write_cell_store_coarsest_level_is_one_chunk(tmp_path):
+    kw = dict(
+        parent_cell=0,
+        parent_level=1,
+        level=3,
+        group="g",
+        variables={"x": np.zeros(16, dtype=np.float32)},
+        var_attrs={},
+        root_attrs={},
+        stac_item={},
+    )
+    # chunk_level 2: the chunks of level 2 hold one cell each, 4 chunks in the level
+    with pytest.raises(ValueError, match="more than one chunk"):
+        write_cell_store(tmp_path / "a.zarr", chunk_level=2, coarsest_level=2, **kw)
+    with pytest.raises(ValueError, match="more than one chunk"):
+        write_cell_store(tmp_path / "b.zarr", chunk_level=2, coarsest_level=3, **kw)
+    # a single chunk: coarsest above the chunk level, or the default chunk level
+    write_cell_store(tmp_path / "c.zarr", chunk_level=2, coarsest_level=1, **kw)
+    write_cell_store(tmp_path / "d.zarr", coarsest_level=2, **kw)
 
 
 def test_write_cell_store_defaults_one_level_one_chunk(tmp_path):
@@ -624,3 +815,37 @@ def test_real_covjson_matches_the_grib_cells():
     np.testing.assert_allclose(
         cj["avg_thetao"].values[0, 0], grib[0, 0, ids.astype(int)], rtol=1e-5
     )
+
+
+def test_operator_is_reused_for_the_same_cells_in_another_order():
+    cells, lon, lat = sphere_lonlat()
+    f = smooth_field(lon, lat)
+    f[lat > 30.0] = np.nan
+    s = SphereToEllipsoid(LEVEL)
+    ids1, v1 = s.resample(cells, f)
+    perm = np.random.default_rng(1).permutation(cells.size)
+    ids2, v2 = s.resample(cells[perm], f[perm])
+    assert len(s._operators) == 1
+    np.testing.assert_array_equal(ids1, ids2)
+    np.testing.assert_array_equal(v1, v2)
+    s.clear()
+    assert not s._operators and not s._norms
+
+
+def test_conservative_drops_cells_with_negligible_weight(monkeypatch):
+    from healpix_convert.converters import climatedt
+
+    cells, lon, lat = sphere_lonlat()
+    s = SphereToEllipsoid(LEVEL, method="conservative")
+    f = smooth_field(lon, lat)
+    ids_all, _ = s.resample(cells, f)
+    _, den = next(iter(s._norms.values()))
+    assert (den > climatedt.CONSERVATIVE_MIN_WEIGHT * den.max()).all() or ids_all.size < den.size
+    # a tiny weight in one cell is dropped, the others stay
+    ids0, den0 = next(iter(s._norms.values()))
+    den1 = den0.copy()
+    den1[0] = 1e-9 * den0.max()
+    key = next(iter(s._norms))
+    s._norms[key] = (ids0, den1)
+    ids, _ = s.resample(cells, f)
+    assert ids.size == ids0.size - 1 and ids0[0] not in ids

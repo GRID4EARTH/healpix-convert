@@ -157,8 +157,11 @@ def test_layers_are_written_one_map_per_layer(tmp_path) -> None:
     layer1 = base.values
     layer2 = base.values + 3.0
     layer2[:, lat > 10.0] = np.nan
-    conv._ds["t2m"] = (("valid_time", "level", "values"), np.stack([layer1, layer2], axis=1))
-    conv._ds = conv._ds.assign_coords(level=[1, 7])
+    conv._ds["t2m"] = (
+        ("valid_time", "oceanModelLayer", "values"),
+        np.stack([layer1, layer2], axis=1),
+    )
+    conv._ds = conv._ds.assign_coords(oceanModelLayer=[1, 7])
     output = str(tmp_path / "layers.zarr")
     conv._result = None
     conv.prepare(output_path=output)
@@ -168,8 +171,8 @@ def test_layers_are_written_one_map_per_layer(tmp_path) -> None:
     grp = zarr.open_group(output, mode="r")["measurements/sfc"]
     t2m = grp["t2m"]
     assert t2m.shape == (2, 2, 12 * 4**LEVEL)
-    assert t2m.metadata.dimension_names == ("time", "level", "cells")
-    np.testing.assert_array_equal(grp["level"][...], [1, 7])
+    assert t2m.metadata.dimension_names == ("time", "oceanModelLayer", "cells")
+    np.testing.assert_array_equal(grp["oceanModelLayer"][...], [1, 7])
     for t in range(2):
         for k, field in enumerate((layer1[t], layer2[t])):
             valid = np.isfinite(field)
@@ -185,3 +188,22 @@ def test_layers_are_written_one_map_per_layer(tmp_path) -> None:
     _, lat_w = _wgs84_lonlat(cells)
     assert not np.isnan(t2m[0, 0, cells]).any()
     assert np.isnan(t2m[0, 1, cells][lat_w > 12.0]).all()
+
+
+def test_extra_dimension_must_be_a_layer(tmp_path) -> None:
+    conv, _ = _converter(tmp_path)
+    base = conv._ds["t2m"]
+    conv._ds["t2m"] = (("valid_time", "step", "values"), np.stack([base.values] * 2, axis=1))
+    with pytest.raises(NotImplementedError, match="step"):
+        conv._init_zarr(
+            str(tmp_path / "bad.zarr"),
+            2,
+            *conv._get_time_range(),
+            {"t2m": (None, "K", "t")},
+            False,
+        )
+    with pytest.raises(NotImplementedError, match="step"):
+        conv._wgs84_map("t2m", 0, "valid_time")
+    for name in ("oceanModelLayer", "oceanModel", "layer", "depthLayer"):
+        assert climatedt._is_layer_dim(name)
+    assert not climatedt._is_layer_dim("step") and not climatedt._is_layer_dim("level")
