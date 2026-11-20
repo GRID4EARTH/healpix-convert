@@ -149,8 +149,82 @@ def test_output_declares_wgs84(tmp_path) -> None:
     assert "wgs84" in str(attrs).lower()
 
 
-def test_extra_dimension_is_refused(tmp_path) -> None:
+def test_layers_are_written_one_map_per_layer(tmp_path) -> None:
     conv, _ = _converter(tmp_path)
-    conv._ds["t2m"] = conv._ds["t2m"].expand_dims(level=[1, 2], axis=1)
-    with pytest.raises(NotImplementedError, match="level"):
-        conv.convert_group(0)
+    # a second dimension (ocean layers): the layers differ and are masked differently
+    base = conv._ds["t2m"]
+    lat = conv._ds["latitude"].values
+    layer1 = base.values
+    layer2 = base.values + 3.0
+    layer2[:, lat > 10.0] = np.nan
+    conv._ds["t2m"] = (
+        ("valid_time", "oceanModelLayer", "values"),
+        np.stack([layer1, layer2], axis=1),
+    )
+    conv._ds = conv._ds.assign_coords(oceanModelLayer=[1, 7])
+    output = str(tmp_path / "layers.zarr")
+    conv._result = None
+    conv.prepare(output_path=output)
+    for idx in CHUNKS:
+        conv.convert_group(idx)
+
+    grp = zarr.open_group(output, mode="r")["measurements/sfc"]
+    t2m = grp["t2m"]
+    assert t2m.shape == (2, 2, 12 * 4**LEVEL)
+    assert t2m.metadata.dimension_names == ("time", "oceanModelLayer", "cells")
+    np.testing.assert_array_equal(grp["oceanModelLayer"][...], [1, 7])
+    for t in range(2):
+        for k, field in enumerate((layer1[t], layer2[t])):
+            valid = np.isfinite(field)
+            res = conv._resampler(valid).resample(field[valid], lam=0.0)
+            expected = np.full(12 * 4**LEVEL, np.nan, dtype="float32")
+            expected[res.cell_ids] = res.cell_data.astype("float32")
+            expected = np.clip(expected, field[valid].min(), field[valid].max())
+            for idx in CHUNKS:
+                cells = _chunk_cells(idx)
+                np.testing.assert_array_equal(t2m[t, k, cells], expected[cells])
+    # masked per layer: layer 1 is full, layer 2 is NaN where it has no data
+    cells = _chunk_cells(0)
+    _, lat_w = _wgs84_lonlat(cells)
+    assert not np.isnan(t2m[0, 0, cells]).any()
+    assert np.isnan(t2m[0, 1, cells][lat_w > 12.0]).all()
+
+
+def test_level_dimension_is_written_as_a_layer(tmp_path) -> None:
+    conv, _ = _converter(tmp_path)
+    base = conv._ds["t2m"]
+    conv._ds["t2m"] = (("valid_time", "level", "values"), np.stack([base.values] * 2, axis=1))
+    conv._ds = conv._ds.assign_coords(level=[1, 7])
+    assert conv._extra_dims(conv._ds["t2m"], "valid_time") == ["level"]
+    conv._init_zarr(
+        str(tmp_path / "level.zarr"), 2, *conv._get_time_range(), {"t2m": (None, "K", "t")}, False
+    )
+
+
+def test_extra_dimension_must_be_a_layer(tmp_path) -> None:
+    conv, _ = _converter(tmp_path)
+    base = conv._ds["t2m"]
+    conv._ds["t2m"] = (("valid_time", "step", "values"), np.stack([base.values] * 2, axis=1))
+    with pytest.raises(NotImplementedError, match="step"):
+        conv._init_zarr(
+            str(tmp_path / "bad.zarr"),
+            2,
+            *conv._get_time_range(),
+            {"t2m": (None, "K", "t")},
+            False,
+        )
+    with pytest.raises(NotImplementedError, match="step"):
+        conv._wgs84_map("t2m", 0, "valid_time")
+    for name in (
+        "oceanModelLayer",
+        "oceanModel",
+        "layer",
+        "depthLayer",
+        "level",
+        "isobaricInhPa",
+        "hybrid",
+        "heightAboveGround",
+        "depthBelowLandLayer",
+    ):
+        assert climatedt._is_layer_dim(name)
+    assert not climatedt._is_layer_dim("step") and not climatedt._is_layer_dim("number")

@@ -31,11 +31,17 @@ Usage
 
 from __future__ import annotations
 
+import glob
+import hashlib
+import json
 import logging
+import os
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import cfgrib
 import healpix_geo
@@ -97,6 +103,25 @@ class CDTPrepareResult:
     var_meta: dict  # {var: (param_id, unit, long_name)}
 
 
+_LAYER_DIM_NAMES = (
+    "oceanModel",
+    "layer",
+    "level",
+    "isobaricInhPa",
+    "hybrid",
+    "heightAboveGround",
+    "depthBelowLandLayer",
+)
+
+
+def _is_layer_dim(name: str) -> bool:
+    """A vertical / layer dimension: cfgrib names such as ``oceanModelLayer``,
+    ``depthBelowLandLayer`` (anything containing "Layer"), ``oceanModel``,
+    ``layer``, ``level``, ``isobaricInhPa``, ``hybrid`` and ``heightAboveGround``.
+    Any other extra dimension is not a layer."""
+    return "Layer" in name or name in _LAYER_DIM_NAMES
+
+
 class ClimateDTConverter:
     """
     Converter for ClimateDT IFS-NEMO output to EOPF-DGGS HEALPix zarr.
@@ -148,15 +173,18 @@ class ClimateDTConverter:
         self.local_dir = Path(local_dir)
 
         self._ds: xr.Dataset | None = None
-        self._resamplers: dict = {}  # valid-point mask -> resampler
+        self._s2e = SphereToEllipsoid(
+            _CHILD_LEVEL,
+            method="psf",
+            init_params=_g["resampler"]["init_params"],
+            resample_params=_g["resampler"]["resample_params"],
+        )
         self._map_cache: dict = {}  # (var, t) -> full-sphere WGS84 map
         self._result: CDTPrepareResult | None = None
 
     # ── Step 1: prepare ───────────────────────────────────────────────────────
 
-    def prepare(
-        self, output_path: str, force_download: bool = False
-    ) -> CDTPrepareResult:
+    def prepare(self, output_path: str, force_download: bool = False) -> CDTPrepareResult:
         """Download ClimateDT GRIB (if needed) and initialise the zarr skeleton."""
         grib_path = self._grib_path()
 
@@ -173,9 +201,7 @@ class ClimateDTConverter:
         # keep only vars present in the dataset
         var_meta = {k: v for k, v in var_meta.items() if k in self._ds.data_vars}
 
-        n_times = max(
-            self._ds.sizes.get("valid_time", self._ds.sizes.get("time", 1)), 1
-        )
+        n_times = max(self._ds.sizes.get("valid_time", self._ds.sizes.get("time", 1)), 1)
         n_chunks = _N_PARENT
 
         self._init_zarr(output_path, n_times, start_dt, end_dt, var_meta, is_ocean)
@@ -219,7 +245,9 @@ class ClimateDTConverter:
             zarr_a = grp[var]
             for t in range(r.n_times):
                 full_map = self._wgs84_map(var, t, t_dim)
-                zarr_a[t, chunk_sl] = full_map[cell_ids.astype(int)]
+                zarr_a[(t, *(slice(None),) * (zarr_a.ndim - 2), chunk_sl)] = full_map[
+                    ..., cell_ids.astype(int)
+                ].reshape(zarr_a.shape[1:-1] + (_CHUNK_SIZE,))
 
         grp["cell_ids"][chunk_sl] = cell_ids
         log.debug(f"Chunk {chunk_index + 1}/{_N_PARENT} written.")
@@ -252,9 +280,7 @@ class ClimateDTConverter:
         try:
             import polytope.api as polytope
         except ImportError:
-            raise ImportError(
-                "Install polytope: pip install polytope-client destinelab"
-            )
+            raise ImportError("Install polytope: pip install polytope-client destinelab")
         log.info(f"Downloading ClimateDT → {grib_path}")
         client = polytope.Client(address=POLYTOPE_ADDRESS)
         request = {
@@ -289,14 +315,29 @@ class ClimateDTConverter:
             )
             log.info(f"  {dict(self._ds.sizes)}  vars: {list(self._ds.data_vars)}")
 
+    @staticmethod
+    def _extra_dims(da: xr.DataArray, t_dim: str | None) -> list[str]:
+        """Dimensions of ``da`` besides time and cells (the last); only layer dimensions."""
+        extra = [d for d in da.dims if d != t_dim][:-1]
+        bad = [d for d in extra if not _is_layer_dim(d)]
+        if bad:
+            raise NotImplementedError(
+                f"{da.name}: dimension(s) {bad} besides time and cells are not supported "
+                "(only layer dimensions, e.g. oceanModelLayer)"
+            )
+        return extra
+
     def _wgs84_map(self, var: str, t: int, t_dim: str | None) -> np.ndarray:
         """Full-sphere WGS84 map for one variable/timestep.
 
-        Computed once per (var, t) and cached, so the global resampling is not
-        repeated for each of the 192 spatial chunks. Masked fields (NaN in the
-        source, e.g. ocean fields over land) are resampled from their valid
-        points only, so the masked cells stay NaN. As for ERA5, the result is
-        clipped to the source range, which removes the PSF overshoot only.
+        Shape ``(_N_CHILD,)``, or ``(n_layer, _N_CHILD)`` when the variable has
+        a dimension besides time and cells (one map per layer, masked per
+        layer). Computed once per (var, t) and cached, so the global
+        resampling is not repeated for each of the 192 spatial chunks. Masked
+        fields (NaN in the source, e.g. ocean fields over land) are resampled
+        from their valid points only, so the masked cells stay NaN. As for
+        ERA5, the result is clipped to the source range, which removes the PSF
+        overshoot only.
         """
         key = (var, t)
         full_map = self._map_cache.get(key)
@@ -306,41 +347,24 @@ class ClimateDTConverter:
         da = self._ds[var]
         if t_dim:
             da = da.isel({t_dim: t})
-        if da.size != _N_CHILD:
-            # e.g. ocean fields with depth levels: one map per level is not
-            # written yet (before, only the first level was)
-            raise NotImplementedError(
-                f"{var}: dimensions {dict(da.sizes)} besides time and cells"
-            )
-        vals = da.values.ravel().astype(np.float64)
-        full_map = np.full(_N_CHILD, np.nan, dtype=np.float32)
-        valid = np.isfinite(vals)
-        if valid.any():
-            res = self._resampler(valid).resample(
-                vals[valid], **_g["resampler"]["resample_params"]
-            )
-            full_map[res.cell_ids] = res.cell_data.astype(np.float32)
-            full_map = np.clip(full_map, vals[valid].min(), vals[valid].max())
+        self._extra_dims(da, None)  # raises for anything but layers
+        extra_shape = da.shape[:-1]  # the cells are the last dimension
+        vals = da.values.reshape(-1, _N_CHILD).astype(np.float64)
+        cells = np.arange(_N_CHILD, dtype=np.uint64)
+        full_map = np.full((vals.shape[0], _N_CHILD), np.nan, dtype=np.float32)
+        for i, layer in enumerate(vals):
+            if np.isfinite(layer).any():
+                out_ids, out_vals = self._s2e.resample(cells, layer)
+                full_map[i, out_ids.astype(np.int64)] = out_vals
+        full_map = full_map.reshape(extra_shape + (_N_CHILD,))
 
         self._map_cache[key] = full_map
         return full_map
 
     def _resampler(self, valid: np.ndarray) -> healpix_resample.PSFResampler:
         """Sphere → WGS84 resampler on the valid native points (built once per mask)."""
-        key = valid.tobytes()
-        if key not in self._resamplers:
-            log.info(
-                f"Building the sphere→WGS84 resampler on {int(valid.sum()):,} points …"
-            )
-            self._resamplers[key] = healpix_resample.PSFResampler(
-                lon_deg=self._ds.longitude.values.ravel().astype(float)[valid],
-                lat_deg=self._ds.latitude.values.ravel().astype(float)[valid],
-                level=_CHILD_LEVEL,
-                ellipsoid="WGS84",
-                verbose=False,
-                **_g["resampler"]["init_params"],
-            )
-        return self._resamplers[key]
+        cells = np.arange(_N_CHILD, dtype=np.uint64)[valid]
+        return self._s2e.operator(cells)
 
     def _get_time_range(self) -> tuple[datetime, datetime]:
         import pandas as pd
@@ -408,14 +432,32 @@ class ClimateDTConverter:
 
         cf_variable_attrs = get_cf_data_variable_attrs(healpix_model, self.metadata)
 
+        ds = self._ds if self._ds is not None else xr.Dataset()
+        t_dim = next((d for d in ["valid_time", "time"] if d in ds.dims), None)
+        made_dims: set[str] = set()
         for var, (_, unit, long_name) in var_meta.items():
+            # dimensions besides time and cells (e.g. ocean layers); the cells come last
+            extra = self._extra_dims(ds[var], t_dim) if var in ds.data_vars else []
+            sizes = {d: ds.sizes[d] for d in extra}
+            for d in extra:
+                if d not in made_dims:
+                    made_dims.add(d)
+                    coord = ds[d].values if d in ds.coords else np.arange(sizes[d])
+                    c = grp.create_array(
+                        d,
+                        shape=coord.shape,
+                        dtype=coord.dtype,
+                        chunks=coord.shape,
+                        dimension_names=(d,),
+                    )
+                    c[...] = coord
             grp.create_array(
                 var,
-                shape=(n_times, _N_CHILD),
+                shape=(n_times, *sizes.values(), _N_CHILD),
                 dtype=np.float32,
-                chunks=(1, _CHUNK_SIZE),
+                chunks=(1, *sizes.values(), _CHUNK_SIZE),
                 fill_value=np.nan,
-                dimension_names=("time", "cells"),
+                dimension_names=("time", *extra, "cells"),
                 attributes={
                     "units": unit,
                     "long_name": long_name,
@@ -438,9 +480,7 @@ class ClimateDTConverter:
 
         return StacItem(
             stac_version="1.1.0",
-            stac_extensions=[
-                "https://stac-extensions.github.io/product/v1.0.0/schema.json"
-            ],
+            stac_extensions=["https://stac-extensions.github.io/product/v1.0.0/schema.json"],
             id=f"S00__{pt}_{vs}_{ve}_{cr}",
             bbox=[-180.0, -90.0, 180.0, 90.0],
             geometry=shapely.geometry.mapping(shapely.box(-180, -90, 180, 90)),
@@ -463,3 +503,872 @@ class ClimateDTConverter:
             links=[],
             assets={},
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Generic building blocks (no dataset settings, no default host, no default
+# parameter list): Polytope retrieve, HEALPix GRIB / CoverageJSON readers,
+# sphere → WGS84 resampling and the per-parent-cell store writer.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_LAYER_TYPES = ("oceanModelLayer", "oceanModel")
+# GRIB stepUnits code → numpy timedelta unit
+_STEP_UNITS = {
+    0: "m",
+    1: "h",
+    2: "D",
+    13: "s",
+    254: "s",  # indicatorOfUnitOfTimeRange: second
+}
+_STEP_UNIT_MULT = {10: ("h", 3), 11: ("h", 6), 12: ("h", 12)}
+_STEP_UNIT_MONTH = 3
+
+
+def _as_paths(paths) -> list[Path]:
+    if isinstance(paths, (str, os.PathLike)):
+        return [Path(paths)]
+    return [Path(p) for p in paths]
+
+
+def polytope_retrieve(
+    request: dict,
+    address: str,
+    out_path,
+    *,
+    collection: str = "destination-earth",
+    client=None,
+) -> Path:
+    """One Polytope retrieve of ``request`` to ``out_path``.
+
+    The data is written to ``<out_path>.<pid>.<random>.part`` (a name no other
+    worker uses) and renamed atomically when complete, so a file under its
+    final name is always whole. ``<out_path>.*.part`` files older than one day
+    (left by killed workers) are removed first. No retry here (the caller retries). ``client`` is any object with ``.retrieve(collection, request,
+    path)``; the default is ``polytope.api.Client(address=address)``.
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # leftovers of killed workers (a live download is far younger than a day)
+    cutoff = time.time() - 86400
+    for old in out_path.parent.glob(f"{glob.escape(out_path.name)}.*.part"):
+        try:
+            if old.stat().st_mtime < cutoff:
+                old.unlink(missing_ok=True)
+        except OSError:
+            pass
+    part = out_path.with_name(f"{out_path.name}.{os.getpid()}.{uuid4().hex[:8]}.part")
+    if client is None:
+        try:
+            import polytope.api as polytope
+        except ImportError:
+            raise ImportError("Install polytope: pip install polytope-client destinelab")
+        client = polytope.Client(address=address)
+    part.unlink(missing_ok=True)
+    try:
+        client.retrieve(collection, request, str(part))
+        if not part.exists() or part.stat().st_size == 0:
+            raise RuntimeError(f"Polytope returned no data for {request}")
+        os.replace(part, out_path)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+    return out_path
+
+
+def _grib_messages(path: Path):
+    """Yield eccodes handles of every message of a GRIB file (released after use)."""
+    import eccodes as ec
+
+    with open(path, "rb") as fh:
+        while True:
+            h = ec.codes_grib_new_from_file(fh)
+            if h is None:
+                break
+            try:
+                yield h
+            finally:
+                ec.codes_release(h)
+
+
+def _grib_stamp(h, date_key: str, time_key: str) -> np.datetime64:
+    import eccodes as ec
+
+    d, t = int(ec.codes_get(h, date_key)), int(ec.codes_get(h, time_key))
+    return np.datetime64(
+        f"{d // 10000:04d}-{d // 100 % 100:02d}-{d % 100:02d}T{t // 100:02d}:{t % 100:02d}", "s"
+    )
+
+
+def _grib_bounds(h) -> tuple[np.datetime64, np.datetime64, bool]:
+    """Cheap keys only: (reference, valid, is_avg). The start of the message lies in
+    [reference, valid] for stepType avg and equals valid otherwise."""
+    import eccodes as ec
+
+    return (
+        _grib_stamp(h, "dataDate", "dataTime"),
+        _grib_stamp(h, "validityDate", "validityTime"),
+        ec.codes_get(h, "stepType") == "avg",
+    )
+
+
+def _grib_times(h) -> tuple[np.datetime64, np.datetime64]:
+    """(start, end) of the message: the averaging period for stepType avg, else (valid, valid).
+
+    A period in months (month time unit) is a calendar-month mean: it must start on the
+    first of a month and end ``lengthOfTimeRange`` months later. Hour / day periods
+    are plain periods (dataDate + startStep to the validity time); when both ends are on the
+    first of a month at 00:00 they are calendar months, which needs no further handling.
+    """
+    import eccodes as ec
+
+    valid = _grib_stamp(h, "validityDate", "validityTime")
+    if ec.codes_get(h, "stepType") != "avg":
+        return valid, valid
+    reference = _grib_stamp(h, "dataDate", "dataTime")
+    unit = int(ec.codes_get(h, "stepUnits"))
+    # eccodes converts a month step to 30-day hours: read the raw unit and offset
+    raw_unit = (
+        int(ec.codes_get(h, "indicatorOfUnitOfTimeRange"))
+        if ec.codes_is_defined(h, "indicatorOfUnitOfTimeRange")
+        else unit
+    )
+    supported = {_STEP_UNIT_MONTH, *_STEP_UNITS, *_STEP_UNIT_MULT}
+    if unit not in supported or raw_unit not in supported:
+        raise ValueError(
+            f"unsupported GRIB stepUnits {unit} (indicatorOfUnitOfTimeRange {raw_unit})"
+        )
+    if _STEP_UNIT_MONTH in (unit, raw_unit):
+        months = int(ec.codes_get(h, "forecastTime", int))
+        ref_month = reference.astype("datetime64[M]")
+        into_month = reference - ref_month.astype("datetime64[s]")  # day and time of day
+        start = (ref_month + np.timedelta64(months, "M")).astype("datetime64[s]") + into_month
+        if start != start.astype("datetime64[M]").astype("datetime64[s]"):
+            raise ValueError(f"monthly mean starting {start}, not on the first day of a month")
+        length_unit = (
+            int(ec.codes_get(h, "indicatorOfUnitForTimeRange"))
+            if ec.codes_is_defined(h, "indicatorOfUnitForTimeRange")
+            else None
+        )
+        if length_unit == _STEP_UNIT_MONTH:
+            n = int(ec.codes_get(h, "lengthOfTimeRange", int))
+        else:
+            n = int(valid.astype("datetime64[M]") - start.astype("datetime64[M]"))
+        expected = (start.astype("datetime64[M]") + np.timedelta64(n, "M")).astype("datetime64[s]")
+        if n < 1 or valid != expected:
+            raise ValueError(
+                f"monthly mean starting {start}: validity {valid} is not {n} month(s) later"
+            )
+        return start, valid
+    if unit in _STEP_UNITS:
+        start = reference + np.timedelta64(int(ec.codes_get(h, "startStep")), _STEP_UNITS[unit])
+    else:
+        u, mult = _STEP_UNIT_MULT[unit]
+        start = reference + np.timedelta64(int(ec.codes_get(h, "startStep")) * mult, u)
+    return start, valid
+
+
+def _grib_grid(h) -> dict:
+    import eccodes as ec
+
+    grid = {"gridType": ec.codes_get(h, "gridType")}
+    if grid["gridType"] != "healpix":
+        raise ValueError(f"not a HEALPix GRIB message: gridType {grid['gridType']}")
+    grid["Nside"] = int(ec.codes_get(h, "Nside"))
+    grid["orderingConvention"] = ec.codes_get(h, "orderingConvention")
+    return grid
+
+
+def check_grib_params(paths, expected_param_ids) -> dict:
+    """Read every GRIB message of ``paths`` and check its paramId.
+
+    Raises ``ValueError`` if a paramId is not in ``expected_param_ids``, if
+    one expected paramId is absent, or if a message is not a HEALPix grid in
+    nested ordering. Returns ``{"messages": n, "param_ids":
+    {pid: n}, "dates": [...], "grid": {"gridType", "Nside",
+    "orderingConvention"}}``; ``dates`` are the sorted ISO start times of the
+    messages (the averaging period start for stepType avg).
+    """
+    import eccodes as ec
+
+    expected = {int(p) for p in expected_param_ids}
+    counts: dict[int, int] = {}
+    dates: set[str] = set()
+    grid: dict | None = None
+    n = 0
+    for path in _as_paths(paths):
+        for h in _grib_messages(path):
+            n += 1
+            pid = int(ec.codes_get(h, "paramId"))
+            counts[pid] = counts.get(pid, 0) + 1
+            dates.add(str(_grib_times(h)[0].astype("datetime64[m]")))
+            g = _grib_grid(h)
+            if g["orderingConvention"] != "nested":
+                raise ValueError(f"{path}: ordering {g['orderingConvention']} (nested only)")
+            if grid is None:
+                grid = g
+            elif g != grid:
+                raise ValueError(f"{path}: grid {g} differs from {grid}")
+    unexpected = sorted(set(counts) - expected)
+    if unexpected:
+        raise ValueError(
+            f"unexpected paramId {unexpected} in the GRIB (expected {sorted(expected)})"
+        )
+    missing = sorted(expected - set(counts))
+    if missing:
+        raise ValueError(f"paramId {missing} not found in the GRIB (found {sorted(counts)})")
+    return {
+        "messages": n,
+        "param_ids": dict(sorted(counts.items())),
+        "dates": sorted(dates),
+        "grid": grid or {},
+    }
+
+
+def _healpix_attrs(level: int) -> dict:
+    return {
+        "healpix_nside": 2**level,
+        "healpix_level": level,
+        "healpix_ordering": "nested",
+        "healpix_ellipsoid": "sphere",
+    }
+
+
+def read_healpix_grib(paths, *, param_ids=None, times=None) -> xr.Dataset:
+    """HEALPix GRIB (nested) → ``xr.Dataset`` on the full sphere.
+
+    Dimensions are ``("time", "cells")``, or ``("time", "layer", "cells")``
+    for ocean model layers, per variable; ``cells`` holds ``12 * Nside**2``
+    values in nested order on the sphere. The variable name is the GRIB
+    shortName; missing values (bitmap) are NaN; values are float32.
+    ``time`` is the start of the averaging period for stepType avg (with
+    ``time_bounds`` [start, end) on dims ``("time", "bnds")``), else the valid
+    time; ``layer`` is the GRIB ``level``. ``param_ids`` keeps only those
+    messages. ``times`` (a list of ``datetime64`` starts) keeps only the
+    messages starting then, the others are skipped before their values are
+    decoded (one time step of a multi-month file); a requested time that is
+    not in the file raises. Raises ``ValueError`` if one start has two ends or
+    one variable name maps to two paramIds. ``GRIB_stepRange`` is the
+    coordinate ``step_range`` on ``time`` (stepType avg only). Read with
+    eccodes directly (cfgrib cannot read HEALPix grids).
+    """
+    import eccodes as ec
+
+    wanted = None if param_ids is None else {int(p) for p in param_ids}
+    keep_times = None if times is None else {np.datetime64(t, "s") for t in times}
+    paths = _as_paths(paths)
+    if keep_times:
+        min_keep, max_keep = min(keep_times), max(keep_times)
+
+    # pass 1: the metadata of every message
+    msgs: list[dict] = []
+    grid: dict | None = None
+    for path in paths:
+        for i, h in enumerate(_grib_messages(path)):
+            pid = int(ec.codes_get(h, "paramId"))
+            if wanted is not None and pid not in wanted:
+                continue
+            g = _grib_grid(h)
+            if g["orderingConvention"] != "nested":
+                raise ValueError(f"{path}: ordering {g['orderingConvention']} (nested only)")
+            if grid is None:
+                grid = g
+            elif g != grid:
+                raise ValueError(f"{path}: grid {g} differs from {grid}")
+            if keep_times is not None:
+                # cheap keys first: a message clearly outside the requested times is
+                # skipped even if its period cannot be interpreted
+                reference, valid, is_avg = _grib_bounds(h)
+                if not keep_times:
+                    outside = True
+                elif is_avg:
+                    outside = valid < min_keep or reference > max_keep
+                else:
+                    outside = valid not in keep_times
+                if outside:
+                    continue
+            start, end = _grib_times(h)
+            if keep_times is not None and start not in keep_times:
+                continue
+            level_type = ec.codes_get(h, "typeOfLevel")
+            msgs.append(
+                {
+                    "path": path,
+                    "index": i,
+                    "name": ec.codes_get(h, "shortName"),
+                    "start": start,
+                    "end": end,
+                    "layer": (
+                        int(ec.codes_get(h, "level")) if level_type in _LAYER_TYPES else None
+                    ),
+                    "attrs": {
+                        "units": ec.codes_get(h, "units"),
+                        "long_name": ec.codes_get(h, "name"),
+                        "paramId": pid,
+                        "typeOfLevel": level_type,
+                        "stepType": ec.codes_get(h, "stepType"),
+                    },
+                    "step_range": ec.codes_get(h, "stepRange"),
+                }
+            )
+    if not msgs and keep_times is not None:
+        raise ValueError(f"requested times not in the GRIB: {sorted(str(t) for t in keep_times)}")
+    if not msgs or grid is None:
+        raise ValueError(f"no GRIB message to read in {[str(p) for p in paths]}")
+    nside = grid["Nside"]
+    level = int(round(np.log2(nside)))
+    if 2**level != nside:
+        raise ValueError(f"Nside {nside} is not a power of two")
+    ncell = 12 * nside**2
+
+    times_found = sorted({m["start"] for m in msgs})
+    if keep_times is not None and set(times_found) != keep_times:
+        missing = sorted(str(t) for t in keep_times - set(times_found))
+        raise ValueError(f"requested times not in the GRIB: {missing}")
+    times = times_found
+    t_index = {t: i for i, t in enumerate(times)}
+    layers = sorted({m["layer"] for m in msgs if m["layer"] is not None})
+    l_index = {v: i for i, v in enumerate(layers)}
+    ends: dict[np.datetime64, np.datetime64] = {}
+    step_ranges: dict[np.datetime64, str] = {}
+    attrs: dict[str, dict] = {}
+    has_layer: dict[str, bool] = {}
+    for m in msgs:
+        attrs.setdefault(m["name"], m["attrs"])
+        if attrs[m["name"]]["paramId"] != m["attrs"]["paramId"]:
+            raise ValueError(
+                f"variable {m['name']}: two paramIds "
+                f"{attrs[m['name']]['paramId']} and {m['attrs']['paramId']}"
+            )
+        if has_layer.setdefault(m["name"], m["layer"] is not None) != (m["layer"] is not None):
+            raise ValueError(f"{m['name']}: messages with and without a layer")
+        if m["attrs"]["stepType"] == "avg":
+            if ends.setdefault(m["start"], m["end"]) != m["end"]:
+                raise ValueError(
+                    f"{m['start']}: two averaging periods end at {ends[m['start']]} and {m['end']}"
+                )
+            if step_ranges.setdefault(m["start"], m["step_range"]) != m["step_range"]:
+                raise ValueError(
+                    f"{m['start']}: two step ranges {step_ranges[m['start']]!r} "
+                    f"and {m['step_range']!r}"
+                )
+
+    data: dict[str, np.ndarray] = {}
+    for name, lay in has_layer.items():
+        shape = (len(times), len(layers), ncell) if lay else (len(times), ncell)
+        data[name] = np.full(shape, np.nan, dtype=np.float32)
+    seen: set[tuple] = set()
+    wanted_idx: dict[Path, dict[int, dict]] = {}
+    for m in msgs:
+        wanted_idx.setdefault(m["path"], {})[m["index"]] = m
+
+    # pass 2: the values
+    for path in paths:
+        sel = wanted_idx.get(path, {})
+        for i, h in enumerate(_grib_messages(path)):
+            m = sel.get(i)
+            if m is None:
+                continue
+            key = (m["name"], m["start"], m["layer"])
+            if key in seen:
+                raise ValueError(f"duplicate GRIB message {key}")
+            seen.add(key)
+            if int(ec.codes_get(h, "numberOfDataPoints")) != ncell:
+                raise ValueError(f"{path}: message {i} is not a full sphere field")
+            raw = ec.codes_get_values(h)  # decoded once, reused for the bitmap mask
+            vals = raw.astype(np.float32)
+            if ec.codes_get(h, "bitmapPresent"):
+                vals[raw == ec.codes_get(h, "missingValue")] = np.nan
+            del raw
+            t = t_index[m["start"]]
+            if m["layer"] is None:
+                data[m["name"]][t] = vals
+            else:
+                data[m["name"]][t, l_index[m["layer"]]] = vals
+
+    time_ns = np.array(times, dtype="datetime64[ns]")
+    coords: dict[str, Any] = {"time": ("time", time_ns)}
+    if layers:
+        coords["layer"] = ("layer", np.array(layers, dtype="int32"))
+    if ends:
+        nat = np.datetime64("NaT", "ns")
+        coords["time_bounds"] = (
+            ("time", "bnds"),
+            np.array(
+                [[t, ends.get(t, nat)] for t in times],
+                dtype="datetime64[ns]",
+            ),
+        )
+    if step_ranges:
+        coords["step_range"] = (
+            "time",
+            np.array([step_ranges.get(t, "") for t in times], dtype=str),
+        )
+    variables = {
+        name: (
+            ("time", "layer", "cells") if has_layer[name] else ("time", "cells"),
+            arr,
+            attrs[name],
+        )
+        for name, arr in data.items()
+    }
+    return xr.Dataset(variables, coords=coords, attrs=_healpix_attrs(level))
+
+
+def _covjson_time(value: str) -> np.datetime64:
+    return np.datetime64(value.rstrip("Z"), "ns")
+
+
+def read_covjson_points(path, *, level: int) -> xr.Dataset:
+    """CoverageJSON as returned by the Polytope ``feature`` request → ``xr.Dataset``.
+
+    One or more coverages with the points as a composite axis (tuples of
+    latitude, longitude[, levelist]) or as separate, equally long ``latitude``
+    / ``longitude`` / ``levelist`` axes; an optional ``t`` axis. Only the
+    returned points are kept: dimension ``cells`` holds them, with the
+    coordinate ``cell_ids`` (uint64, nested on the sphere at ``level``, sorted
+    ascending). Same variable names and dimensions as
+    :func:`read_healpix_grib`; missing points are NaN. With several times the
+    values are taken as ``(t, point)``. Raises if two values land on the same
+    (time, layer, cell).
+    """
+    with open(path) as fh:
+        doc = json.load(fh)
+    coverages = doc["coverages"] if doc.get("type") == "CoverageCollection" else [doc]
+    params = doc.get("parameters", {})
+
+    rows: dict[str, list] = {}  # name -> [(t, layer, lat, lon, value)]
+    for cov in coverages:
+        axes = cov["domain"]["axes"]
+        meta = cov.get("mars:metadata", {})
+        if "composite" in axes:
+            names = axes["composite"]["coordinates"]
+            tup = axes["composite"]["values"]
+            col = {n: [p[i] for p in tup] for i, n in enumerate(names)}
+        else:
+            col = {n: axes[n]["values"] for n in ("latitude", "longitude") if n in axes}
+            if "levelist" in axes:
+                col["levelist"] = axes["levelist"]["values"]
+        if "latitude" not in col or "longitude" not in col:
+            raise ValueError(f"{path}: no latitude / longitude axes in a coverage")
+        lat, lon = col["latitude"], col["longitude"]
+        npts = len(lat)
+        if len(lon) != npts or ("levelist" in col and len(col["levelist"]) != npts):
+            raise ValueError(f"{path}: latitude / longitude / levelist axes differ in length")
+        if "levelist" in col:
+            layer = [int(v) for v in col["levelist"]]
+        elif "levelist" in meta:
+            layer = [int(meta["levelist"])] * npts
+        else:
+            layer = [None] * npts
+        if "t" in axes:
+            tvals = [_covjson_time(v) for v in axes["t"]["values"]]
+        elif "Forecast date" in meta:
+            tvals = [_covjson_time(meta["Forecast date"])]
+        else:
+            raise ValueError(f"{path}: no time axis and no Forecast date in a coverage")
+        for name, rng in cov["ranges"].items():
+            vals = np.array([np.nan if v is None else v for v in rng["values"]], dtype=np.float64)
+            if vals.size != npts * len(tvals):
+                raise ValueError(
+                    f"{path}: {name} has {vals.size} values for {npts} points x {len(tvals)} times"
+                )
+            shape = rng.get("shape")
+            axis_names = rng.get("axisNames")
+            if (
+                shape is not None
+                and len(shape) > 1
+                and [int(n) for n in shape]
+                != [
+                    len(tvals),
+                    npts,
+                ]
+            ):
+                raise ValueError(
+                    f"{path}: {name} has shape {list(shape)}, expected "
+                    f"[{len(tvals)}, {npts}] (time, points)"
+                )
+            if axis_names is not None and len(axis_names) > 1:
+                point_axis = "composite" if "composite" in axes else None
+                if (
+                    len(axis_names) != 2
+                    or axis_names[0] != "t"
+                    or (point_axis is not None and axis_names[1] != point_axis)
+                ):
+                    raise ValueError(
+                        f"{path}: {name} has axisNames {list(axis_names)}, expected "
+                        f"['t', {point_axis or 'the points'!r}] (time, points)"
+                    )
+            vals = vals.reshape(len(tvals), npts)
+            out = rows.setdefault(name, [])
+            for ti, t in enumerate(tvals):
+                out.extend(zip([t] * npts, layer, lat, lon, vals[ti]))
+    if not rows:
+        raise ValueError(f"{path}: no range in the CoverageJSON")
+
+    all_lat = np.array([r[2] for v in rows.values() for r in v], dtype=np.float64)
+    all_lon = np.array([r[3] for v in rows.values() for r in v], dtype=np.float64)
+    all_ids = np.asarray(
+        healpix_geo.nested.lonlat_to_healpix(all_lon, all_lat, level, ellipsoid="sphere")
+    ).astype(np.uint64)
+    cell_ids = np.unique(all_ids)
+    times = sorted({r[0] for v in rows.values() for r in v})
+    layers = sorted({r[1] for v in rows.values() for r in v if r[1] is not None})
+    t_index = {t: i for i, t in enumerate(times)}
+    l_index = {v: i for i, v in enumerate(layers)}
+
+    variables = {}
+    pos = 0
+    for name, v in rows.items():
+        ids = all_ids[pos : pos + len(v)]
+        pos += len(v)
+        c = np.searchsorted(cell_ids, ids)
+        t = np.array([t_index[r[0]] for r in v])
+        vals = np.array([r[4] for r in v], dtype=np.float32)
+        lay = [r[1] for r in v]
+        arr_shape = (len(times), len(cell_ids))
+        if layers:
+            if any(x is None for x in lay):
+                raise ValueError(f"{name}: points with and without a layer")
+            arr_shape = (len(times), len(layers), len(cell_ids))
+            idx = (t, np.array([l_index[x] for x in lay]), c)
+        else:
+            idx = (t, c)
+        arr = np.full(arr_shape, np.nan, dtype=np.float32)
+        if len(set(zip(*idx))) != len(v):
+            raise ValueError(
+                f"{name}: two points of the CoverageJSON fall on the same HEALPix cell "
+                f"at level {level}"
+            )
+        arr[idx] = vals
+        p = params.get(name, {})
+        attrs = {
+            "units": p.get("unit", {}).get("symbol", ""),
+            "long_name": p.get("observedProperty", {}).get("label", {}).get("en", name),
+        }
+        variables[name] = (
+            ("time", "layer", "cells") if layers else ("time", "cells"),
+            arr,
+            attrs,
+        )
+    coords: dict[str, Any] = {
+        "time": ("time", np.array(times, dtype="datetime64[ns]")),
+        "cell_ids": ("cells", cell_ids),
+    }
+    if layers:
+        coords["layer"] = ("layer", np.array(layers, dtype="int32"))
+    return xr.Dataset(variables, coords=coords, attrs=_healpix_attrs(level))
+
+
+# conservative method: output cells whose summed input weight is below this fraction of the
+# largest one are dropped (they are reached by almost no valid input; the quotient is noise)
+CONSERVATIVE_MIN_WEIGHT = 1e-6
+
+
+class SphereToEllipsoid:
+    """Move a field from the HEALPix grid on the sphere to the one on the WGS84 ellipsoid.
+
+    The two grids share the cell ids but not the cell centres (up to ~14 km
+    apart at 45 degrees at level 7). Operators are built on the valid points
+    only (one per distinct valid mask, cached) so that masked inputs carry no
+    weight.
+
+    Parameters
+    ----------
+    level       : HEALPix level of the input and of the output grid
+    method      : "psf" (``healpix_resample.PSFResampler``) or "conservative"
+                  (``BilinearResampler`` with ``conservative=True``, normalised
+                  over the valid inputs)
+    init_params : keyword arguments of the resampler constructor; default for
+                  "psf": ``{"threshold": 0.5}``
+    resample_params : keyword arguments of ``resample``; default for "psf":
+                  ``{"lam": 0.0}``
+    clip        : "input_range" clips the result to [min, max] of the valid
+                  inputs (removes the PSF overshoot only), None does not clip
+
+    With "conservative", only the output cells with a summed weight above
+    ``CONSERVATIVE_MIN_WEIGHT`` times the largest one are returned.
+    """
+
+    METHODS = ("psf", "conservative")
+
+    def __init__(
+        self,
+        level: int,
+        method: str = "psf",
+        init_params: dict | None = None,
+        resample_params: dict | None = None,
+        clip: str | None = "input_range",
+    ):
+        if method not in self.METHODS:
+            raise ValueError(f"unknown method {method!r}; use one of {self.METHODS}")
+        if clip not in (None, "input_range"):
+            raise ValueError(f"unknown clip {clip!r}; use None or 'input_range'")
+        self.level = int(level)
+        self.method = method
+        if init_params is None:
+            init_params = {"threshold": 0.5} if method == "psf" else {}
+        if resample_params is None:
+            resample_params = {"lam": 0.0} if method == "psf" else {}
+        self.init_params = dict(init_params)
+        self.resample_params = dict(resample_params)
+        self.clip = clip
+        self._operators: dict[bytes, Any] = {}
+        self._norms: dict[bytes, tuple[np.ndarray, np.ndarray]] = {}
+
+    def clear(self) -> None:
+        """Drop the cached operators and normalisations (they can be large)."""
+        self._operators.clear()
+        self._norms.clear()
+
+    @staticmethod
+    def _key(valid_ids: np.ndarray) -> bytes:
+        return hashlib.blake2b(valid_ids.tobytes(), digest_size=16).digest()
+
+    def operator(self, valid_ids: np.ndarray):
+        """The resampler on the (sphere) cell ids ``valid_ids``, built once per set of ids."""
+        valid_ids = np.ascontiguousarray(valid_ids, dtype=np.uint64)
+        key = self._key(valid_ids)
+        if key not in self._operators:
+            log.info(
+                f"Building the sphere→WGS84 {self.method} resampler on "
+                f"{valid_ids.size:,} points …"
+            )
+            lon, lat = healpix_geo.nested.healpix_to_lonlat(
+                valid_ids, self.level, ellipsoid="sphere"
+            )
+            cls = (
+                healpix_resample.PSFResampler
+                if self.method == "psf"
+                else healpix_resample.BilinearResampler
+            )
+            self._operators[key] = cls(
+                lon_deg=np.asarray(lon, dtype=float),
+                lat_deg=np.asarray(lat, dtype=float),
+                level=self.level,
+                ellipsoid="WGS84",
+                verbose=False,
+                **self.init_params,
+            )
+        return self._operators[key]
+
+    def resample(self, cell_ids, values) -> tuple[np.ndarray, np.ndarray]:
+        """``cell_ids``: nested ids on the sphere (uint64); ``values``: 1-D, NaN = masked.
+
+        Returns ``(cell ids on the WGS84 ellipsoid, float32 values)`` for every
+        output cell the operator reaches (none if every input is masked).
+        """
+        cell_ids = np.asarray(cell_ids).astype(np.uint64, copy=False)
+        values = np.asarray(values, dtype=np.float64)
+        if cell_ids.shape != values.shape or values.ndim != 1:
+            raise ValueError("cell_ids and values must be 1-D and of the same length")
+        valid = np.isfinite(values)
+        if not valid.any():
+            return np.empty(0, dtype=np.uint64), np.empty(0, dtype=np.float32)
+        # sorted by id, so the same set of cells in another order reuses the operator
+        order = np.argsort(cell_ids[valid], kind="stable")
+        ids_valid = np.ascontiguousarray(cell_ids[valid][order])
+        v = values[valid][order]
+        op = self.operator(ids_valid)
+        if self.method == "psf":
+            res = op.resample(v, **self.resample_params)
+            ids = np.asarray(res.cell_ids)
+            out = np.asarray(res.cell_data, dtype=np.float64)
+        else:
+            key = self._key(ids_valid)
+            if key not in self._norms:
+                # the same operator applied to ones: the weight each output cell received
+                res1 = op.resample(np.ones_like(v), conservative=True)
+                self._norms[key] = (
+                    np.asarray(res1.cell_ids),
+                    np.asarray(res1.cell_data, dtype=np.float64),
+                )
+            ids1, den = self._norms[key]
+            res = op.resample(v, conservative=True)
+            ids = np.asarray(res.cell_ids)
+            if not np.array_equal(ids, ids1):
+                raise RuntimeError("conservative operator: output cells differ")
+            num = np.asarray(res.cell_data, dtype=np.float64)
+            keep = den > CONSERVATIVE_MIN_WEIGHT * den.max() if den.size else den > 0
+            ids, out = ids[keep], num[keep] / den[keep]
+        if self.clip == "input_range":
+            out = np.clip(out, v.min(), v.max())
+        return ids.astype(np.uint64), out.astype(np.float32)
+
+    def describe(self) -> dict:
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            hr_version = version("healpix-resample")
+        except PackageNotFoundError:
+            hr_version = "unknown"
+        return {
+            "method": self.method,
+            "init_params": dict(self.init_params),
+            "resample_params": dict(self.resample_params),
+            "clip": self.clip,
+            "source_grid": f"healpix nested sphere L{self.level}",
+            "target_grid": f"healpix nested WGS84 L{self.level}",
+            "healpix_resample": hr_version,
+        }
+
+
+def _json_safe(value):
+    """numpy scalars / arrays → plain Python for zarr attributes."""
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def write_cell_store(
+    out_path,
+    *,
+    parent_cell: int,
+    parent_level: int,
+    level: int,
+    group: str,
+    variables: dict[str, np.ndarray],
+    var_attrs: dict[str, dict],
+    root_attrs: dict,
+    stac_item: dict,
+    layer: np.ndarray | None = None,
+    chunk_level: int | None = None,
+    coarsest_level: int | None = None,
+    storage_options: dict | None = None,
+) -> dict:
+    """Write the values of one HEALPix parent cell as the store the mosaic engine reads.
+
+    Layout (zarr v3, consolidated metadata of the group and of the root)::
+
+        root attrs               root_attrs + {"stac_discovery": stac_item}
+        <group>                  attrs["multiscales"] = {"layout": [{"asset": "<L>", "dggs": {...}}, ...]}
+        <group>/<L>/<var>        float32, fill NaN, dims ["cells"] (["layer", "cells"] for 2-D)
+        <group>/<L>/cell_ids     uint64 = parent_cell * 4**(L - parent_level) + arange
+        <group>/<L>/layer        only with ``layer``
+
+    ``variables[name]`` holds the values of the parent cell at ``level`` in
+    nested order, shape ``(4**(level - parent_level),)`` or ``(n_layer,
+    4**(level - parent_level))`` (then ``layer`` is required). Levels
+    ``coarsest_level`` .. ``level - 1`` (default: ``level`` only) are the NaN-mean
+    of the four children. Chunks hold ``4**(L - chunk_level)`` cells (default
+    ``chunk_level = parent_level``: one chunk per level) and, in 2-D arrays,
+    one layer. The coarsest level must fit in a single chunk (``ValueError``
+    otherwise).
+
+    Returns ``{"variables": [...], "levels": [...], "n_valid": {var: int}}``
+    (``n_valid`` counts the non-NaN values at ``level``).
+    """
+    if chunk_level is None:
+        chunk_level = parent_level
+    if coarsest_level is None:
+        coarsest_level = level
+    if not parent_level <= chunk_level <= level:
+        raise ValueError("need parent_level <= chunk_level <= level")
+    if not parent_level <= coarsest_level <= level:
+        raise ValueError("need parent_level <= coarsest_level <= level")
+    # the mosaic engine needs the first (coarsest) level in a single chunk
+    coarsest_chunk = (
+        4 ** (coarsest_level - chunk_level) if coarsest_level >= chunk_level else None
+    )  # cells per chunk; None: the whole level
+    if coarsest_chunk is not None and coarsest_chunk < 4 ** (coarsest_level - parent_level):
+        raise ValueError(
+            f"the coarsest level {coarsest_level} would hold more than one chunk "
+            f"(chunk_level {chunk_level}, parent_level {parent_level}): use "
+            f"coarsest_level < chunk_level, or chunk_level = parent_level"
+        )
+    n_fine = 4 ** (level - parent_level)
+    if not 0 <= parent_cell < 12 * 4**parent_level:
+        raise ValueError(f"parent_cell {parent_cell} outside level {parent_level}")
+    if layer is not None:
+        layer = np.asarray(layer)
+    data: dict[str, np.ndarray] = {}
+    for name, arr in variables.items():
+        arr = np.asarray(arr, dtype=np.float32)
+        if arr.ndim not in (1, 2) or arr.shape[-1] != n_fine:
+            raise ValueError(
+                f"{name}: shape {arr.shape}, expected (..., {n_fine}) cells of the parent cell"
+            )
+        if arr.ndim == 2 and (layer is None or arr.shape[0] != len(layer)):
+            raise ValueError(f"{name}: a 2-D array needs `layer` of the same length")
+        data[name] = arr
+
+    levels = list(range(level, coarsest_level - 1, -1))
+    dggs = {
+        L: {
+            "name": "healpix",
+            "refinement_level": L,
+            "indexing_scheme": "nested",
+            "ellipsoid": "WGS84",
+            "spatial_dimension": "cells",
+            "coordinate": "cell_ids",
+            "compression": "none",
+        }
+        for L in levels
+    }
+    kwargs = {"storage_options": storage_options} if storage_options else {}
+    root = zarr.open_group(str(out_path), mode="w", zarr_format=3, use_consolidated=False, **kwargs)
+    root.attrs.update(_json_safe({**root_attrs, "stac_discovery": stac_item}))
+    grp = root.require_group(group)
+    grp.attrs["multiscales"] = {"layout": [{"asset": str(L), "dggs": dggs[L]} for L in levels]}
+
+    current = dict(data)
+    for L in levels:
+        n = 4 ** (L - parent_level)
+        chunk = min(n, 4 ** (L - chunk_level)) if L >= chunk_level else n
+        lg = grp.create_group(str(L))
+        lg.attrs["dggs"] = dggs[L]
+        for name, arr in current.items():
+            two_d = arr.ndim == 2
+            a = lg.create_array(
+                name,
+                shape=arr.shape,
+                chunks=(1, chunk) if two_d else (chunk,),
+                dtype="float32",
+                fill_value=float("nan"),
+                dimension_names=["layer", "cells"] if two_d else ["cells"],
+                attributes=_json_safe(var_attrs.get(name, {})),
+            )
+            a[...] = arr
+        ids = lg.create_array(
+            "cell_ids",
+            shape=(n,),
+            chunks=(chunk,),
+            dtype="uint64",
+            dimension_names=["cells"],
+        )
+        ids[:] = np.uint64(parent_cell) * np.uint64(n) + np.arange(n, dtype=np.uint64)
+        if layer is not None:
+            la = lg.create_array(
+                "layer",
+                shape=layer.shape,
+                chunks=layer.shape,
+                dtype=layer.dtype,
+                dimension_names=["layer"],
+            )
+            la[...] = layer
+        if L > coarsest_level:
+            current = {name: _nanmean4(arr) for name, arr in current.items()}
+    zarr.consolidate_metadata(root.store, path=group)
+    zarr.consolidate_metadata(root.store)
+    return {
+        "variables": list(data),
+        "levels": levels,
+        "n_valid": {name: int(np.isfinite(arr).sum()) for name, arr in data.items()},
+    }
+
+
+def _nanmean4(arr: np.ndarray) -> np.ndarray:
+    """NaN-mean of each group of four consecutive cells (the children in nested order)."""
+    g = arr.reshape(*arr.shape[:-1], arr.shape[-1] // 4, 4)
+    valid = np.isfinite(g)
+    count = valid.sum(axis=-1)
+    total = np.where(valid, g, 0.0).sum(axis=-1, dtype=np.float64)
+    out = np.full(count.shape, np.nan, dtype=np.float32)
+    np.divide(total, count, out=total, where=count > 0)
+    out[count > 0] = total[count > 0].astype(np.float32)
+    return out
