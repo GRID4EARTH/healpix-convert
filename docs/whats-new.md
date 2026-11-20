@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- `CAMSConverter` takes the ADS dataset (`dataset`, default EAC4; `ADS_FORECAST_DATASET` for the global
+  analyses and forecasts, which cover the dates after the end of EAC4), more request fields (`request`,
+  e.g. `{"type": "forecast", "leadtime_hour": "0"}`), the variable table (`variables`;
+  `CAMS_ALL_VARIABLE_META` adds the total AOD at 469, 670, 865 and 1240 nm and the surface geopotential)
+  and several times (`time="00:00/12:00"`, with a CF `time` coordinate). A NetCDF with forecast
+  reference time and forecast period gets one `valid_time` axis. AOD fields are clipped at 0, other
+  fields to their source range. A requested variable missing from the file is refused. The ADS key is
+  read from `~/.adsapirc`, else `~/.cdsapirc`; the file is opened with netCDF4 when installed, else with
+  the engine xarray finds. The STAC properties record the request (`source_requests`), the source grid
+  step, `resampling:parameters` and `processing:*`. The defaults write the same arrays as before.
 - `ERA5Converter` takes its variable tables as arguments: `enda_variables`
   (an empty table writes no enda group and requests nothing from the EDA, so
   any hour can be converted), `oper_variables`, and `pressure_levels` with
