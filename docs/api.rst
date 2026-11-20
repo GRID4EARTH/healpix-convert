@@ -55,3 +55,15 @@ Staging cache
    :toctree: generated
 
    healpix_convert.ConvertStagingCache
+
+Samples
+-------
+
+For 1-D samples (profiles, along-track points) rather than grids:
+
+.. autosummary::
+   :toctree: generated
+
+   healpix_convert.samples.bin_samples
+   healpix_convert.samples.split_by_parent
+   healpix_convert.samples.write_cell_dataset

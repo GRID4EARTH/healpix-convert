@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- New `healpix_convert.samples` module for 1-D samples (profiles, along-track
+  points) instead of grids: `bin_samples` puts each sample into the HEALPix cell
+  that contains it and returns a dataset on the sorted list of the cells that
+  hold a sample, with `sample_count` (the number of samples of each cell) and
+  one reduction per variable when a cell holds several samples (`mean`,
+  `first`, `last`, `mode`, `min`, `max`, `sum`, `rms`, or `drop`, chosen per
+  variable; a variable with no method is an error, so that none is lost
+  silently). The other dimensions of a variable (e.g. a vertical axis) are
+  carried through. `split_by_parent` cuts the result into one dataset per cell
+  of a coarser level, and `write_cell_dataset` writes one as a Zarr store with
+  the DGGS and CF metadata of the converters (`cells` dimension, `cell_ids`
+  coordinate, cell dimension last). `first` and `last` take the first / last valid
+  sample (not NaN, NaT or the fill value given in `fill_values`), an empty input gives
+  an empty dataset, and `valid_positions` is the rule for usable positions. Nothing is resampled: a sample is never
+  spread over cells, so the counts add up to the number of valid samples.
 - `CAMSConverter` takes the ADS dataset (`dataset`, default EAC4; `ADS_FORECAST_DATASET` for the global
   analyses and forecasts, which cover the dates after the end of EAC4), more request fields (`request`,
   e.g. `{"type": "forecast", "leadtime_hour": "0"}`), the variable table (`variables`;
