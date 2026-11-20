@@ -59,6 +59,17 @@ CAMS_VARIABLE_META: dict[str, tuple[str, str, str]] = {
     "suaod550": ("sulphate_aerosol_optical_depth_550nm", "1", "Sulphate AOD at 550 nm"),
 }
 
+# More fields of the ADS (ADS variable name, unit, long_name), e.g. to match the ESA auxiliary
+# CAMS file: other wavelengths and the surface geopotential. Not converted by default.
+CAMS_EXTRA_VARIABLE_META: dict[str, tuple[str, str, str]] = {
+    "aod469": ("total_aerosol_optical_depth_469nm", "1", "Total AOD at 469 nm"),
+    "aod670": ("total_aerosol_optical_depth_670nm", "1", "Total AOD at 670 nm"),
+    "aod865": ("total_aerosol_optical_depth_865nm", "1", "Total AOD at 865 nm"),
+    "aod1240": ("total_aerosol_optical_depth_1240nm", "1", "Total AOD at 1240 nm"),
+    "z": ("surface_geopotential", "m2 s-2", "Surface geopotential"),
+}
+CAMS_ALL_VARIABLE_META = {**CAMS_VARIABLE_META, **CAMS_EXTRA_VARIABLE_META}
+
 # ── ConvertSettings dict ──────────────────────────────────────────────────────
 CAMS_CONVERT_SETTINGS: dict = {
     "group_settings": {
@@ -87,4 +98,6 @@ CAMS_PSF_LAM = 5.0
 # ── ADS API constants ─────────────────────────────────────────────────────────
 ADS_URL = "https://ads.atmosphere.copernicus.eu/api"
 ADS_DATASET = "cams-global-reanalysis-eac4"
+# the global analyses and forecasts: dates after the end of EAC4 (lead time 0 = the analysis)
+ADS_FORECAST_DATASET = "cams-global-atmospheric-composition-forecasts"
 CAMS_GRID_DEG = 0.75  # native resolution of EAC4
