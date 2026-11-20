@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import cfgrib
 import healpix_geo
@@ -98,6 +99,11 @@ class CDTPrepareResult:
     grib_path: Path
     is_ocean: bool
     var_meta: dict  # {var: (param_id, unit, long_name)}
+
+
+def _is_layer_dim(name: str) -> bool:
+    """A layer dimension as cfgrib names it (oceanModelLayer, ...) or ``oceanModel`` / ``layer``."""
+    return "Layer" in name or name in ("oceanModel", "layer")
 
 
 class ClimateDTConverter:
@@ -293,6 +299,18 @@ class ClimateDTConverter:
             )
             log.info(f"  {dict(self._ds.sizes)}  vars: {list(self._ds.data_vars)}")
 
+    @staticmethod
+    def _extra_dims(da: xr.DataArray, t_dim: str | None) -> list[str]:
+        """Dimensions of ``da`` besides time and cells (the last); only layer dimensions."""
+        extra = [d for d in da.dims if d != t_dim][:-1]
+        bad = [d for d in extra if not _is_layer_dim(d)]
+        if bad:
+            raise NotImplementedError(
+                f"{da.name}: dimension(s) {bad} besides time and cells are not supported "
+                "(only layer dimensions, e.g. oceanModelLayer)"
+            )
+        return extra
+
     def _wgs84_map(self, var: str, t: int, t_dim: str | None) -> np.ndarray:
         """Full-sphere WGS84 map for one variable/timestep.
 
@@ -313,6 +331,7 @@ class ClimateDTConverter:
         da = self._ds[var]
         if t_dim:
             da = da.isel({t_dim: t})
+        self._extra_dims(da, None)  # raises for anything but layers
         extra_shape = da.shape[:-1]  # the cells are the last dimension
         vals = da.values.reshape(-1, _N_CHILD).astype(np.float64)
         cells = np.arange(_N_CHILD, dtype=np.uint64)
@@ -402,7 +421,7 @@ class ClimateDTConverter:
         made_dims: set[str] = set()
         for var, (_, unit, long_name) in var_meta.items():
             # dimensions besides time and cells (e.g. ocean layers); the cells come last
-            extra = [d for d in ds[var].dims if d != t_dim][:-1] if var in ds.data_vars else []
+            extra = self._extra_dims(ds[var], t_dim) if var in ds.data_vars else []
             sizes = {d: ds.sizes[d] for d in extra}
             for d in extra:
                 if d not in made_dims:
@@ -485,6 +504,9 @@ _STEP_UNITS = {
     13: "s",
 }
 _STEP_UNIT_MULT = {10: ("h", 3), 11: ("h", 6), 12: ("h", 12)}
+_STEP_UNIT_MONTH = 3
+# a period of 28 to 31 days is a monthly mean: it starts on the first day of a month
+_MONTHLY_DAYS = (28, 31)
 
 
 def _as_paths(paths) -> list[Path]:
@@ -503,14 +525,14 @@ def polytope_retrieve(
 ) -> Path:
     """One Polytope retrieve of ``request`` to ``out_path``.
 
-    The data is written to ``<out_path>.part`` and renamed when complete, so a
-    file under its final name is always whole. No retry here (the caller
-    retries). ``client`` is any object with ``.retrieve(collection, request,
+    The data is written to ``<out_path>.<pid>.<random>.part`` (a name no other
+    worker uses) and renamed atomically when complete, so a file under its
+    final name is always whole. No retry here (the caller retries). ``client`` is any object with ``.retrieve(collection, request,
     path)``; the default is ``polytope.api.Client(address=address)``.
     """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    part = out_path.with_name(out_path.name + ".part")
+    part = out_path.with_name(f"{out_path.name}.{os.getpid()}.{uuid4().hex[:8]}.part")
     if client is None:
         try:
             import polytope.api as polytope
@@ -558,16 +580,36 @@ def _grib_times(h) -> tuple[np.datetime64, np.datetime64]:
     valid = stamp("validityDate", "validityTime")
     if ec.codes_get(h, "stepType") != "avg":
         return valid, valid
+    reference = stamp("dataDate", "dataTime")
     unit = int(ec.codes_get(h, "stepUnits"))
-    if unit in _STEP_UNITS:
-        mult, u = 1, _STEP_UNITS[unit]
+    # eccodes converts a month step to 30-day hours: read the raw unit and offset
+    raw_unit = (
+        int(ec.codes_get(h, "indicatorOfUnitOfTimeRange"))
+        if ec.codes_is_defined(h, "indicatorOfUnitOfTimeRange")
+        else unit
+    )
+    supported = {_STEP_UNIT_MONTH, *_STEP_UNITS, *_STEP_UNIT_MULT}
+    if unit not in supported or raw_unit not in supported:
+        raise ValueError(
+            f"unsupported GRIB stepUnits {unit} (indicatorOfUnitOfTimeRange {raw_unit})"
+        )
+    if _STEP_UNIT_MONTH in (unit, raw_unit):
+        months = int(ec.codes_get(h, "forecastTime", int))
+        ref_month = reference.astype("datetime64[M]")
+        into_month = reference - ref_month.astype("datetime64[s]")  # day and time of day
+        start = (ref_month + np.timedelta64(months, "M")).astype("datetime64[s]") + into_month
+    elif unit in _STEP_UNITS:
+        start = reference + np.timedelta64(int(ec.codes_get(h, "startStep")), _STEP_UNITS[unit])
     elif unit in _STEP_UNIT_MULT:
         u, mult = _STEP_UNIT_MULT[unit]
+        start = reference + np.timedelta64(int(ec.codes_get(h, "startStep")) * mult, u)
     else:
         raise ValueError(f"unsupported GRIB stepUnits {unit}")
-    start = stamp("dataDate", "dataTime") + np.timedelta64(
-        int(ec.codes_get(h, "startStep")) * mult, u
-    )
+    days = (valid - start) / np.timedelta64(1, "D")
+    if _STEP_UNIT_MONTH in (unit, raw_unit) or _MONTHLY_DAYS[0] <= days <= _MONTHLY_DAYS[1]:
+        first_of_month = start.astype("datetime64[M]").astype("datetime64[s]")
+        if start != first_of_month:
+            raise ValueError(f"monthly mean starting {start}, not on the first day of a month")
     return start, valid
 
 
@@ -585,8 +627,9 @@ def _grib_grid(h) -> dict:
 def check_grib_params(paths, expected_param_ids) -> dict:
     """Read every GRIB message of ``paths`` and check its paramId.
 
-    Raises ``ValueError`` if a paramId is not in ``expected_param_ids`` or if
-    one expected paramId is absent. Returns ``{"messages": n, "param_ids":
+    Raises ``ValueError`` if a paramId is not in ``expected_param_ids``, if
+    one expected paramId is absent, or if a message is not a HEALPix grid in
+    nested ordering. Returns ``{"messages": n, "param_ids":
     {pid: n}, "dates": [...], "grid": {"gridType", "Nside",
     "orderingConvention"}}``; ``dates`` are the sorted ISO start times of the
     messages (the averaging period start for stepType avg).
@@ -605,6 +648,8 @@ def check_grib_params(paths, expected_param_ids) -> dict:
             counts[pid] = counts.get(pid, 0) + 1
             dates.add(str(_grib_times(h)[0].astype("datetime64[m]")))
             g = _grib_grid(h)
+            if g["orderingConvention"] != "nested":
+                raise ValueError(f"{path}: ordering {g['orderingConvention']} (nested only)")
             if grid is None:
                 grid = g
             elif g != grid:
@@ -634,7 +679,7 @@ def _healpix_attrs(level: int) -> dict:
     }
 
 
-def read_healpix_grib(paths, *, param_ids=None) -> xr.Dataset:
+def read_healpix_grib(paths, *, param_ids=None, times=None) -> xr.Dataset:
     """HEALPix GRIB (nested) → ``xr.Dataset`` on the full sphere.
 
     Dimensions are ``("time", "cells")``, or ``("time", "layer", "cells")``
@@ -644,11 +689,18 @@ def read_healpix_grib(paths, *, param_ids=None) -> xr.Dataset:
     ``time`` is the start of the averaging period for stepType avg (with
     ``time_bounds`` [start, end) on dims ``("time", "bnds")``), else the valid
     time; ``layer`` is the GRIB ``level``. ``param_ids`` keeps only those
-    messages. Read with eccodes directly (cfgrib cannot read HEALPix grids).
+    messages. ``times`` (a list of ``datetime64`` starts) keeps only the
+    messages starting then, the others are skipped before their values are
+    decoded (one time step of a multi-month file); a requested time that is
+    not in the file raises. Raises ``ValueError`` if one start has two ends or
+    one variable name maps to two paramIds. ``GRIB_stepRange`` is the
+    coordinate ``step_range`` on ``time`` (stepType avg only). Read with
+    eccodes directly (cfgrib cannot read HEALPix grids).
     """
     import eccodes as ec
 
     wanted = None if param_ids is None else {int(p) for p in param_ids}
+    keep_times = None if times is None else {np.datetime64(t, "s") for t in times}
     paths = _as_paths(paths)
 
     # pass 1: the metadata of every message
@@ -667,6 +719,8 @@ def read_healpix_grib(paths, *, param_ids=None) -> xr.Dataset:
             elif g != grid:
                 raise ValueError(f"{path}: grid {g} differs from {grid}")
             start, end = _grib_times(h)
+            if keep_times is not None and start not in keep_times:
+                continue
             level_type = ec.codes_get(h, "typeOfLevel")
             msgs.append(
                 {
@@ -684,10 +738,12 @@ def read_healpix_grib(paths, *, param_ids=None) -> xr.Dataset:
                         "paramId": pid,
                         "typeOfLevel": level_type,
                         "stepType": ec.codes_get(h, "stepType"),
-                        "GRIB_stepRange": ec.codes_get(h, "stepRange"),
                     },
+                    "step_range": ec.codes_get(h, "stepRange"),
                 }
             )
+    if not msgs and keep_times is not None:
+        raise ValueError(f"requested times not in the GRIB: {sorted(str(t) for t in keep_times)}")
     if not msgs or grid is None:
         raise ValueError(f"no GRIB message to read in {[str(p) for p in paths]}")
     nside = grid["Nside"]
@@ -696,19 +752,37 @@ def read_healpix_grib(paths, *, param_ids=None) -> xr.Dataset:
         raise ValueError(f"Nside {nside} is not a power of two")
     ncell = 12 * nside**2
 
-    times = sorted({m["start"] for m in msgs})
+    times_found = sorted({m["start"] for m in msgs})
+    if keep_times is not None and set(times_found) != keep_times:
+        missing = sorted(str(t) for t in keep_times - set(times_found))
+        raise ValueError(f"requested times not in the GRIB: {missing}")
+    times = times_found
     t_index = {t: i for i, t in enumerate(times)}
     layers = sorted({m["layer"] for m in msgs if m["layer"] is not None})
     l_index = {v: i for i, v in enumerate(layers)}
     ends: dict[np.datetime64, np.datetime64] = {}
+    step_ranges: dict[np.datetime64, str] = {}
     attrs: dict[str, dict] = {}
     has_layer: dict[str, bool] = {}
     for m in msgs:
         attrs.setdefault(m["name"], m["attrs"])
+        if attrs[m["name"]]["paramId"] != m["attrs"]["paramId"]:
+            raise ValueError(
+                f"variable {m['name']}: two paramIds "
+                f"{attrs[m['name']]['paramId']} and {m['attrs']['paramId']}"
+            )
         if has_layer.setdefault(m["name"], m["layer"] is not None) != (m["layer"] is not None):
             raise ValueError(f"{m['name']}: messages with and without a layer")
         if m["attrs"]["stepType"] == "avg":
-            ends[m["start"]] = m["end"]
+            if ends.setdefault(m["start"], m["end"]) != m["end"]:
+                raise ValueError(
+                    f"{m['start']}: two averaging periods end at {ends[m['start']]} and {m['end']}"
+                )
+            if step_ranges.setdefault(m["start"], m["step_range"]) != m["step_range"]:
+                raise ValueError(
+                    f"{m['start']}: two step ranges {step_ranges[m['start']]!r} "
+                    f"and {m['step_range']!r}"
+                )
 
     data: dict[str, np.ndarray] = {}
     for name, lay in has_layer.items():
@@ -732,9 +806,11 @@ def read_healpix_grib(paths, *, param_ids=None) -> xr.Dataset:
             seen.add(key)
             if int(ec.codes_get(h, "numberOfDataPoints")) != ncell:
                 raise ValueError(f"{path}: message {i} is not a full sphere field")
-            vals = ec.codes_get_values(h).astype(np.float32)
+            raw = ec.codes_get_values(h)  # decoded once, reused for the bitmap mask
+            vals = raw.astype(np.float32)
             if ec.codes_get(h, "bitmapPresent"):
-                vals[ec.codes_get_values(h) == ec.codes_get(h, "missingValue")] = np.nan
+                vals[raw == ec.codes_get(h, "missingValue")] = np.nan
+            del raw
             t = t_index[m["start"]]
             if m["layer"] is None:
                 data[m["name"]][t] = vals
@@ -753,6 +829,11 @@ def read_healpix_grib(paths, *, param_ids=None) -> xr.Dataset:
                 [[t, ends.get(t, nat)] for t in times],
                 dtype="datetime64[ns]",
             ),
+        )
+    if step_ranges:
+        coords["step_range"] = (
+            "time",
+            np.array([step_ranges.get(t, "") for t in times], dtype=str),
         )
     variables = {
         name: (
@@ -823,6 +904,32 @@ def read_covjson_points(path, *, level: int) -> xr.Dataset:
                 raise ValueError(
                     f"{path}: {name} has {vals.size} values for {npts} points x {len(tvals)} times"
                 )
+            shape = rng.get("shape")
+            axis_names = rng.get("axisNames")
+            if (
+                shape is not None
+                and len(shape) > 1
+                and [int(n) for n in shape]
+                != [
+                    len(tvals),
+                    npts,
+                ]
+            ):
+                raise ValueError(
+                    f"{path}: {name} has shape {list(shape)}, expected "
+                    f"[{len(tvals)}, {npts}] (time, points)"
+                )
+            if axis_names is not None and len(axis_names) > 1:
+                point_axis = "composite" if "composite" in axes else None
+                if (
+                    len(axis_names) != 2
+                    or axis_names[0] != "t"
+                    or (point_axis is not None and axis_names[1] != point_axis)
+                ):
+                    raise ValueError(
+                        f"{path}: {name} has axisNames {list(axis_names)}, expected "
+                        f"['t', {point_axis or 'the points'!r}] (time, points)"
+                    )
             vals = vals.reshape(len(tvals), npts)
             out = rows.setdefault(name, [])
             for ti, t in enumerate(tvals):
@@ -859,8 +966,7 @@ def read_covjson_points(path, *, level: int) -> xr.Dataset:
         else:
             idx = (t, c)
         arr = np.full(arr_shape, np.nan, dtype=np.float32)
-        hits = np.zeros(arr_shape, dtype=bool)
-        if hits[idx].any() or len(set(zip(*idx))) != len(v):
+        if len(set(zip(*idx))) != len(v):
             raise ValueError(
                 f"{name}: two points of the CoverageJSON fall on the same HEALPix cell "
                 f"at level {level}"
@@ -885,6 +991,11 @@ def read_covjson_points(path, *, level: int) -> xr.Dataset:
     return xr.Dataset(variables, coords=coords, attrs=_healpix_attrs(level))
 
 
+# conservative method: output cells whose summed input weight is below this fraction of the
+# largest one are dropped (they are reached by almost no valid input; the quotient is noise)
+CONSERVATIVE_MIN_WEIGHT = 1e-6
+
+
 class SphereToEllipsoid:
     """Move a field from the HEALPix grid on the sphere to the one on the WGS84 ellipsoid.
 
@@ -905,6 +1016,9 @@ class SphereToEllipsoid:
                   ``{"lam": 0.0}``
     clip        : "input_range" clips the result to [min, max] of the valid
                   inputs (removes the PSF overshoot only), None does not clip
+
+    With "conservative", only the output cells with a summed weight above
+    ``CONSERVATIVE_MIN_WEIGHT`` times the largest one are returned.
     """
 
     METHODS = ("psf", "conservative")
@@ -932,6 +1046,11 @@ class SphereToEllipsoid:
         self.clip = clip
         self._operators: dict[bytes, Any] = {}
         self._norms: dict[bytes, tuple[np.ndarray, np.ndarray]] = {}
+
+    def clear(self) -> None:
+        """Drop the cached operators and normalisations (they can be large)."""
+        self._operators.clear()
+        self._norms.clear()
 
     @staticmethod
     def _key(valid_ids: np.ndarray) -> bytes:
@@ -977,14 +1096,17 @@ class SphereToEllipsoid:
         valid = np.isfinite(values)
         if not valid.any():
             return np.empty(0, dtype=np.uint64), np.empty(0, dtype=np.float32)
-        v = values[valid]
-        op = self.operator(cell_ids[valid])
+        # sorted by id, so the same set of cells in another order reuses the operator
+        order = np.argsort(cell_ids[valid], kind="stable")
+        ids_valid = np.ascontiguousarray(cell_ids[valid][order])
+        v = values[valid][order]
+        op = self.operator(ids_valid)
         if self.method == "psf":
             res = op.resample(v, **self.resample_params)
             ids = np.asarray(res.cell_ids)
             out = np.asarray(res.cell_data, dtype=np.float64)
         else:
-            key = self._key(np.ascontiguousarray(cell_ids[valid], dtype=np.uint64))
+            key = self._key(ids_valid)
             if key not in self._norms:
                 # the same operator applied to ones: the weight each output cell received
                 res1 = op.resample(np.ones_like(v), conservative=True)
@@ -998,7 +1120,7 @@ class SphereToEllipsoid:
             if not np.array_equal(ids, ids1):
                 raise RuntimeError("conservative operator: output cells differ")
             num = np.asarray(res.cell_data, dtype=np.float64)
-            keep = den > 0
+            keep = den > CONSERVATIVE_MIN_WEIGHT * den.max() if den.size else den > 0
             ids, out = ids[keep], num[keep] / den[keep]
         if self.clip == "input_range":
             out = np.clip(out, v.min(), v.max())
@@ -1067,7 +1189,8 @@ def write_cell_store(
     ``coarsest_level`` .. ``level - 1`` (default: ``level`` only) are the NaN-mean
     of the four children. Chunks hold ``4**(L - chunk_level)`` cells (default
     ``chunk_level = parent_level``: one chunk per level) and, in 2-D arrays,
-    one layer.
+    one layer. The coarsest level must fit in a single chunk (``ValueError``
+    otherwise).
 
     Returns ``{"variables": [...], "levels": [...], "n_valid": {var: int}}``
     (``n_valid`` counts the non-NaN values at ``level``).
@@ -1080,6 +1203,16 @@ def write_cell_store(
         raise ValueError("need parent_level <= chunk_level <= level")
     if not parent_level <= coarsest_level <= level:
         raise ValueError("need parent_level <= coarsest_level <= level")
+    # the mosaic engine needs the first (coarsest) level in a single chunk
+    coarsest_chunk = (
+        4 ** (coarsest_level - chunk_level) if coarsest_level >= chunk_level else None
+    )  # cells per chunk; None: the whole level
+    if coarsest_chunk is not None and coarsest_chunk < 4 ** (coarsest_level - parent_level):
+        raise ValueError(
+            f"the coarsest level {coarsest_level} would hold more than one chunk "
+            f"(chunk_level {chunk_level}, parent_level {parent_level}): use "
+            f"coarsest_level < chunk_level, or chunk_level = parent_level"
+        )
     n_fine = 4 ** (level - parent_level)
     if not 0 <= parent_cell < 12 * 4**parent_level:
         raise ValueError(f"parent_cell {parent_cell} outside level {parent_level}")
