@@ -11,6 +11,11 @@ MARS strategy: two separate requests to handle variable availability:
 Output group layout (matches the framework's measurements structure):
   measurements/enda/   – ensemble fields  (t2m, u10, v10, sp, d2m, skt)
   measurements/oper/   – deterministic fields  (tcwv, mslp, tcc, sst, sic, …)
+                         and, when pressure levels are asked for,
+                         <name>_isobaric (time, isobaric, cells)
+
+The variable tables below are the defaults; the converter takes other tables
+(e.g. all surface fields from the oper stream and no enda group) as arguments.
 """
 
 # ── HEALPix grid shared constants ─────────────────────────────────────────────
@@ -47,6 +52,14 @@ ERA5_OPER_VARIABLE_META: dict[str, tuple[str, str, str]] = {
     "tco3": ("206.128", "kg m-2", "Total column ozone"),
 }
 ERA5_ALL_VARIABLE_META = {**ERA5_ENDA_VARIABLE_META, **ERA5_OPER_VARIABLE_META}
+# Pressure-level fields (stream=oper, levtype=pl). Only requested when the
+# converter is given pressure levels; written as ``<name>_isobaric`` with an
+# ``isobaric`` dimension in the oper group.
+ERA5_PL_VARIABLE_META: dict[str, tuple[str, str, str]] = {
+    "t": ("130.128", "K", "Temperature"),
+    "q": ("133.128", "kg kg-1", "Specific humidity"),
+    "r": ("157.128", "%", "Relative humidity"),
+}
 
 # ── ConvertSettings dict ──────────────────────────────────────────────────────
 ERA5_CONVERT_SETTINGS: dict = {

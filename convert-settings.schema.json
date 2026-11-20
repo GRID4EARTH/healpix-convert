@@ -183,6 +183,14 @@
           },
           "title": "Drop Variables",
           "type": "array"
+        },
+        "per_input_variables": {
+          "description": "Variables of the group that differ between the input datasets, copied once\nper input instead of once: names or regular expressions, matched against the\nwhole name of each variable (after ``drop_variables``). The copy of an input\nis written to the sub-group ``inputs/<name of the input>`` of the copied group;\nthe name of an input is the last component of its path or URL, without the\n``.zarr`` suffix. The other variables are copied once and must be the same in\nevery input.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Per Input Variables",
+          "type": "array"
         }
       },
       "title": "CopyGroupSettings",
@@ -1129,7 +1137,7 @@
       "additionalProperties": {
         "$ref": "#/$defs/CopyGroupSettings"
       },
-      "description": "Non-spatial groups of the input Zarr dataset(s) (groups with data but\nwithout latitude / longitude) copied unchanged to the output dataset, at the\nsame path, array by array with Zarr (no CF decoding): stored values, data\ntypes, fill values, dimension names and attributes of their arrays, and the\nattributes of the group.\n\nWith several input datasets, the group must be the same in all of them (same\narrays, values, fill values and attributes); otherwise the conversion fails.\nA non-spatial group not listed here is not written (a warning is logged).",
+      "description": "Non-spatial groups of the input Zarr dataset(s) (groups with data but\nwithout latitude / longitude) copied unchanged to the output dataset, at the\nsame path, array by array with Zarr (no CF decoding): stored values, data\ntypes, fill values, dimension names and attributes of their arrays, and the\nattributes of the group.\n\nWith several input datasets, the group must be the same in all of them (same\narrays, values, fill values and attributes); otherwise the conversion fails,\nexcept for the variables of ``per_input_variables``, copied once per input.\nA non-spatial group not listed here is not written (a warning is logged).",
       "propertyNames": {
         "format": "path"
       },
